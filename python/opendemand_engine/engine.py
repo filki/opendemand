@@ -68,8 +68,7 @@ def run_job(
     _log(stderr, "hello sent")
 
     reader = InboxReader(stdin)
-    reader.start()
-    kind, payload = reader.wait_initial()
+    kind, payload = reader.read_initial()
     _log(stderr, f"initial {kind}")
 
     if kind == "eof":
@@ -104,6 +103,9 @@ def run_job(
         from . import arrowio  # PyArrow only after hello is on the wire
         from .tasks import ObservationIndex, execute_task, failed_outcome, parse_tasks
         _log(stderr, "imports ready")
+
+        reader.start()
+        _log(stderr, "reader started")
 
         _raise_on_interrupt(reader)
         _log(stderr, "interrupt check done")

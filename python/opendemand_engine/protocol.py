@@ -58,6 +58,23 @@ class InboxReader(threading.Thread):
         self._first_ready.wait()
         return self._first_kind or "eof", self._first_payload
 
+    def read_initial(self) -> tuple[str, dict | None]:
+        """Read and classify the first message on the calling thread.
+
+        Used before any work starts so the interpreter never keeps a thread
+        parked inside a blocking stdin read across imports: on Windows that
+        parked reader starves the main thread. The threaded reader takes over
+        only afterwards, for cancellation monitoring; messages that arrive in
+        the meantime stay buffered in the pipe.
+        """
+        while self._first_kind is None:
+            line = self._readline()
+            if line == "":
+                self._finish_first("eof", None)
+                break
+            self._handle(line)
+        return self._first_kind or "eof", self._first_payload
+
     # -- thread body -------------------------------------------------------
 
     def run(self) -> None:  # pragma: no cover - thin loop over _handle
