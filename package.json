@@ -1,0 +1,31 @@
+{
+  "name": "opendemand",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenDemand desktop frontend: local-first SKU-level demand forecasting workspace",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-kit sync && svelte-check",
+    "test": "node --experimental-strip-types --test tests/frontend/*.test.ts",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tanstack/svelte-query": "^6.3.2",
+    "@tauri-apps/api": "^2.12.3",
+    "@tauri-apps/plugin-dialog": "^2"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "^3.0.10",
+    "@sveltejs/kit": "^2.65.1",
+    "@sveltejs/vite-plugin-svelte": "^7.1.2",
+    "@tauri-apps/cli": "^2.12.2",
+    "@types/node": "^22.15.0",
+    "svelte": "^5.56.3",
+    "svelte-check": "^4.6.0",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16"
+  }
+}

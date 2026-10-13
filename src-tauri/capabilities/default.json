@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Desktop window can select local CSV and workspace paths.",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:allow-open"]
+}
