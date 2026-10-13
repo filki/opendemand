@@ -76,4 +76,13 @@ The static download catalog in `site/` is deployed to GitHub Pages (`https://fil
 
 - Contributions: see `CONTRIBUTING.md`.
 - Security reports: see `SECURITY.md`.
-- License: MIT — see `LICENSE`.
+- License: GNU Affero General Public License, version 3 only (`AGPL-3.0-only`) — see `LICENSE`. The change from MIT is not retroactive: code committed and builds published before the transition keep the MIT terms they were released under.
+- Third-party assets: the IBM Plex fonts bundled in `site/assets/fonts/` remain under the SIL Open Font License — see `site/assets/fonts/OFL.txt`.
+
+Copyright (C) 2026 OpenDemand contributors.
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License, version 3, as published by the Free Software Foundation.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.

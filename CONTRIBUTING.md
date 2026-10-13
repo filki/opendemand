@@ -37,4 +37,4 @@ Report vulnerabilities privately as described in `SECURITY.md`; do not open a pu
 
 ## License
 
-By contributing, you agree that your contributions are licensed under the MIT License (see `LICENSE`).
+By contributing, you agree that your contributions are licensed under the GNU Affero General Public License, version 3 only (`AGPL-3.0-only`) — see `LICENSE`. The change from MIT is not retroactive: contributions made before the transition remain under the terms they were published with.
