@@ -6,15 +6,22 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  verify:
+    name: Verify Release
+    uses: ./.github/workflows/ci.yml
+
   release:
     name: Package ${{ matrix.platform }}
+    needs: verify
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -53,6 +60,10 @@ jobs:
           uv sync --frozen
       - name: Build the standalone Python sidecar
         run: uv run --frozen python packaging/build_sidecar.py
+      - name: Verify bundled forecasts and Rust persistence
+        env:
+          OPENDEMAND_ENGINE: ${{ github.workspace }}/packaging/sidecar-dist/opendemand-engine/opendemand-engine${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --test milestone
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -67,4 +78,23 @@ jobs:
             for scope and known limitations.
           releaseDraft: true
           prerelease: true
-          args: ${{ matrix.args }}
+          args: --config src-tauri/tauri.bundle.conf.json ${{ matrix.args }} -- --locked
+
+  finalize:
+    name: Align Draft Commit
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Match the draft to the verified build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v$(jq -r '.version' src-tauri/tauri.conf.json)"
+          if [ "$(gh release view "$tag" --json isDraft --jq '.isDraft')" != "true" ]; then
+            printf 'Refusing to retarget a published release.\n' >&2
+            exit 1
+          fi
+          gh release edit "$tag" --target "$GITHUB_SHA"

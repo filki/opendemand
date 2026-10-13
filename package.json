@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check",
     "test": "node --experimental-strip-types --test tests/frontend/*.test.ts",
-    "build:sidecar": "uv run python packaging/build_sidecar.py",
+    "build:sidecar": "uv run --frozen python packaging/build_sidecar.py",
+    "build:desktop": "npm run build:sidecar && tauri build --config src-tauri/tauri.bundle.conf.json",
     "tauri": "tauri"
   },
   "dependencies": {

@@ -2,7 +2,7 @@
 
 Local-first, SKU-level demand forecasting for the desktop. One user, one local workspace: the SQLite database, retained source CSV copies, and backups live in a directory you choose, and no component of the application listens on the network.
 
-> **Status: Milestone 1 works end-to-end in development.** The chain canonical CSV → SQLite → Python Naive forecast → Rust persistence → Svelte chart runs locally through `npm run tauri dev`, verified by automated tests and by running the desktop application against a real imported workspace. Packaging, backups, overrides, exports, seasonal models, and MCP are not implemented yet; nothing here is ready for production use.
+> **Status: Milestone 1 works end-to-end in development.** The chain canonical CSV → SQLite → Python Naive forecast → Rust persistence → Svelte chart runs locally through `npm run tauri dev`, verified by automated tests and by running the desktop application against a real imported workspace. Packaging is experimental; backups, overrides, exports, seasonal models, and MCP are not implemented yet. Nothing here is ready for production use.
 
 ## Application
 
@@ -61,11 +61,14 @@ The desktop bundle ships the Python sidecar as a standalone PyInstaller onedir d
 Local packaging (macOS, Linux, or Windows):
 
 ```bash
-npm run build:sidecar   # PyInstaller onedir -> packaging/sidecar-dist/
-npm run tauri build     # bundles the app with the sidecar as a resource
+npm run build:desktop  # freezes the Python sidecar, then bundles the app
 ```
 
+Bundled resources are enabled only by `src-tauri/tauri.bundle.conf.json`, applied by this command and the Release workflow. Development and tests do not require generated packaging files.
+
 Release automation: pushing a `v*` tag (or running the Release workflow manually) builds Windows x64, macOS Apple Silicon, and Linux x64 bundles and attaches them to a draft GitHub release. Builds are currently unsigned — macOS shows a Gatekeeper warning until notarization lands.
+
+CI gates packaging, every platform checks the bundled sidecar through Rust persistence, and successful runs align the draft with the built commit.
 
 ## Contributing, security, license
 

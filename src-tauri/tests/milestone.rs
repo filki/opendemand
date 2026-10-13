@@ -31,7 +31,7 @@ async fn canonical_csv_reaches_real_python_engine_and_persisted_chart_payload() 
         "integration-job",
         Arc::new(AtomicBool::new(false)),
         Arc::new(|_, _| {}),
-        None,
+        std::env::var_os("OPENDEMAND_ENGINE").map(PathBuf::from),
     )
     .await
     .unwrap();
