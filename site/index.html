@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<meta name="color-scheme" content="light" />
+	<title>OpenDemand — local-first demand forecasting</title>
+	<meta
+		name="description"
+		content="OpenDemand is a local-first desktop app for SKU-level demand forecasting: import weekly history, run a Naive baseline through a bundled Python engine, and keep every result in a workspace you own. Unsigned development preview, MIT licensed."
+	/>
+	<meta property="og:title" content="OpenDemand — local-first demand forecasting" />
+	<meta
+		property="og:description"
+		content="Import weekly history, run a Naive forecast, keep every result — all on your machine. Open source, MIT, unsigned development preview."
+	/>
+	<meta property="og:type" content="website" />
+	<link rel="icon" href="favicon.svg" type="image/svg+xml" />
+	<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+	<a class="skip-link" href="#main">Skip to content</a>
+
+	<header class="site-header">
+		<div class="wrap">
+			<a class="wordmark" href="./">
+				<img src="assets/icon-512.png" alt="" width="30" height="30" />
+				<span>OpenDemand</span>
+			</a>
+			<nav class="site-nav" aria-label="Project links">
+				<a href="#download">Download</a>
+				<a href="https://github.com/filki/opendemand">GitHub</a>
+			</nav>
+		</div>
+	</header>
+
+	<main id="main">
+		<div class="wrap">
+			<section class="hero">
+				<h1>Demand forecasting that never leaves your machine.</h1>
+				<p class="lede">
+					OpenDemand is a local-first desktop app for SKU-level demand forecasting. Import a
+					weekly history, run a forecast through a bundled Python engine, and keep every result
+					in a workspace you own — the SQLite database and the retained source CSVs live in a
+					folder you choose. No accounts, no telemetry, nothing listening on the network.
+				</p>
+				<div class="hero-actions">
+					<a class="button button-primary" href="#download">Download v0.0.1</a>
+					<a class="button button-secondary" href="https://github.com/filki/opendemand">Read the source</a>
+				</div>
+				<p class="fine-print">
+					An unsigned development preview, MIT licensed, built for Windows x64, macOS on Apple
+					Silicon, and Linux x64.
+				</p>
+			</section>
+
+			<figure class="chart-figure">
+				<div
+					class="chart-panel"
+					tabindex="0"
+					aria-label="Weekly demand chart; scroll horizontally to see the full timeline"
+				>
+					<svg viewBox="0 0 1200 380" role="img" aria-labelledby="chart-title chart-desc">
+						<title id="chart-title">Illustrative weekly demand chart with a Naive forecast</title>
+						<desc id="chart-desc">
+							A solid blue line shows observed weekly quantity rising and falling across
+							eighteen weeks. From the last observed week, a purple dashed line continues flat
+							for nine weeks ahead — the Naive forecast, which carries the last value forward.
+						</desc>
+						<defs>
+							<pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+								<path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(21,34,56,0.08)" stroke-width="1" />
+							</pattern>
+						</defs>
+						<rect x="80" y="60" width="1040" height="240" fill="url(#grid)" />
+						<path
+							d="M80 250 L120 228 L160 246 L200 206 L240 224 L280 180 L320 198 L360 162 L400 174 L440 142 L480 160 L520 130 L560 148 L600 120 L640 138 L680 112 L720 126 L760 100 L760 300 L80 300 Z"
+							fill="rgba(76,125,255,0.10)"
+						/>
+						<line x1="80" y1="300" x2="1120" y2="300" stroke="rgba(21,34,56,0.35)" stroke-width="1.5" />
+						<line
+							x1="760"
+							y1="60"
+							x2="760"
+							y2="300"
+							stroke="rgba(143,123,255,0.55)"
+							stroke-width="1.5"
+							stroke-dasharray="4 6"
+						/>
+						<polyline
+							points="80,250 120,228 160,246 200,206 240,224 280,180 320,198 360,162 400,174 440,142 480,160 520,130 560,148 600,120 640,138 680,112 720,126 760,100"
+							fill="none"
+							stroke="#4C7DFF"
+							stroke-width="3.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						/>
+						<line
+							x1="760"
+							y1="100"
+							x2="1120"
+							y2="100"
+							stroke="#8F7BFF"
+							stroke-width="3.5"
+							stroke-linecap="round"
+							stroke-dasharray="10 10"
+						/>
+						<circle cx="760" cy="100" r="5" fill="#152238" />
+						<text x="80" y="40" class="chart-label">weekly quantity</text>
+						<text x="760" y="40" class="chart-label" text-anchor="middle">last observed week</text>
+						<text x="400" y="342" class="chart-label">observed</text>
+						<text x="930" y="342" class="chart-label chart-label-forecast" text-anchor="middle">
+							Naive forecast
+						</text>
+					</svg>
+				</div>
+				<figcaption>
+					The Milestone 1 engine in one line: the Naive forecast carries the last observed week
+					forward. It is an honest baseline, not a promise — seasonal models come later. The
+					chart uses illustrative data.
+				</figcaption>
+			</figure>
+
+			<section class="section" aria-labelledby="how-title">
+				<h2 id="how-title">What it does today</h2>
+				<ol class="steps">
+					<li>
+						<h3>Import a weekly history</h3>
+						<p>
+							One CSV with three columns: series key, ISO week (Monday), and weekly quantity.
+							Every import is stored as a full, immutable snapshot.
+						</p>
+					</li>
+					<li>
+						<h3>Run the forecast</h3>
+						<p>
+							A bundled Python engine computes the Naive baseline, one process per job, and
+							returns results as Arrow IPC. No Python installation is needed.
+						</p>
+					</li>
+					<li>
+						<h3>Keep every result</h3>
+						<p>
+							Runs persist to a local SQLite database owned by the Rust core and reopen as
+							charts. Typed IPC, no hidden state.
+						</p>
+					</li>
+				</ol>
+			</section>
+
+			<section class="section" id="download" aria-labelledby="download-title">
+				<h2 id="download-title">Download</h2>
+				<p class="section-lede">
+					OpenDemand v0.0.1 is a development preview for early testing. Pick the package for
+					your system.
+				</p>
+
+				<article class="product-band">
+					<div class="product-head">
+						<img src="assets/icon-512.png" alt="" width="64" height="64" />
+						<div>
+							<h3 class="product-title">
+								OpenDemand <span class="version-chip">v0.0.1</span>
+							</h3>
+							<p class="product-line">
+								Local-first SKU-level demand forecasting for the desktop. MIT licensed.
+							</p>
+						</div>
+					</div>
+
+					<ul class="download-list">
+						<li class="os os-windows">
+							<div class="os-head">
+								<span class="os-name">Windows</span>
+								<span class="os-arch">x64</span>
+								<span class="badge">Recommended for your system</span>
+							</div>
+							<div class="os-files">
+								<a
+									class="file"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.1/OpenDemand_0.0.1_x64-setup.exe"
+									>.exe <span class="file-note">installer</span></a
+								>
+								<a
+									class="file"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.1/OpenDemand_0.0.1_x64_en-US.msi"
+									>.msi <span class="file-note">managed installs</span></a
+								>
+							</div>
+						</li>
+						<li class="os os-macos">
+							<div class="os-head">
+								<span class="os-name">macOS</span>
+								<span class="os-arch">Apple Silicon</span>
+								<span class="badge">Recommended for your system</span>
+							</div>
+							<div class="os-files">
+								<a
+									class="file"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.1/OpenDemand_0.0.1_aarch64.dmg"
+									>.dmg <span class="file-note">disk image</span></a
+								>
+							</div>
+							<p class="os-note">Intel Macs are not built yet.</p>
+						</li>
+						<li class="os os-linux">
+							<div class="os-head">
+								<span class="os-name">Linux</span>
+								<span class="os-arch">x64</span>
+								<span class="badge">Recommended for your system</span>
+							</div>
+							<div class="os-files">
+								<a
+									class="file"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.1/OpenDemand_0.0.1_amd64.AppImage"
+									>.AppImage <span class="file-note">portable</span></a
+								>
+								<a
+									class="file"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.1/OpenDemand_0.0.1_amd64.deb"
+									>.deb <span class="file-note">Debian, Ubuntu</span></a
+								>
+								<a
+									class="file"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.1/OpenDemand-0.0.1-1.x86_64.rpm"
+									>.rpm <span class="file-note">Fedora, RHEL</span></a
+								>
+							</div>
+						</li>
+					</ul>
+
+					<p class="product-meta">
+						Builds are unsigned. macOS shows a Gatekeeper warning until notarization lands, and
+						Windows SmartScreen may warn about an unknown publisher. All files and release
+						notes are on
+						<a href="https://github.com/filki/opendemand/releases/tag/v0.0.1">GitHub Releases</a>.
+					</p>
+				</article>
+
+				<p class="catalog-note">
+					This catalog is a static page. No accounts, no tracking, no cookies — the only
+					requests it makes are for its own files. More tools from the same workshop will land
+					here.
+				</p>
+			</section>
+
+			<section class="section" aria-labelledby="status-title">
+				<h2 id="status-title">Honest status</h2>
+				<p class="section-lede">
+					Milestone 1 works end-to-end in development, verified by automated tests. Packaging is
+					experimental and nothing here is ready for production use.
+				</p>
+				<div class="status-grid">
+					<div class="status-col">
+						<h3>Works today</h3>
+						<ul>
+							<li>Canonical CSV import (the <code>canonical/1</code> contract)</li>
+							<li>Naive forecasting through the bundled Python sidecar</li>
+							<li>Persisted run history and forecast charts</li>
+							<li>Automated tests: schema and recovery, engine, frontend, and per-platform packaging checks</li>
+						</ul>
+					</div>
+					<div class="status-col">
+						<h3>Not built yet</h3>
+						<ul>
+							<li>Backups and restores</li>
+							<li>Manual forecast overrides</li>
+							<li>Exports (XLSX)</li>
+							<li>Seasonal and other forecasting models</li>
+							<li>Flexible parsing of raw planner files</li>
+							<li>The optional read-only MCP adapter</li>
+						</ul>
+					</div>
+				</div>
+			</section>
+		</div>
+	</main>
+
+	<footer class="site-footer">
+		<div class="wrap">
+			<p>Open source under the MIT license. No telemetry, no accounts — it runs offline.</p>
+			<nav class="footer-links" aria-label="Project resources">
+				<a href="https://github.com/filki/opendemand">Source</a>
+				<a href="https://github.com/filki/opendemand/issues">Issues</a>
+				<a href="https://github.com/filki/opendemand/blob/main/CONTRIBUTING.md">Contributing</a>
+				<a href="https://github.com/filki/opendemand/blob/main/LICENSE">License</a>
+			</nav>
+		</div>
+	</footer>
+
+	<script src="assets/catalog.js" defer></script>
+</body>
+</html>

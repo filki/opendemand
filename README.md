@@ -70,6 +70,8 @@ Release automation: pushing a `v*` tag (or running the Release workflow manually
 
 CI gates packaging, every platform checks the bundled sidecar through Rust persistence, and successful runs align the draft with the built commit.
 
+The static download catalog in `site/` is deployed to GitHub Pages (`https://filki.github.io/opendemand/`) by the Catalog workflow; it links only to published release assets.
+
 ## Contributing, security, license
 
 - Contributions: see `CONTRIBUTING.md`.

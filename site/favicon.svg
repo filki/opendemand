@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="OpenDemand">
+	<rect width="32" height="32" rx="7" fill="#152238" />
+	<path
+		d="M6 22 L11 16 L16 19 L21 10"
+		fill="none"
+		stroke="#4c7dff"
+		stroke-width="2.6"
+		stroke-linecap="round"
+		stroke-linejoin="round"
+	/>
+	<path
+		d="M21 10 L26 12"
+		fill="none"
+		stroke="#8f7bff"
+		stroke-width="2.6"
+		stroke-linecap="round"
+		stroke-dasharray="3 3"
+	/>
+</svg>
