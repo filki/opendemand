@@ -46,7 +46,7 @@ test('run selection prefers the newest completed run', () => {
 			status: 'completed',
 			created_at: '2026-02-02T10:00:00Z',
 			horizon_start_week: '2026-02-02',
-			engine_version: '0.1.0'
+			engine_version: '0.0.1'
 		},
 		{
 			id: 'run-a',
@@ -54,7 +54,7 @@ test('run selection prefers the newest completed run', () => {
 			status: 'completed',
 			created_at: '2026-01-01T10:00:00Z',
 			horizon_start_week: '2026-01-05',
-			engine_version: '0.1.0'
+			engine_version: '0.0.1'
 		},
 		{
 			id: 'run-c',
@@ -62,7 +62,7 @@ test('run selection prefers the newest completed run', () => {
 			status: 'failed',
 			created_at: '2026-03-01T10:00:00Z',
 			horizon_start_week: '2026-03-02',
-			engine_version: '0.1.0'
+			engine_version: '0.0.1'
 		}
 	];
 	assert.equal(sortRunsNewestFirst(runs)[0].id, 'run-c');
