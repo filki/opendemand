@@ -9,9 +9,9 @@ Thanks for your interest. OpenDemand is pre-release: Milestone 1 (canonical CSV 
 
 ## Project rules every change must respect
 
-- **Preserve the approved stack** (ADRs 0001–0011 in `docs/architecture/adr/`): Tauri v2 + static SvelteKit frontend, Rust as the sole SQLite owner, the Python sidecar as a separate per-job process that never opens the database.
+- **Preserve the approved stack** (accepted ADRs in `docs/architecture/adr/`): Tauri v2 + static SvelteKit frontend, Rust as the sole SQLite owner, the Python sidecar as a separate per-job process that never opens the database.
 - **Stay in Milestone 1.** MCP, XLSX export, seasonal models, flexible raw-file parsing, and advanced workspace management land only after the first end-to-end chain works.
-- **Schema freeze gate.** `docs/architecture/schema/001_init.sql` is not frozen yet; while it is unfrozen, edit it only through the approved Phase 1 corrections. After the freeze, schema changes arrive as new migrations.
+- **Schema freeze.** `docs/architecture/schema/001_init.sql` is frozen; its SHA-256 is recorded in `001_init.sha256`. Never edit it. Schema changes arrive as new numbered migrations with a verified backup.
 - **Change decisions with new ADRs.** Accepted ADRs are historical records; write a new ADR that supersedes the old one instead of editing it.
 - **No secrets or local absolute paths** in code, docs, or configuration.
 

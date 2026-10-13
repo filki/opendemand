@@ -3,6 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-10-13
 **Extended by:** [ADR-0012](0012-series-model-evaluation-and-selection.md) — Rust plans tasks; Python computes metrics and forecasts only.
+**Superseded in part by:** [ADR-0016](0016-sidecar-cancellation-flag-file.md) — cancellation uses a `cancel.flag` file; stdin carries only `job.request`.
 
 ## Context
 

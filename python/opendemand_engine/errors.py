@@ -57,4 +57,4 @@ class TaskFailure(Exception):
 
 
 class JobCancelled(Exception):
-    """Raised internally when ``job.cancel`` arrives; never escapes run_job."""
+    """Raised internally when ``cancel.flag`` appears; never escapes run_job."""
