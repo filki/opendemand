@@ -97,4 +97,4 @@ jobs:
             printf 'Refusing to retarget a published release.\n' >&2
             exit 1
           fi
-          gh release edit "$tag" --target "$GITHUB_SHA"
+          gh release edit "$tag" --target "$(git rev-parse HEAD)"
