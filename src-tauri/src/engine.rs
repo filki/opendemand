@@ -604,7 +604,12 @@ async fn run_process(
     let mut stderr = child.stderr.take().unwrap();
     let stderr_drain = tokio::spawn(async move {
         let mut buffer = [0; 4096];
-        while matches!(stderr.read(&mut buffer).await, Ok(count) if count > 0) {}
+        loop {
+            match stderr.read(&mut buffer).await {
+                Ok(count) if count > 0 => eprint!("{}", String::from_utf8_lossy(&buffer[..count])),
+                _ => break,
+            }
+        }
     });
     let result = async {
     let hello = tokio::time::timeout(Duration::from_secs(5), stdout.next_line()).await

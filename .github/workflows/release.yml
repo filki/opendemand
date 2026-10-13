@@ -63,7 +63,8 @@ jobs:
       - name: Verify bundled forecasts and Rust persistence
         env:
           OPENDEMAND_ENGINE: ${{ github.workspace }}/packaging/sidecar-dist/opendemand-engine/opendemand-engine${{ runner.os == 'Windows' && '.exe' || '' }}
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --test milestone
+          OPENDEMAND_JOB_TIMEOUT_SECONDS: "600"
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --test milestone -- --nocapture
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
