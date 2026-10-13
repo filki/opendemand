@@ -103,12 +103,16 @@ def run_job(
     try:
         from . import arrowio  # PyArrow only after hello is on the wire
         from .tasks import ObservationIndex, execute_task, failed_outcome, parse_tasks
+        _log(stderr, "imports ready")
 
         _raise_on_interrupt(reader)
+        _log(stderr, "interrupt check done")
         tasks_table = arrowio.read_input_table(
             job_dir, arrowio.TASKS_FILE, arrowio.TASKS_SCHEMA, "tasks"
         )
+        _log(stderr, "tasks table read")
         task_rows = parse_tasks(tasks_table)
+        _log(stderr, "tasks parsed")
         total = len(task_rows)
         tracker.update("validate_input", 0, total)
         _log(stderr, f"phase validate_input tasks={total}")

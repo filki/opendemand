@@ -44,7 +44,7 @@ PYTHON_DIR = REPO_ROOT / "python"
 HELLO_TIMEOUT = 15.0
 REQUEST_TIMEOUT = 45.0
 IMPORTS_TIMEOUT = 120.0
-FORECAST_TIMEOUT = 240.0
+FORECAST_TIMEOUT = 90.0
 
 
 class ProbeTimeout(Exception):
@@ -252,6 +252,16 @@ def main() -> int:
             ("job.result", None),
             FORECAST_TIMEOUT,
             False,
+        ),
+        probe(
+            "forecast-eof",
+            mode,
+            engine_path,
+            demo_inputs,
+            [h.job_request("probe-e")],
+            ("job.result", None),
+            FORECAST_TIMEOUT,
+            True,
         ),
     ]
     for result in results:
