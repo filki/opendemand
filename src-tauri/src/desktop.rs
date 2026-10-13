@@ -173,6 +173,36 @@ enum JobResult {
     Forecast(ForecastResult),
 }
 
+/// Resolve the sidecar executable: explicit override, then the bundled
+/// resource shipped inside the desktop application, then the dev fallback.
+fn find_sidecar(
+    resource_dir: Option<&std::path::Path>,
+    env_override: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(path) = env_override {
+        return Some(path);
+    }
+    let name = if cfg!(windows) {
+        "opendemand-engine.exe"
+    } else {
+        "opendemand-engine"
+    };
+    let resource = resource_dir?;
+    [
+        resource.join("engine").join(name),
+        resource.join("engine").join("opendemand-engine").join(name),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+
+fn sidecar_binary(app: &AppHandle) -> Option<PathBuf> {
+    find_sidecar(
+        app.path().resource_dir().ok().as_deref(),
+        std::env::var_os("OPENDEMAND_ENGINE").map(PathBuf::from),
+    )
+}
+
 async fn queue_job(
     state: &Service,
     app: AppHandle,
@@ -225,6 +255,7 @@ async fn queue_job(
     drop(workspace_guard);
     let jobs = state.jobs.clone();
     let kind = kind.to_owned();
+    let engine = sidecar_binary(&app);
     tauri::async_runtime::spawn(async move {
         let started = sqlx::query("UPDATE job SET status='running', started_at=? WHERE id=?")
             .bind(Utc::now().to_rfc3339())
@@ -254,9 +285,16 @@ async fn queue_job(
                     let progress = Arc::new(move |phase: &str, value| {
                         publish(&progress_app, &progress_jobs, &progress_id, phase, value)
                     });
-                    run_forecast(&job_workspace, revision.unwrap(), &job_id, cancel, progress)
-                        .await
-                        .map(JobResult::Forecast)
+                    run_forecast(
+                        &job_workspace,
+                        revision.unwrap(),
+                        &job_id,
+                        cancel,
+                        progress,
+                        engine,
+                    )
+                    .await
+                    .map(JobResult::Forecast)
                 }
             })
             .await
@@ -486,5 +524,41 @@ mod tests {
         super::command_builder()
             .export(specta_typescript::Typescript::default(), path)
             .unwrap();
+    }
+
+    #[test]
+    fn sidecar_resolution_prefers_override_then_bundled_resource() {
+        let name = if cfg!(windows) {
+            "opendemand-engine.exe"
+        } else {
+            "opendemand-engine"
+        };
+        let directory = tempfile::tempdir().unwrap();
+
+        let flat_root = directory.path().join("flat");
+        let flat = flat_root.join("engine");
+        std::fs::create_dir_all(&flat).unwrap();
+        std::fs::write(flat.join(name), b"engine").unwrap();
+        let override_path = directory.path().join("custom-engine");
+        assert_eq!(
+            super::find_sidecar(Some(flat_root.as_path()), Some(override_path.clone())),
+            Some(override_path)
+        );
+        assert_eq!(
+            super::find_sidecar(Some(flat_root.as_path()), None),
+            Some(flat.join(name))
+        );
+
+        let nested_root = directory.path().join("nested");
+        let nested = nested_root.join("engine").join("opendemand-engine");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join(name), b"engine").unwrap();
+        assert_eq!(
+            super::find_sidecar(Some(nested_root.as_path()), None),
+            Some(nested.join(name))
+        );
+
+        assert_eq!(super::find_sidecar(Some(directory.path()), None), None);
+        assert_eq!(super::find_sidecar(None, None), None);
     }
 }

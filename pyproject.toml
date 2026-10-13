@@ -15,6 +15,9 @@ dependencies = [
     "pyarrow==26.0.0",
 ]
 
+[dependency-groups]
+dev = ["pyinstaller>=6.11"]
+
 [tool.setuptools]
 package-dir = { "" = "python" }
 packages = ["opendemand_engine"]

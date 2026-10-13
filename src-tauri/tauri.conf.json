@@ -25,6 +25,15 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": true,
+    "targets": "all",
+    "category": "Business",
+    "shortDescription": "Local-first SKU-level demand forecasting",
+    "longDescription": "OpenDemand is a local-first, SKU-level demand forecasting desktop application. Import a canonical CSV, run a Naive forecast through the bundled Python sidecar, and inspect history with persisted forecasts. All data stays on your machine.",
+    "copyright": "© 2026 OpenDemand contributors",
+    "licenseFile": "../LICENSE",
+    "resources": {
+      "../packaging/sidecar-dist/opendemand-engine": "engine"
+    }
   }
 }

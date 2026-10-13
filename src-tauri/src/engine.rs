@@ -557,24 +557,34 @@ async fn run_process(
     job_id: &str,
     cancel: &AtomicBool,
     progress: &Progress,
+    engine_binary: Option<&Path>,
 ) -> AppResult<EngineOutput> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    let python = std::env::var_os("OPENDEMAND_PYTHON")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            root.join(if cfg!(windows) {
-                ".venv/Scripts/python.exe"
-            } else {
-                ".venv/bin/python"
-            })
-        });
-    let mut child = Command::new(python)
-        .args(["-m", "opendemand_engine", "--job-dir"])
-        .arg(directory)
-        .env("PYTHONPATH", root.join("python"))
+    let mut command = if let Some(binary) = engine_binary {
+        let mut command = Command::new(binary);
+        command.arg("--job-dir").arg(directory);
+        command
+    } else {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let python = std::env::var_os("OPENDEMAND_PYTHON")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                root.join(if cfg!(windows) {
+                    ".venv/Scripts/python.exe"
+                } else {
+                    ".venv/bin/python"
+                })
+            });
+        let mut command = Command::new(python);
+        command
+            .args(["-m", "opendemand_engine", "--job-dir"])
+            .arg(directory)
+            .env("PYTHONPATH", root.join("python"));
+        command
+    };
+    let mut child = command
         .env("PYTHONUNBUFFERED", "1")
         .env("OPENBLAS_NUM_THREADS", "1")
         .current_dir(directory)
@@ -671,10 +681,11 @@ pub async fn execute(
     job_id: &str,
     cancel: &AtomicBool,
     progress: &Progress,
+    engine_binary: Option<&Path>,
 ) -> AppResult<EngineOutput> {
     write_inputs(directory, input, tasks)?;
     for attempt in 0..2 {
-        match run_process(directory, tasks, job_id, cancel, progress).await {
+        match run_process(directory, tasks, job_id, cancel, progress, engine_binary).await {
             Ok(mut output) => {
                 validate_outputs(input, tasks, &mut output)?;
                 return Ok(output);

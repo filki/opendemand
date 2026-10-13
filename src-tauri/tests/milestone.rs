@@ -31,6 +31,7 @@ async fn canonical_csv_reaches_real_python_engine_and_persisted_chart_payload() 
         "integration-job",
         Arc::new(AtomicBool::new(false)),
         Arc::new(|_, _| {}),
+        None,
     )
     .await
     .unwrap();
@@ -113,6 +114,7 @@ async fn cancelling_before_engine_start_does_not_persist_a_partial_run() {
         "cancelled-job",
         Arc::new(AtomicBool::new(true)),
         Arc::new(|_, _| {}),
+        None,
     )
     .await
     .unwrap_err();

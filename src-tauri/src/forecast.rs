@@ -7,6 +7,7 @@ use crate::{
 use chrono::{Duration, Utc};
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -75,6 +76,7 @@ pub async fn run_forecast(
     job_id: &str,
     cancel: Arc<AtomicBool>,
     progress: Progress,
+    engine_binary: Option<PathBuf>,
 ) -> AppResult<ForecastResult> {
     cancelled(&cancel)?;
     progress("preparing", 0.0);
@@ -86,8 +88,16 @@ pub async fn run_forecast(
     let temporary = tempfile::Builder::new()
         .prefix("forecast-")
         .tempdir_in(jobs_directory)?;
-    let output =
-        engine::execute(temporary.path(), &input, &tasks, job_id, &cancel, &progress).await?;
+    let output = engine::execute(
+        temporary.path(),
+        &input,
+        &tasks,
+        job_id,
+        &cancel,
+        &progress,
+        engine_binary.as_deref(),
+    )
+    .await?;
     cancelled(&cancel)?;
     progress("persisting", 0.9);
     persist(

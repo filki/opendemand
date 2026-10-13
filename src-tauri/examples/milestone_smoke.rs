@@ -20,6 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "desktop-smoke",
         Arc::new(AtomicBool::new(false)),
         Arc::new(|_, _| {}),
+        std::env::var_os("OPENDEMAND_ENGINE").map(PathBuf::from),
     )
     .await?;
     let series = workspace

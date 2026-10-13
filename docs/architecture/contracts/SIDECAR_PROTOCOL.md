@@ -3,7 +3,10 @@
 Protocol id: `opendemand.sidecar/1`. One UTF-8 JSON object per stdout/stdin line.
 Every object includes `protocol`, `type`, and `job_id` (null only in the initial hello).
 Stdout is protocol-only. Logs go to stderr. No HTTP listener or database access.
-Launch `python -m opendemand_engine --job-dir <directory>` with a dedicated temporary directory.
+Launch `python -m opendemand_engine --job-dir <directory>` in development, or the
+packaged `opendemand-engine --job-dir <directory>` binary in a release build.
+The desktop app resolves `OPENDEMAND_ENGINE` first, then the bundled
+`engine/opendemand-engine` resource, then the repository `.venv` fallback.
 
 ## Exchange
 

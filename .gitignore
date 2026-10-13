@@ -55,3 +55,5 @@ playwright-report/
 /src-tauri/gen/
 /src-tauri/icons/android/
 /src-tauri/icons/ios/
+/packaging/sidecar-dist/
+/packaging/sidecar-build/

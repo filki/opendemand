@@ -54,6 +54,19 @@ uv run python -m unittest discover                # schema/recovery + Python eng
 npm run check && npm test && npm run build        # frontend types, tests, static build
 ```
 
+## Releases and packaging
+
+The desktop bundle ships the Python sidecar as a standalone PyInstaller onedir directory, and the app resolves it from its own resources, so a packaged build runs without a Python installation.
+
+Local packaging (macOS, Linux, or Windows):
+
+```bash
+npm run build:sidecar   # PyInstaller onedir -> packaging/sidecar-dist/
+npm run tauri build     # bundles the app with the sidecar as a resource
+```
+
+Release automation: pushing a `v*` tag (or running the Release workflow manually) builds Windows x64, macOS Apple Silicon, and Linux x64 bundles and attaches them to a draft GitHub release. Builds are currently unsigned — macOS shows a Gatekeeper warning until notarization lands.
+
 ## Contributing, security, license
 
 - Contributions: see `CONTRIBUTING.md`.
