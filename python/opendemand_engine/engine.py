@@ -70,6 +70,7 @@ def run_job(
     reader = InboxReader(stdin)
     reader.start()
     kind, payload = reader.wait_initial()
+    _log(stderr, f"initial {kind}")
 
     if kind == "eof":
         _log(stderr, "stdin closed before job.request")
