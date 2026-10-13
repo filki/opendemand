@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  milestone:
+    name: Desktop and Milestone 1 Tests
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Install locked dependencies
+        run: |
+          npm ci
+          uv sync --frozen
+      - name: Schema, recovery, and Python sidecar
+        run: uv run --frozen python -m unittest discover -v
+      - name: Rust core, typed IPC, and real sidecar integration
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - name: Check generated bindings
+        run: git diff --exit-code -- src/lib/bindings.ts
+      - name: Frontend checks and static build
+        run: |
+          npm run check
+          npm test
+          npm run build
+      - name: Rust formatting and lints
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+  portable-core:
+    name: Portable Core Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: uv sync --frozen
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features

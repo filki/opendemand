@@ -1,0 +1,8 @@
+{
+  "protocol": "opendemand.sidecar/1",
+  "type": "hello",
+  "job_id": null,
+  "engine_version": "0.1.0",
+  "contracts": ["opendemand.arrow/1"],
+  "models": ["naive"]
+}

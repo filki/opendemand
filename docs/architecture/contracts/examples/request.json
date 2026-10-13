@@ -1,0 +1,10 @@
+{
+  "protocol": "opendemand.sidecar/1",
+  "type": "job.request",
+  "job_id": "42",
+  "contract": "opendemand.arrow/1",
+  "input_files": {
+    "observations": "observations.arrow",
+    "tasks": "tasks.arrow"
+  }
+}

@@ -1,0 +1,57 @@
+# OS and editor settings
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+
+# Node / SvelteKit
+node_modules/
+.svelte-kit/
+build/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Rust
+target/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# SQLite workspaces and app artifacts
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Logs and local agent state
+*.log
+.kilo/agent-manager.json
+.kilo/worktrees/
+.kilo/kilo.json*
+.kilo/sessions/
+test-results/
+playwright-report/
+/src-tauri/gen/
+/src-tauri/icons/android/
+/src-tauri/icons/ios/

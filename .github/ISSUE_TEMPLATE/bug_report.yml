@@ -1,0 +1,53 @@
+name: Bug report
+description: Something in OpenDemand does not work as documented or expected.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. OpenDemand is pre-release (Milestone 1 in development), so please include as much detail as you can.
+        For security problems, do not use this form — report privately as described in `SECURITY.md`.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, and what went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The release version or commit hash you are running.
+    validations:
+      required: false
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "e.g. macOS 15 (Apple Silicon), Windows 11, Ubuntu 24.04"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Do not paste business data or secrets. Identifiers and counts are enough.
+    validations:
+      required: false
