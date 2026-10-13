@@ -11,6 +11,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  reader-variants:
+    name: Windows stdin reader variants
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe stdin reader mechanisms
+        shell: pwsh
+        run: python packaging/probe_stdin_reader_variants.py
+
   windows-stdio:
     name: Windows frozen sidecar stdio
     runs-on: windows-latest
