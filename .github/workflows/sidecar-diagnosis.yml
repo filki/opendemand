@@ -21,6 +21,21 @@ jobs:
         shell: pwsh
         run: python packaging/probe_stdin_reader_variants.py
 
+  reader-import-variants:
+    name: Windows stdin reader variants (with pyarrow)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --frozen
+      - name: Probe stdin reader mechanisms with pyarrow
+        run: uv run --frozen python packaging/probe_stdin_reader_variants.py
+
   windows-stdio:
     name: Windows frozen sidecar stdio
     runs-on: windows-latest
