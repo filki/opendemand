@@ -1,6 +1,7 @@
 mod engine;
 pub mod error;
 pub mod forecast;
+pub mod preprocess;
 pub mod selection;
 pub mod types;
 pub mod workspace;

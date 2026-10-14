@@ -9,9 +9,11 @@ import { commands } from '#lib/bindings.ts';
 import type {
 	AppError,
 	ExportResult,
+	ImportPreview,
 	JobInfo,
 	OverrideEdit,
 	OverrideRevision,
+	ParsingDescriptor,
 	RunSummary,
 	SeriesDetail,
 	SeriesModelComparison,
@@ -73,8 +75,18 @@ export async function openWorkspace(path: string): Promise<WorkspaceInfo> {
 	return unwrap(await commands.workspaceOpen(path));
 }
 
-export async function startImport(path: string): Promise<JobInfo> {
-	return unwrap(await commands.importStart(path));
+export async function startImport(
+	path: string,
+	descriptor: ParsingDescriptor | null = null
+): Promise<JobInfo> {
+	return unwrap(await commands.importStart(path, descriptor));
+}
+
+export async function previewImport(
+	path: string,
+	descriptor: ParsingDescriptor | null
+): Promise<ImportPreview> {
+	return unwrap(await commands.importPreview(path, descriptor));
 }
 
 export async function startForecast(revisionId: number): Promise<JobInfo> {
@@ -160,6 +172,15 @@ export async function pickCanonicalCsv(): Promise<string | null> {
 		multiple: false,
 		title: 'Import canonical CSV',
 		filters: [{ name: 'Canonical CSV', extensions: ['csv'] }]
+	});
+	return firstSelectedPath(selection);
+}
+
+export async function pickImportSource(): Promise<string | null> {
+	const selection = await open({
+		multiple: false,
+		title: 'Choose a planner export',
+		filters: [{ name: 'Planner exports', extensions: ['csv', 'txt', 'xlsx'] }]
 	});
 	return firstSelectedPath(selection);
 }

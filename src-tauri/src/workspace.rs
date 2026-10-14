@@ -10,6 +10,7 @@
 
 use crate::{
     error::{AppError, AppResult},
+    preprocess::{self, descriptor_json, ParsingDescriptor},
     selection,
     types::{
         ExportResult, ForecastInput, ForecastPoint, HistoryPoint, ImportResult, InputSeries,
@@ -46,6 +47,8 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../docs/architecture/
 const SCHEMA_VERSION: i64 = 1;
 const SCHEMA_VERSION_TEXT: &str = "1";
 const CONTRACT_VERSION: &str = "canonical/1";
+/// Contract version of revisions produced by the preprocessing layer.
+const PREPROCESS_CONTRACT: &str = "preprocess/1";
 const DEFAULT_PROFILE_NAME: &str = "canonical/1";
 const DEFAULT_LOCATION_CODE: &str = "__default__";
 const DEFAULT_TIMEZONE: &str = "UTC";
@@ -221,13 +224,15 @@ impl Workspace {
         })
     }
 
-    /// Return the workspace path, schema version, latest revision, and recovery
-    /// findings detected when the workspace was opened.
+    /// Return the workspace path, schema version, latest revision, locale, and
+    /// recovery findings detected when the workspace was opened.
     pub async fn info(&self) -> AppResult<WorkspaceInfo> {
-        let schema_version: String =
-            sqlx::query_scalar("SELECT schema_version FROM workspace_settings WHERE id = 1")
+        let settings =
+            sqlx::query("SELECT schema_version, locale FROM workspace_settings WHERE id = 1")
                 .fetch_one(&self.pool)
                 .await?;
+        let schema_version: String = settings.get("schema_version");
+        let locale: String = settings.get("locale");
         let latest_revision_id: Option<i32> =
             sqlx::query_scalar("SELECT MAX(id) FROM import_revision")
                 .fetch_one(&self.pool)
@@ -241,6 +246,7 @@ impl Workspace {
             path: self.path.display().to_string(),
             schema_version,
             latest_revision_id,
+            locale,
             recovery_issues,
         })
     }
@@ -264,12 +270,75 @@ impl Workspace {
         }
         let parsed = parse_canonical(&bytes, cancel)?;
         let content_hash = hex(&Sha256::digest(&bytes));
-        let source_filename = source
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| SOURCE_FILENAME.to_string());
+        let source_filename = source_filename(source);
+        self.commit_parsed(
+            &bytes,
+            &content_hash,
+            &source_filename,
+            CommitSpec {
+                contract_version: CONTRACT_VERSION,
+                descriptor: None,
+                retained_name: SOURCE_FILENAME,
+            },
+            parsed,
+            cancel,
+        )
+        .await
+    }
 
+    /// Import a raw planner export through the preprocessing layer.
+    ///
+    /// The retained bytes stay untouched; the parsing descriptor is part of the
+    /// effective mapping plan, so the same bytes under a different descriptor
+    /// create a new immutable revision.
+    pub async fn import_raw(
+        &self,
+        source: &Path,
+        descriptor: &ParsingDescriptor,
+        cancel: &AtomicBool,
+    ) -> AppResult<ImportResult> {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(cancelled_import());
+        }
+        let extension = preprocess::retained_extension(source)?;
+        let bytes = std::fs::read(source)?;
+        if bytes.is_empty() {
+            return Err(err(
+                "empty_file",
+                "The import file is empty; expected a header row.",
+            ));
+        }
+        let parsed = preprocess::parse_raw(&bytes, &extension, descriptor, cancel)?;
+        let content_hash = hex(&Sha256::digest(&bytes));
+        let source_filename = source_filename(source);
+        let retained_name = format!("source.{extension}");
+        self.commit_parsed(
+            &bytes,
+            &content_hash,
+            &source_filename,
+            CommitSpec {
+                contract_version: PREPROCESS_CONTRACT,
+                descriptor: Some(descriptor),
+                retained_name: &retained_name,
+            },
+            parsed,
+            cancel,
+        )
+        .await
+    }
+
+    /// Commit a parsed import: map identities, compute the fingerprint, check
+    /// idempotency, stage the retained file, and persist one revision in a
+    /// single serialized transaction.
+    async fn commit_parsed(
+        &self,
+        bytes: &[u8],
+        content_hash: &str,
+        source_filename: &str,
+        spec: CommitSpec<'_>,
+        parsed: ParsedImport,
+        cancel: &AtomicBool,
+    ) -> AppResult<ImportResult> {
         let _guard = self.writer.lock().await;
         if cancel.load(Ordering::SeqCst) {
             return Err(cancelled_import());
@@ -339,15 +408,20 @@ impl Workspace {
             new_products.push((key.clone(), id, create_row));
         }
 
-        let fingerprint = mapping_fingerprint(CONTRACT_VERSION, &mapped, &location_rows);
+        let fingerprint = mapping_fingerprint(
+            spec.contract_version,
+            &mapped,
+            &location_rows,
+            spec.descriptor,
+        )?;
 
         let existing_revision: Option<i32> = sqlx::query_scalar(
             "SELECT id FROM import_revision WHERE profile_id = ? AND content_hash = ? AND mapping_fingerprint = ? AND contract_version = ?",
         )
         .bind(profile_id)
-        .bind(content_hash.as_str())
+        .bind(content_hash)
         .bind(fingerprint.as_str())
-        .bind(CONTRACT_VERSION)
+        .bind(spec.contract_version)
         .fetch_optional(&self.pool)
         .await?;
         if let Some(revision_id) = existing_revision {
@@ -365,7 +439,7 @@ impl Workspace {
         let issue_count = parsed.issues.len() as i64;
         let row_count = parsed.row_count as i64;
 
-        let staged = stage_file(&self.path, &bytes)?;
+        let staged = stage_file(&self.path, bytes)?;
         if cancel.load(Ordering::SeqCst) {
             let _ = std::fs::remove_file(&staged);
             return Err(cancelled_import());
@@ -381,10 +455,10 @@ impl Workspace {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(profile_id)
-        .bind(content_hash.as_str())
+        .bind(content_hash)
         .bind(fingerprint.as_str())
-        .bind(CONTRACT_VERSION)
-        .bind(source_filename.as_str())
+        .bind(spec.contract_version)
+        .bind(source_filename)
         .bind(timestamp.as_str())
         .bind(row_count)
         .bind(observation_count)
@@ -485,7 +559,7 @@ impl Workspace {
         let sources = self.path.join("sources");
         let revision_directory = sources.join(revision_id.to_string());
         std::fs::create_dir_all(&revision_directory)?;
-        let target = revision_directory.join(SOURCE_FILENAME);
+        let target = revision_directory.join(spec.retained_name);
         if target.exists() {
             return Err(err(
                 "source_conflict",
@@ -496,11 +570,11 @@ impl Workspace {
         fsync_dir(&revision_directory);
         fsync_dir(&sources);
 
-        let relative_path = format!("sources/{revision_id}/{SOURCE_FILENAME}");
+        let relative_path = format!("sources/{revision_id}/{}", spec.retained_name);
         sqlx::query("INSERT INTO source_file (revision_id, relative_path, sha256, byte_size) VALUES (?, ?, ?, ?)")
             .bind(revision_id)
             .bind(relative_path.as_str())
-            .bind(content_hash.as_str())
+            .bind(content_hash)
             .bind(bytes.len() as i64)
             .execute(&mut *transaction)
             .await?;
@@ -1529,20 +1603,37 @@ fn move_to_recovery(source: &Path, recovery: &Path) -> std::io::Result<()> {
 // Canonical CSV parsing
 // ---------------------------------------------------------------------------
 
-struct ParsedImport {
-    row_count: usize,
-    cutoff: NaiveDate,
-    series_keys: BTreeSet<String>,
-    /// Included, deduplicated numeric cells keyed by series then week.
-    series: BTreeMap<String, BTreeMap<NaiveDate, (f64, &'static str)>>,
-    issues: Vec<ParsedIssue>,
+pub(crate) struct ParsedImport {
+    pub(crate) row_count: usize,
+    pub(crate) cutoff: NaiveDate,
+    pub(crate) series_keys: BTreeSet<String>,
+    /// Included, aggregated numeric cells keyed by series then week.
+    pub(crate) series: BTreeMap<String, BTreeMap<NaiveDate, (f64, &'static str)>>,
+    pub(crate) issues: Vec<ParsedIssue>,
 }
 
-struct ParsedIssue {
-    severity: &'static str,
-    code: &'static str,
-    detail: String,
-    row_ref: Option<String>,
+pub(crate) struct ParsedIssue {
+    pub(crate) severity: &'static str,
+    pub(crate) code: &'static str,
+    pub(crate) detail: String,
+    pub(crate) row_ref: Option<String>,
+}
+
+/// How one parsed import is committed: the contract version that labels it, the
+/// descriptor that participates in the fingerprint (if any), and the retained
+/// file name.
+struct CommitSpec<'a> {
+    contract_version: &'a str,
+    descriptor: Option<&'a ParsingDescriptor>,
+    retained_name: &'a str,
+}
+
+fn source_filename(source: &Path) -> String {
+    source
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| SOURCE_FILENAME.to_string())
 }
 
 fn parse_canonical(bytes: &[u8], cancel: &AtomicBool) -> AppResult<ParsedImport> {
@@ -1695,7 +1786,7 @@ fn parse_canonical(bytes: &[u8], cancel: &AtomicBool) -> AppResult<ParsedImport>
     })
 }
 
-fn classify(quantity: f64) -> &'static str {
+pub(crate) fn classify(quantity: f64) -> &'static str {
     if quantity == 0.0 {
         "zero"
     } else if quantity < 0.0 {
@@ -1719,9 +1810,22 @@ fn mapping_fingerprint(
     contract: &str,
     products: &BTreeMap<String, Uuid>,
     locations: &[sqlx::sqlite::SqliteRow],
-) -> String {
+    descriptor: Option<&ParsingDescriptor>,
+) -> AppResult<String> {
     let mut lines: BTreeSet<String> = BTreeSet::new();
     lines.insert(format!("contract={contract}"));
+    if let Some(descriptor) = descriptor {
+        let json = descriptor_json(descriptor).map_err(|_| {
+            err(
+                "contract_violation",
+                "The parsing descriptor could not be serialized.",
+            )
+        })?;
+        lines.insert(format!(
+            "descriptor_sha256={}",
+            hex(&Sha256::digest(json.as_bytes()))
+        ));
+    }
     for row in locations {
         let code: String = row.get("source_code");
         let location: Vec<u8> = row.get("location_id");
@@ -1733,7 +1837,7 @@ fn mapping_fingerprint(
         lines.insert(format!("product\t{code}\t{id}"));
     }
     let joined = lines.into_iter().collect::<Vec<_>>().join("\n");
-    hex(&Sha256::digest(joined.as_bytes()))
+    Ok(hex(&Sha256::digest(joined.as_bytes())))
 }
 
 // ---------------------------------------------------------------------------
@@ -1918,7 +2022,7 @@ fn err(code: impl Into<String>, message: impl Into<String>) -> AppError {
     AppError::new(code, message)
 }
 
-fn cancelled_import() -> AppError {
+pub(crate) fn cancelled_import() -> AppError {
     err(
         "import_cancelled",
         "The import was cancelled before any revision was committed.",

@@ -39,6 +39,7 @@ async fn create_open_info_roundtrip_and_refuses_overwrite() {
     let info = workspace.info().await.unwrap();
     assert_eq!(info.schema_version, "1");
     assert_eq!(info.latest_revision_id, None);
+    assert_eq!(info.locale, "en");
     assert!(info.recovery_issues.is_empty());
     assert!(root.join("workspace.sqlite3").exists());
 

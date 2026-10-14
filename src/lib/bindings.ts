@@ -8,7 +8,45 @@ export const commands = {
 	workspaceCreate: (path: string | null) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_create", { path })),
 	workspaceOpen: (path: string) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_open", { path })),
 	workspaceInfo: () => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_info")),
-	importStart: (path: string) => typedError<JobInfo, AppError>(__TAURI_INVOKE("import_start", { path })),
+	importStart: (path: string, descriptor: {
+	descriptor_version: number,
+	format: string | null,
+	encoding: string | null,
+	delimiter: string | null,
+	header_row: number | null,
+	sheet: string | null,
+	key_columns: string[] | null,
+	key_separator: string | null,
+	date_column: string | null,
+	quantity_column: string | null,
+	unit_column: string | null,
+	date_formats: string[] | null,
+	decimal_separator: string | null,
+	thousands_separator: string | null,
+	aggregation: string | null,
+} | null) => typedError<JobInfo, AppError>(__TAURI_INVOKE("import_start", { path, descriptor })),
+	/**
+	 *  Detect the shape of a raw export and preview sampled parsed cells. The
+	 *  wizard runs inside an open workspace, but this read-only pass never opens
+	 *  the database.
+	 */
+	importPreview: (path: string, descriptor: {
+	descriptor_version: number,
+	format: string | null,
+	encoding: string | null,
+	delimiter: string | null,
+	header_row: number | null,
+	sheet: string | null,
+	key_columns: string[] | null,
+	key_separator: string | null,
+	date_column: string | null,
+	quantity_column: string | null,
+	unit_column: string | null,
+	date_formats: string[] | null,
+	decimal_separator: string | null,
+	thousands_separator: string | null,
+	aggregation: string | null,
+} | null) => typedError<ImportPreview, AppError>(__TAURI_INVOKE("import_preview", { path, descriptor })),
 	forecastStart: (revisionId: number) => typedError<JobInfo, AppError>(__TAURI_INVOKE("forecast_start", { revisionId })),
 	jobStatus: (jobId: string) => typedError<JobInfo, AppError>(__TAURI_INVOKE("job_status", { jobId })),
 	jobCancel: (jobId: string) => typedError<JobInfo, AppError>(__TAURI_INVOKE("job_cancel", { jobId })),
@@ -58,6 +96,19 @@ export type HistoryPoint = {
 	status: string,
 };
 
+/**  The result of a read-only preview pass over the head of a source file. */
+export type ImportPreview = {
+	detected: ParsingDescriptor,
+	headers: string[],
+	sample_rows: string[][],
+	parsed_rows: PreviewCell[],
+	findings: PreviewFinding[],
+	can_parse: boolean,
+	truncated: boolean,
+	/**  Sheet names for workbooks; empty for text exports. */
+	sheets: string[],
+};
+
 export type ImportResult = {
 	revision_id: number,
 	is_duplicate: boolean,
@@ -104,6 +155,29 @@ export type OverrideRevision = {
 	revision: number,
 };
 
+/**
+ *  A versioned description of how the bytes of one source file become
+ *  `canonical/1` rows. Fields are `Option` because detection fills them in
+ *  step by step on the way through the wizard.
+ */
+export type ParsingDescriptor = {
+	descriptor_version: number,
+	format: string | null,
+	encoding: string | null,
+	delimiter: string | null,
+	header_row: number | null,
+	sheet: string | null,
+	key_columns: string[] | null,
+	key_separator: string | null,
+	date_column: string | null,
+	quantity_column: string | null,
+	unit_column: string | null,
+	date_formats: string[] | null,
+	decimal_separator: string | null,
+	thousands_separator: string | null,
+	aggregation: string | null,
+};
+
 export type PlanningPoint = {
 	week_start: string,
 	horizon: number,
@@ -112,6 +186,28 @@ export type PlanningPoint = {
 	effective: number | null,
 	value_source: string,
 	override_revision: number,
+};
+
+/**
+ *  One sampled cell: a composed key, the Monday of its week, the parsed
+ *  quantity, and the observation status derived from that quantity.
+ */
+export type PreviewCell = {
+	series_key: string,
+	week_start: string,
+	quantity: number | null,
+	status: string,
+};
+
+/**
+ *  A validation finding. `severity` is `blocking` (commit must not proceed) or
+ *  `warning` (commit may proceed, the report lists it).
+ */
+export type PreviewFinding = {
+	severity: string,
+	code: string,
+	detail: string,
+	row_ref: string | null,
 };
 
 export type RunSummary = {
@@ -180,6 +276,11 @@ export type WorkspaceInfo = {
 	path: string,
 	schema_version: string,
 	latest_revision_id: number | null,
+	/**
+	 *  Workspace locale from `workspace_settings`; the guided import copy
+	 *  follows it (en, pl, es).
+	 */
+	locale: string,
 	recovery_issues: string[],
 };
 
