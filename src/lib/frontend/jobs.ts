@@ -77,8 +77,16 @@ export function sortRunsNewestFirst<T extends RunSummaryLike>(runs: T[]): T[] {
 	});
 }
 
-/** The newest persisted run that actually holds forecasts, for UI restore. */
-export function selectDisplayRun<T extends RunSummaryLike>(runs: T[]): T | null {
-	const sorted = sortRunsNewestFirst(runs);
+/** Explicit selection wins; automatic selection stays on the latest import. */
+export function selectDisplayRun<T extends RunSummaryLike>(
+	runs: T[],
+	revisionId?: number | null,
+	selectedRunId?: string | null
+): T | null {
+	const selected = runs.find((run) => run.id === selectedRunId);
+	if (selected) return selected;
+	const sorted = sortRunsNewestFirst(
+		revisionId === undefined ? runs : runs.filter((run) => run.revision_id === revisionId)
+	);
 	return sorted.find((run) => run.status === 'completed') ?? null;
 }

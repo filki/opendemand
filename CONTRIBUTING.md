@@ -1,6 +1,6 @@
 # Contributing to OpenDemand
 
-Thanks for your interest. OpenDemand is pre-release: Milestone 1 (canonical CSV → SQLite → Python Naive forecast → Rust persistence → Svelte chart) is in development, so expect the layout and tooling to change quickly.
+OpenDemand is pre-release. The import/forecast chain and Milestone 2 planner features are implemented in development; see `README.md` for current functionality and verification gaps.
 
 ## Before you start
 
@@ -10,22 +10,28 @@ Thanks for your interest. OpenDemand is pre-release: Milestone 1 (canonical CSV 
 ## Project rules every change must respect
 
 - **Preserve the approved stack** (accepted ADRs in `docs/architecture/adr/`): Tauri v2 + static SvelteKit frontend, Rust as the sole SQLite owner, the Python sidecar as a separate per-job process that never opens the database.
-- **Stay in Milestone 1.** MCP, XLSX export, seasonal models, flexible raw-file parsing, and advanced workspace management land only after the first end-to-end chain works.
+- **Stay within the current milestone.** The scope in `AGENTS.md` covers run-scoped overrides, baseline/effective comparison, and full-run CSV export. MCP, XLSX export, seasonal models, flexible raw-file parsing, and advanced workspace management remain deferred until separately approved.
 - **Schema freeze.** `docs/architecture/schema/001_init.sql` is frozen; its SHA-256 is recorded in `001_init.sha256`. Never edit it. Schema changes arrive as new numbered migrations with a verified backup.
 - **Change decisions with new ADRs.** Accepted ADRs are historical records; write a new ADR that supersedes the old one instead of editing it.
 - **No secrets or local absolute paths** in code, docs, or configuration.
 
 ## Development setup
 
-The build toolchain arrives with the Milestone 1 scaffold. Anticipated prerequisites: Rust stable, the Tauri v2 system dependencies for your platform, a current Node.js LTS, Python 3, and the SQLite CLI.
+Prerequisites: stable Rust, the Tauri v2 system dependencies for your platform, Node 22, and `uv`. Python 3.12 is managed by `uv`.
 
-Test and check commands are listed in `AGENTS.md` § Verification and become concrete once the package manifests exist.
+```bash
+uv sync
+npm ci
+npm run tauri dev
+```
+
+Run the checks in `AGENTS.md` before submitting a PR. Major dependency upgrades are reviewed and tested individually against the current application; passing checks on an older base are not sufficient.
 
 ## Pull request checklist
 
 The PR template mirrors this list:
 
-- The change advances Milestone 1 and leaves deferred features out.
+- The change stays within the current milestone scope in `AGENTS.md` and leaves deferred features out.
 - The approved stack is preserved.
 - Tests that exist pass locally.
 - Schema and ADR rules above are honored.
