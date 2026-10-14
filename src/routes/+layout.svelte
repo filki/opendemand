@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
 	import type { Snippet } from 'svelte';
-	import '$lib/frontend/styles.css';
+	import '#lib/frontend/styles.css';
 
 	let { children }: { children?: Snippet } = $props();
 

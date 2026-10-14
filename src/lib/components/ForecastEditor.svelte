@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
-	import type { OverrideEdit, OverrideRevision, SeriesDetail } from '$lib/bindings';
-	import { formatQuantity } from '$lib/frontend/format';
+	import type { OverrideEdit, OverrideRevision, SeriesDetail } from '#lib/bindings.ts';
+	import { formatQuantity } from '#lib/frontend/format.ts';
 	import {
 		authoritativeInput,
 		buildClearEdit,
@@ -16,8 +16,8 @@
 		rebaseDrafts,
 		setDraft,
 		syncDraftState
-	} from '$lib/frontend/planner';
-	import type { PlannerDraftState, PlanningPointLike, SaveFailure } from '$lib/frontend/planner';
+	} from '#lib/frontend/planner.ts';
+	import type { PlannerDraftState, PlanningPointLike, SaveFailure } from '#lib/frontend/planner.ts';
 
 	type NoticeTone = 'success' | 'info' | 'warn' | 'error';
 

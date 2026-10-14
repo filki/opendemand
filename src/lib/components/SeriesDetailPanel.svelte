@@ -1,8 +1,8 @@
 <script lang="ts">
-	import type { OverrideEdit, OverrideRevision, RunSummary, SeriesDetail, SeriesSummary } from '$lib/bindings';
-	import ForecastEditor from '$lib/components/ForecastEditor.svelte';
-	import SeriesChart from '$lib/components/SeriesChart.svelte';
-	import StatusChip from '$lib/components/StatusChip.svelte';
+	import type { OverrideEdit, OverrideRevision, RunSummary, SeriesDetail, SeriesSummary } from '#lib/bindings.ts';
+	import ForecastEditor from '#lib/components/ForecastEditor.svelte';
+	import SeriesChart from '#lib/components/SeriesChart.svelte';
+	import StatusChip from '#lib/components/StatusChip.svelte';
 	import {
 		formatScore,
 		formatTimestamp,
@@ -10,7 +10,7 @@
 		outcomeLabel,
 		qualificationLabel,
 		shortId
-	} from '$lib/frontend/format';
+	} from '#lib/frontend/format.ts';
 
 	let {
 		summary,

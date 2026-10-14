@@ -5,7 +5,7 @@
  * and detects whether the page runs inside the Tauri desktop shell.
  */
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { commands } from '$lib/bindings';
+import { commands } from '#lib/bindings.ts';
 import type {
 	AppError,
 	ExportResult,
@@ -16,7 +16,7 @@ import type {
 	SeriesDetail,
 	SeriesSummary,
 	WorkspaceInfo
-} from '$lib/bindings';
+} from '#lib/bindings.ts';
 
 export type IpcOutcome<T> = { status: 'ok'; data: T } | { status: 'error'; error: AppError };
 

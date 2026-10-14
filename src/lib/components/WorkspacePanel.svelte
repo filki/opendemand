@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { WorkspaceInfo } from '$lib/bindings';
-	import StatusChip from '$lib/components/StatusChip.svelte';
+	import type { WorkspaceInfo } from '#lib/bindings.ts';
+	import StatusChip from '#lib/components/StatusChip.svelte';
 
 	let {
 		workspace,
