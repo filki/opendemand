@@ -111,8 +111,10 @@ pub struct ModelOriginRow {
 
 /// One model's comparison row for a series in a run. `selection_score` is the
 /// comparable pooled score persisted by Rust (see ADR-0017); `wape`, `mae`, and
-/// `bias` are pooled diagnostics over all completed origins, computed from the
-/// retained held-out backtest forecasts. Positive bias means overforecasting.
+/// `bias` are pooled diagnostics over the model's own completed origins,
+/// computed from the retained held-out backtest forecasts. Those windows can
+/// differ between models, so only `selection_score` is comparable across
+/// models. Positive bias means overforecasting.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct SeriesModelComparison {
     pub model_id: String,

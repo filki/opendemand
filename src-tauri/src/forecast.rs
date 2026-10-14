@@ -245,7 +245,7 @@ fn outcome_for(
     let Some(used) = used else {
         return (
             "model_failure",
-            Some("Every production-eligible candidate failed to forecast.".into()),
+            Some("No fallback candidate produced a forecast.".into()),
         );
     };
     match champion {
@@ -256,15 +256,20 @@ fn outcome_for(
                 "Champion {champion} production failed; using {used}."
             )),
         ),
-        None if used == "naive" => (
-            "fallback_naive",
-            Some("Fewer than two completed backtest origins; using the Naive baseline.".into()),
-        ),
+        // Without a champion the fallback chain can only have used Naive.
         None => (
-            "ok",
-            Some(format!(
-                "No comparable backtest evidence across models; using {used}."
-            )),
+            "fallback_naive",
+            Some(
+                if models
+                    .iter()
+                    .any(|model| model.evidence.completed.len() >= 2)
+                {
+                    "No common backtest origins across models; using the Naive baseline."
+                } else {
+                    "Fewer than two completed backtest origins; using the Naive baseline."
+                }
+                .into(),
+            ),
         ),
     }
 }
@@ -566,6 +571,23 @@ mod tests {
     }
 
     fn fake_model(model_id: &'static str, production_eligible: bool) -> SeriesModel<'static> {
+        fake_model_with_origins(model_id, production_eligible, 0)
+    }
+
+    fn fake_model_with_origins(
+        model_id: &'static str,
+        production_eligible: bool,
+        origins: usize,
+    ) -> SeriesModel<'static> {
+        let start = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
+        let completed = (0..origins)
+            .map(|index| {
+                (
+                    start + Duration::weeks(index as i64),
+                    selection::OriginSums::default(),
+                )
+            })
+            .collect();
         SeriesModel {
             model_id,
             production_eligible,
@@ -575,7 +597,7 @@ mod tests {
                 model_id: model_id.into(),
                 production_eligible,
                 production_completed: false,
-                completed: vec![],
+                completed,
             },
         }
     }
@@ -585,7 +607,7 @@ mod tests {
         let models = vec![fake_model("naive", true)];
         let (outcome, reason) = outcome_for(&series(12), &models, Some(&"naive".to_string()), None);
         assert_eq!(outcome, "model_failure");
-        assert!(reason.unwrap().contains("failed"));
+        assert!(reason.unwrap().contains("No fallback candidate"));
     }
 
     #[test]
@@ -620,14 +642,16 @@ mod tests {
     }
 
     #[test]
-    fn outcome_without_a_champion_but_a_ranked_capable_model_used_is_honest() {
+    fn outcome_reports_no_common_origins_when_backtests_are_disjoint() {
         let models = vec![
-            fake_model("seasonal_naive_52", true),
-            fake_model("auto_ets_52", true),
+            fake_model_with_origins("naive", true, 2),
+            fake_model_with_origins("seasonal_naive_52", true, 2),
         ];
-        let used = "seasonal_naive_52".to_string();
+        let used = "naive".to_string();
         let (outcome, reason) = outcome_for(&series(128), &models, None, Some(&used));
-        assert_eq!(outcome, "ok");
-        assert!(reason.unwrap().contains("No comparable backtest evidence"));
+        assert_eq!(outcome, "fallback_naive");
+        assert!(reason
+            .unwrap()
+            .contains("No common backtest origins across models"));
     }
 }

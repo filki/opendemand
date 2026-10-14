@@ -155,21 +155,11 @@ pub fn rank(models: &[ModelEvidence]) -> Vec<ModelScore> {
     scores
 }
 
-/// Production attempt order: ranked candidates best first, then any other
-/// champion-eligible model by complexity, then Naive when it is production
-/// eligible. This is the fallback chain from ADR-0006.
+/// Production attempt order: ranked candidates best first, then Naive when it
+/// is production eligible. A model that was never ranked is never used for
+/// production because it has no comparable evidence (ADR-0017).
 fn production_order(models: &[ModelEvidence], ranked: &[ModelScore]) -> Vec<String> {
     let mut order: Vec<String> = ranked.iter().map(|score| score.model_id.clone()).collect();
-    let mut remaining: Vec<&ModelEvidence> = models
-        .iter()
-        .filter(|model| {
-            model.production_eligible
-                && model.completed.len() >= 2
-                && !order.contains(&model.model_id)
-        })
-        .collect();
-    remaining.sort_by_key(|model| complexity(&model.model_id));
-    order.extend(remaining.into_iter().map(|model| model.model_id.clone()));
     let naive_eligible = models
         .iter()
         .any(|model| model.model_id == "naive" && model.production_eligible);
@@ -366,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn disjoint_completed_origins_have_no_defensible_ranking_and_keep_fallbacks() {
+    fn disjoint_completed_origins_skip_unranked_models_in_fallback() {
         let evidence = [
             model(
                 "naive",
@@ -386,9 +376,37 @@ mod tests {
             ),
         ];
         let selection = select(&evidence);
+        // No common origin date means no ranking and no champion. SeasonalNaive
+        // is champion-eligible but unranked, so it must not serve production;
+        // Naive is the only fallback candidate and its production failed.
         assert!(selection.champion.is_none());
         assert!(selection.ranked.is_empty());
-        assert_eq!(selection.used.as_deref(), Some("seasonal_naive_52"));
+        assert!(selection.used.is_none());
+    }
+
+    #[test]
+    fn disjoint_completed_origins_still_fall_back_to_naive() {
+        let evidence = [
+            model(
+                "naive",
+                vec![
+                    ("2026-01-05", sums(12.0, 120.0, 0.0)),
+                    ("2026-01-12", sums(24.0, 240.0, 0.0)),
+                ],
+                true,
+            ),
+            model(
+                "seasonal_naive_52",
+                vec![
+                    ("2026-01-19", sums(6.0, 120.0, 0.0)),
+                    ("2026-01-26", sums(12.0, 240.0, 0.0)),
+                ],
+                true,
+            ),
+        ];
+        let selection = select(&evidence);
+        assert!(selection.champion.is_none());
+        assert_eq!(selection.used.as_deref(), Some("naive"));
     }
 
     #[test]

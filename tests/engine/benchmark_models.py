@@ -6,14 +6,18 @@ Usage::
 
 Defaults to 100 series; pass ``100 1000`` for the documented run. The script
 mimics the Rust planner (three models, ADR-0006 floors, 12-week horizon, at most
-four origins) and reports elapsed wall clock, peak RSS, completed and failed
-model tasks, production coverage, and output row counts. The module name does
-not match ``test*.py``, so unittest discovery ignores it.
+four origins) and reports elapsed wall clock, the case process peak RSS,
+completed and failed model tasks, production coverage, and output row counts.
+Each series count runs in a fresh subprocess so peak RSS is not a cumulative
+high-water mark across cases. The module name does not match ``test*.py``, so
+unittest discovery ignores it.
 """
 
 from __future__ import annotations
 
+import json
 import math
+import subprocess
 import sys
 import tempfile
 import time
@@ -79,7 +83,6 @@ def run_case(series_count: int) -> dict:
         observations += h.weekly_rows(pid, lid, start, values)
         tasks += plan(pid, lid, start, WEEKS)
 
-    peak_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss if resource else 0
     with tempfile.TemporaryDirectory() as temporary:
         job_dir = Path(temporary)
         h.write_inputs(job_dir, observations, tasks)
@@ -105,9 +108,11 @@ def run_case(series_count: int) -> dict:
         if row["status"] != "completed":
             model_id = kinds[row["task_id"]][1]
             failed_by_model[model_id] = failed_by_model.get(model_id, 0) + 1
-    # ru_maxrss is bytes on macOS and kibibytes on Linux; normalise to MiB.
+    # ru_maxrss is a lifetime high-water mark; each case runs in a fresh
+    # subprocess, so this value covers the whole case process (interpreter,
+    # imports, and the job). Bytes on macOS, kibibytes on Linux.
     divisor = 1024 * 1024 if sys.platform == "darwin" else 1024
-    peak_mb = round((peak_after - peak_before) / divisor, 1) if resource else None
+    peak_mb = round(peak_after / divisor, 1) if resource else None
 
     return {
         "series": series_count,
@@ -127,9 +132,19 @@ def run_case(series_count: int) -> dict:
 
 
 def main(argv: list[str]) -> int:
+    if argv and argv[0] == "--case":
+        # Internal mode: run one case in this process and emit a JSON report.
+        print(json.dumps(run_case(int(argv[1]))))
+        return 0
     counts = [int(value) for value in argv] or [100]
     for count in counts:
-        report = run_case(count)
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve()), "--case", str(count)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        report = json.loads(result.stdout.strip().splitlines()[-1])
         print(
             "series={series} tasks={tasks} completed={completed} failed={failed} "
             "coverage={coverage:.3f} points={point_rows} metrics={metrics_rows} "

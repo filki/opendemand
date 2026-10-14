@@ -62,15 +62,22 @@
 
 	function note(model: SeriesModelComparison): string {
 		if (model.production_status === 'failed' && model.failure_code) {
-			return `Production failed: ${model.failure_code}`;
+			const detail = model.failure_detail ? ` — ${model.failure_detail}` : '';
+			return `Production failed: ${model.failure_code}${detail}`;
 		}
 		if (model.eligibility_status === 'not_eligible') return 'Below the model training floor';
 		if (model.eligibility_status === 'production_only') {
 			return 'Needs at least two completed backtest origins';
 		}
 		if (model.is_champion) return 'Best comparable backtest accuracy';
-		if (model.selected) return 'Used after a higher-ranked model failed';
-		return 'Higher comparable score than the champion';
+		if (model.selection_rank === null) {
+			return model.selected
+				? 'Used for production; no comparable ranking was available'
+				: 'No common backtest origins with other candidates';
+		}
+		return model.selected
+			? 'Used for production after a higher-ranked model failed'
+			: 'Higher comparable score than the champion';
 	}
 
 	const hasOrigins = $derived((models ?? []).some((model) => model.origins.length > 0));
@@ -90,7 +97,8 @@
 			<table>
 				<caption class="muted">
 					Per-series comparison across candidate models for this run. Scores compare models only on
-					backtest origins all candidates completed; lower is better.
+					backtest origins all candidates completed; lower is better. WAPE, MAE, and bias pool each
+					model's own completed origins and are diagnostics, not cross-model comparisons.
 				</caption>
 				<thead>
 					<tr>
@@ -98,16 +106,16 @@
 						<th scope="col">State</th>
 						<th scope="col">Origins</th>
 						<th scope="col">Score</th>
-						<th scope="col">WAPE</th>
-						<th scope="col">MAE</th>
-						<th scope="col">Bias</th>
+						<th scope="col" title="Pooled over this model's own completed origins">WAPE (own origins)</th>
+						<th scope="col" title="Pooled over this model's own completed origins">MAE (own origins)</th>
+						<th scope="col" title="Pooled over this model's own completed origins">Bias (own origins)</th>
 						<th scope="col">Role</th>
 					</tr>
 				</thead>
 				<tbody>
 					{#each models as model (model.model_id)}
 						<tr class:selected-row={model.selected}>
-							<th scope="row" class="mono">{model.model_id}</th>
+							<th scope="row" class="mono" id={`model-row-${model.model_id}`}>{model.model_id}</th>
 							<td><StatusChip label={stateLabel(model)} tone={stateTone(model)} /></td>
 							<td class="num">{model.origins_completed}/{model.origins_planned}</td>
 							<td class="num">{model.selection_score === null ? '—' : `${formatScore(model.selection_score)} ${metricLabel(model)}`}</td>
@@ -119,7 +127,7 @@
 							<td>{roleLabel(model)}</td>
 						</tr>
 						<tr class="note-row" class:selected-row={model.selected}>
-							<td colspan="8" class="note">{note(model)}</td>
+							<td colspan="8" class="note" headers={`model-row-${model.model_id}`}>{note(model)}</td>
 						</tr>
 					{/each}
 				</tbody>
