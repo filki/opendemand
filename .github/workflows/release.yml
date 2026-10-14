@@ -36,11 +36,11 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12"
           enable-cache: true
@@ -65,7 +65,7 @@ jobs:
           OPENDEMAND_ENGINE: ${{ github.workspace }}/packaging/sidecar-dist/opendemand-engine/opendemand-engine${{ runner.os == 'Windows' && '.exe' || '' }}
           OPENDEMAND_JOB_TIMEOUT_SECONDS: "600"
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --test milestone -- --nocapture
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
