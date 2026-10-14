@@ -2,14 +2,18 @@
 
 The Rust `tauri-specta` command collection generates `src/lib/bindings.ts`.
 Generated bindings, not hand-maintained frontend interfaces, are the source of truth.
-The UI never opens SQLite or runs the Python engine directly. This document covers the command surface implemented through Milestone 2.
+The UI never opens SQLite or runs the Python engine directly. This document covers the implemented command surface.
 
 ## Commands
 
 - `workspace_create(path: string | null)`: create an empty workspace. A null path uses the application data directory.
 - `workspace_open(path: string)`: open an existing workspace and reconcile retained files.
-- `workspace_info()`: return the active workspace, latest revision, and recovery findings.
-- `import_start(path: string)`: queue a canonical CSV import and return its initial `JobInfo` including the job id.
+- `workspace_info()`: return the active workspace, latest revision, locale, and recovery findings.
+- `import_start(path: string, descriptor: ParsingDescriptor | null)`: queue an import and return its initial `JobInfo` including the job id. A null descriptor imports a canonical CSV; a descriptor selects the raw-source preprocessing path.
+- `import_preview(path: string, descriptor: ParsingDescriptor | null)`: run the read-only preview pass and return `ImportPreview`. A null descriptor runs detection only; nothing is written and no revision is created.
+- `import_configs_list()`: return the saved import configurations of the active profile, ordered by name.
+- `import_config_save(name: string, descriptor: ParsingDescriptor)`: save a named configuration; an existing name is updated in place.
+- `import_config_delete(id: number)`: delete a saved configuration; revisions keep their frozen descriptor.
 - `forecast_start(revision_id: number)`: queue a Naive run pinned to an immutable revision and return its initial `JobInfo`.
 - `job_status(job_id: string)`: return progress, terminal error, and import/forecast result.
 - `job_cancel(job_id: string)`: request cancellation; never cancel a committed transaction retroactively.
@@ -26,7 +30,7 @@ Jobs use string ids to correlate Tauri, SQLite, and sidecar messages.
 
 ## Results
 
-- `WorkspaceInfo`: `path`, `schema_version`, `latest_revision_id`, `recovery_issues`.
+- `WorkspaceInfo`: `path`, `schema_version`, `latest_revision_id`, `locale` (`en`, `pl`, `es`), `recovery_issues`.
 - `ImportResult`: `revision_id`, `is_duplicate`, `series_count`, `observation_count`, `issue_count`, `last_week`.
 - `SeriesSummary`: `product_id`, `location_id`, `location_code`, `series_key`, `h_length`, `qualification_status`.
 - `HistoryPoint`: `week_start`, nullable `quantity`, `status`.
@@ -35,6 +39,10 @@ Jobs use string ids to correlate Tauri, SQLite, and sidecar messages.
 - `PlanningPoint`: `week_start`, 1-based `horizon`, nullable `baseline`, `override_value`, and `effective`, `value_source` (`model | override | missing`), and `override_revision` (0 only when no revision exists).
 - `RunSummary`: `id`, `revision_id`, `status`, `created_at`, `horizon_start_week`, `engine_version`.
 - `OverrideRevision`: the newly appended `revision` number.
+- `ParsingDescriptor`: the versioned description of how one source file becomes observations. All fields are nullable for partial detection results: `descriptor_version`, `format` (`csv`/`xlsx`), `encoding`, `delimiter`, `header_row`, `sheet`, `key_columns`, `key_separator`, `date_column`, `date_formats`, `quantity_column`, `unit_column` (reserved, unused), `decimal_separator`, `thousands_separator`, `aggregation`.
+- `ImportPreview`: `detected` (descriptor with detection results merged in), `headers`, `sample_rows`, `parsed_rows` (composed `series_key`, Monday `week_start`, parsed `quantity`, `status`), `findings`, `can_parse`, `truncated`, and `sheets` (workbook sheet names, empty for text exports).
+- `PreviewFinding`: `severity` (`blocking`/`warning`), stable `code`, `detail`, optional `row_ref` (physical line or sheet row).
+- `ImportConfig`: `id`, `name`, `descriptor`, `updated_at`.
 - `ExportResult`: `export_id` (string form of the database identifier), selected `path`, and `row_count`.
 - `ForecastResult`: `run_id`, `revision_id`, `status`, `series_count`, `forecast_count`, `coverage`.
 - `JobInfo`: `id`, `kind`, `status`, `phase`, `progress` (fraction 0..1), nullable `error`, `import_result`, and `forecast_result`.
@@ -74,6 +82,19 @@ Rust writes and syncs temporary files before no-overwrite publication. A success
 
 A hard kill between publication and database commit can leave a complete orphan CSV/archive or hidden temporary file without an `export_record`. Startup reconciliation does not reclaim these export artifacts yet (risk R-22). The native save-dialog flow was manually verified on macOS on 2026-10-14: the dialog opens with the suggested file name, honors the chosen folder, cancel leaves no artifacts, and the written file matches the format rules above. Opening the output in Excel remains unverified; browser checks used a simulated dialog with real Rust workspace methods.
 
+## Raw-source preprocessing
+
+The guided import converts a raw planner export into the `canonical/1` observation shape without changing the parser, the engine, or the sidecar (ADR-0019). Supported inputs are CSV and TXT (UTF-8 with or without BOM, UTF-16 with BOM, Windows-1250/1252, ISO-8859-2) and `.xlsx` workbooks.
+
+Detection proposes an encoding, a delimiter, and the header row (the first physical line with at least two non-empty fields, within the first 20 rows); a workbook also reports its sheet names. Detection is never silent: the preview decodes a head window (64 KiB for text exports) and the wizard shows the result. Native workbook date and number cells keep their type and never pass through separator or format guessing.
+
+Interpretation rules: the composed key joins the bound key columns in header order with the key separator (a key part containing the separator is excluded); dates must match one of the accepted formats (or be native workbook dates); document rows are summed into Monday–Sunday weeks in the workspace timezone; the weekly net is classified `zero`/`return`/`known` by sign. Weeks without rows stay `missing`; nothing is zero-filled.
+
+Blocking codes (no revision is created; the job fails): `unsupported_format`, `invalid_encoding`, `empty_file`, `header_row_not_found`, `sheet_not_found`, `unreadable_xlsx`, `missing_key_column`, `missing_date_column`, `missing_quantity_column`, `invalid_config`, `empty_import`.
+Warning and info codes (rows are excluded or flagged; stored as `import_issue` rows capped at 50 per code plus a summary): `parse_error`, `empty_key_row`, `key_separator_in_part`, `invalid_date_row`, `invalid_number_row`, `duplicate_rows_summed` (info), `encoding_assumed` (preview only).
+
+Idempotency: preprocessed revisions carry `contract_version = 'preprocess/1'` and the descriptor digest participates in the mapping fingerprint (ADR-0020). The same bytes with the same descriptor resolve to the existing revision; any changed parsing field creates a new immutable revision. The untouched source bytes are retained as `sources/<revision_id>/source.<csv|txt|xlsx>`; the `descriptor_json` snapshot on the revision stays frozen even if the saved configuration is edited or deleted (ADR-0021).
+
 ## Canonical CSV
 
 UTF-8, comma-separated, with exactly the header `series_key,week_start,quantity`.
@@ -86,6 +107,8 @@ The default location is technical, not a guess about planner source data.
 The run cutoff is the maximum imported week, not the host's current date.
 
 Retained source hashes use original file bytes. Mapping fingerprint ordering and
-encoding are deterministic, and include auto-created exact mappings.
-The committed idempotency key is profile, content hash, effective mapping fingerprint,
-and `canonical/1`. See ADR-0013 and ADR-0015.
+encoding are deterministic, and include auto-created exact mappings and, for
+preprocessed imports, the descriptor digest. The committed idempotency key is
+profile, content hash, effective mapping fingerprint, and the contract version
+(`canonical/1` for direct canonical imports, `preprocess/1` for the
+preprocessing layer). See ADR-0013, ADR-0015, ADR-0019, and ADR-0020.

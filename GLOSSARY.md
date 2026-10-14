@@ -4,11 +4,11 @@ Vocabulary for issues, tests, ADRs, docs, and UI copy. Definitions here are conc
 
 - **Backtest origin** — one rolling-origin training cutoff per model inside a forecast run; a run plans up to four (`origin_index` 1–4), each with its own origin date and train size.
 - **Baseline forecast** — immutable model output for one product/location/week cell. Never edited; manual edits are overrides.
-- **canonical/1** — the temporary Milestone 1 CSV input contract: `series_key`, `week_start`, `quantity`. A later preprocessing layer may target it; raw planner-file parsing is out of scope for now.
+- **canonical/1** — the frozen CSV input contract: `series_key`, `week_start`, `quantity`. Raw planner exports are converted into it by the preprocessing layer (ADR-0019); the contract itself does not change.
 - **Champion** — the statistically preferred model for one series in one run after backtesting; Rust selects it per series, and the rules live in ADR-0017 (which supersedes the champion rule of ADR-0006).
 - **Champion eligibility** — a model needs at least two completed backtest origins for one series before it can be ranked.
 - **Comparable evaluation set** — the origin dates completed by every champion-eligible candidate for one series; the selection score pools errors only over these origins, never over unequal evidence.
-- **Content hash** — SHA-256 of the original retained CSV bytes, qualified by the input contract version; part of the import idempotency key.
+- **Content hash** — SHA-256 of the original retained source bytes (CSV, TXT, or XLSX), qualified by the input contract version; part of the import idempotency key.
 - **Coverage** — share of series in a run whose outcome is `ok` or `fallback_naive`.
 - **Effective forecast** — derived at read time as the latest override ?? baseline. Never stored.
 - **Eligibility status** — per series × model × run: `not_eligible` (below the model floor), `production_only` (too few completed origins), or `champion_eligible`.
@@ -18,9 +18,11 @@ Vocabulary for issues, tests, ADRs, docs, and UI copy. Definitions here are conc
 - **H (usable history)** — number of consecutive weeks with numeric values ending at the last completed week; `missing` and `partial` weeks break the run (ADR-0005).
 - **Import revision** — immutable full-snapshot import; never mutated or auto-deleted.
 - **MAE** — mean absolute error: `sum(|actual − forecast|) / 12` over one backtest origin's 12-week horizon.
-- **Mapping fingerprint** — identity of the mapping plan an import used; part of the idempotency key together with the content hash.
+- **Import configuration** — a named, profile-scoped parsing descriptor the guided import can save and reuse; editing or deleting one never changes a committed revision, which keeps its own frozen snapshot (ADR-0021).
+- **Mapping fingerprint** — identity of the mapping plan an import used; part of the idempotency key together with the content hash. For preprocessed imports the plan includes the parsing descriptor digest (ADR-0020).
 - **model_failure** — a run outcome: no fallback candidate produced a forecast; the run records the failure and invents no values.
 - **Observation status** — one of `known`, `zero`, `missing`, `return`, `correction`, `stockout`, `partial`; `missing` and `partial` carry NULL quantity and break `H`.
+- **Parsing descriptor** — the versioned, deterministically serialized description of how one source file becomes observations (format, encoding, delimiter or sheet, header row, column bindings, date formats, separators, aggregation); it joins the mapping fingerprint and is frozen per preprocessed revision (ADR-0019, ADR-0020).
 - **Override** — append-only manual edit to a forecast cell; revisions are sequential, NULL clears, the highest revision wins, and overrides are scoped to one run.
 - **Run outcome** — one of `ok`, `fallback_naive`, `insufficient_history`, `model_failure`, `invalid_data`.
 - **Selection score** — pooled WAPE over the comparable evaluation set, or pooled MAE when that set's actual total is zero; lower is better (ADR-0017).

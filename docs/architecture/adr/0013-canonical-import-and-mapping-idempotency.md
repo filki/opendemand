@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-10-13
+**Extended by:** [ADR-0019](0019-raw-source-preprocessing-layer.md) — a raw-source preprocessing layer converts planner exports into `canonical/1` — and [ADR-0020](0020-parsing-descriptor-in-the-mapping-fingerprint.md) — the effective mapping plan now includes a versioned parsing descriptor.
 
 ## Context
 
