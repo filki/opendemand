@@ -72,7 +72,7 @@ The selected path must be absolute with a case-insensitive `.csv` extension, hav
 
 Rust writes and syncs temporary files before no-overwrite publication. A successful export includes the selected CSV, a retained workspace copy at `exports/<uuid>.csv`, an `export_record`, and a completed export job. The command returns only after publication and the database transaction succeed; CSV export cancellation is not implemented.
 
-A hard kill between publication and database commit can leave a complete orphan CSV/archive or hidden temporary file without an `export_record`. Startup reconciliation does not reclaim these export artifacts yet (risk R-22). Native save-dialog interaction and opening the output in Excel remain unverified; browser checks used a simulated dialog with real Rust workspace methods.
+A hard kill between publication and database commit can leave a complete orphan CSV/archive or hidden temporary file without an `export_record`. Startup reconciliation does not reclaim these export artifacts yet (risk R-22). The native save-dialog flow was manually verified on macOS on 2026-10-14: the dialog opens with the suggested file name, honors the chosen folder, cancel leaves no artifacts, and the written file matches the format rules above. Opening the output in Excel remains unverified; browser checks used a simulated dialog with real Rust workspace methods.
 
 ## Canonical CSV
 
