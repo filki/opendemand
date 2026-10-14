@@ -575,6 +575,20 @@ pub fn validate_outputs(
     Ok(())
 }
 
+/// Ask a running sidecar to stop: create the cancel flag, give it a bounded
+/// grace period to shut down its worker pool, then kill it if it does not exit.
+/// Used for both user cancellation and the job timeout.
+async fn stop_child(directory: &Path, child: &mut tokio::process::Child) {
+    let _ = std::fs::File::create(directory.join(CANCEL_FILE));
+    if tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .is_err()
+    {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
+}
+
 async fn run_process(
     directory: &Path,
     tasks: &[Task],
@@ -664,17 +678,12 @@ async fn run_process(
     loop {
         tokio::select! {
             _ = tokio::time::sleep_until(deadline) => {
-                child.kill().await?;
-                child.wait().await?;
+                stop_child(directory, &mut child).await;
                 return Err(AppError::new("timeout", "Forecast engine exceeded its time limit."));
             }
             _ = heartbeat.tick() => {
                 if cancel.load(Ordering::SeqCst) {
-                    let _ = std::fs::File::create(directory.join(CANCEL_FILE));
-                    if tokio::time::timeout(Duration::from_secs(5), child.wait()).await.is_err() {
-                        child.kill().await?;
-                        child.wait().await?;
-                    }
+                    stop_child(directory, &mut child).await;
                     return Err(AppError::new("cancelled", "Forecast was cancelled before persistence."));
                 }
             }
@@ -739,4 +748,40 @@ pub async fn execute(
         }
     }
     unreachable!("bounded retry always returns")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A job timeout must cancel the sidecar cooperatively first, then kill and
+    /// reap it, so no worker process is left behind. `sleep` ignores the cancel
+    /// flag, so this exercises the kill fallback after the grace period.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_child_sets_the_cancel_flag_and_reaps_a_stubborn_process() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        stop_child(directory.path(), &mut child).await;
+        assert!(directory.path().join(CANCEL_FILE).exists());
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "the child should be reaped after the grace period"
+        );
+    }
+
+    /// A sidecar that exits during the grace period is reaped without a kill.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_child_reaps_a_process_that_exits_during_the_grace_period() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut child = Command::new("true").kill_on_drop(true).spawn().unwrap();
+        stop_child(directory.path(), &mut child).await;
+        assert!(directory.path().join(CANCEL_FILE).exists());
+        assert!(child.try_wait().unwrap().is_some());
+    }
 }

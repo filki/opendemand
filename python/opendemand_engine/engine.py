@@ -17,7 +17,10 @@ Design constraints honoured here:
 
 from __future__ import annotations
 
+import multiprocessing
+import os
 import threading
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from . import (
@@ -32,12 +35,10 @@ from . import (
 from .errors import (
     CONTRACT_VIOLATION,
     ENGINE_START_FAILED,
-    FAIL_INTERNAL_ERROR,
     INTERNAL_ERROR,
     PROTOCOL_MISMATCH,
     EngineError,
     JobCancelled,
-    TaskFailure,
 )
 from .protocol import EnvelopeWriter, read_request
 
@@ -45,7 +46,36 @@ EXIT_OK = 0
 EXIT_JOB_ERROR = 1
 EXIT_NO_REQUEST = 2
 
+# Models whose fit and predict are far more expensive than the rest; used only
+# to decide whether a phase group is worth spawning worker processes for.
+EXPENSIVE_MODELS = frozenset({"auto_ets_52"})
+# A phase group is pooled only when it holds at least this many expensive tasks:
+# below it, the process start-up cost outweighs the parallel speed-up.
+PARALLEL_MIN_EXPENSIVE_TASKS = 24
+# Hard bound on worker processes. Each worker re-imports StatsForecast (~200 MB
+# RSS) and gets its own observation index, so the bound keeps a 4-core / 8 GB
+# machine within memory while still saturating its cores.
+MAX_WORKERS = 4
+
 EXPECTED_INPUT_FILES = {"observations": OBSERVATIONS_FILE, "tasks": TASKS_FILE}
+
+
+def worker_count() -> int:
+    """Return the bounded sidecar worker count for this job.
+
+    ``OPENDEMAND_ENGINE_WORKERS`` overrides the default: a positive integer sets
+    the count, any other value disables pooling (returns 1). The default is
+    ``min(MAX_WORKERS, cpu_count)`` so the pool is bounded on wide machines and
+    single-process on machines without spare cores.
+    """
+    raw = os.environ.get("OPENDEMAND_ENGINE_WORKERS")
+    if raw is not None:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        return value if value > 0 else 1
+    return max(1, min(MAX_WORKERS, os.cpu_count() or 1))
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +132,7 @@ def run_job(
     written: list[Path] = []
     try:
         from . import arrowio  # PyArrow only after hello is on the wire
-        from .tasks import ObservationIndex, parse_tasks
+        from .tasks import parse_tasks
 
         _raise_on_interrupt(job_dir)
         tasks_table = arrowio.read_input_table(
@@ -117,10 +147,9 @@ def run_job(
         observations_table = arrowio.read_input_table(
             job_dir, arrowio.OBSERVATIONS_FILE, arrowio.OBSERVATIONS_SCHEMA, "observations"
         )
-        index = ObservationIndex.from_table(observations_table)
         _raise_on_interrupt(job_dir)
 
-        outcomes = _execute_all(task_rows, index, job_dir, tracker, stderr)
+        outcomes = _execute_all(task_rows, observations_table, job_dir, tracker, stderr)
         tracker.update("write_output", total, total)
         _log(stderr, f"phase write_output completed={total}")
 
@@ -155,8 +184,14 @@ def run_job(
 # ---------------------------------------------------------------------------
 
 
-def _execute_all(task_rows, index, job_dir, tracker, stderr):
-    from .tasks import execute_task, failed_outcome
+def _execute_all(task_rows, observations_table, job_dir, tracker, stderr):
+    """Run every task, sequentially or across a bounded worker pool.
+
+    Results are assigned by task position, so the output is identical whichever
+    path runs and whatever order the workers finish in. Cancellation is checked
+    before every dispatch and every result, exactly as in the sequential path.
+    """
+    from .tasks import ObservationIndex, init_worker, run_task, run_task_in_worker
 
     total = len(task_rows)
     ordered = list(enumerate(task_rows))
@@ -164,26 +199,55 @@ def _execute_all(task_rows, index, job_dir, tracker, stderr):
         ("backtest", [(position, task) for position, task in ordered if task.kind == "backtest"]),
         ("production", [(position, task) for position, task in ordered if task.kind != "backtest"]),
     )
-    outcomes: list = [None] * total
+    settled = [None] * total
     done = 0
-    for phase, group in groups:
-        if not group:
-            continue
-        _log(stderr, f"phase {phase} tasks={len(group)}")
-        tracker.update(phase, done, total)
-        for position, task in group:
-            _raise_on_interrupt(job_dir)
-            try:
-                outcome = execute_task(task, index)
-            except TaskFailure as failure:
-                outcome = failed_outcome(task, failure.code, failure.detail)
-            except Exception:
-                outcome = failed_outcome(task, FAIL_INTERNAL_ERROR, "unexpected task failure")
-            outcomes[position] = outcome
-            done += 1
+
+    workers = worker_count()
+    expensive = sum(1 for task in task_rows if task.model_id in EXPENSIVE_MODELS)
+    pooled = workers > 1 and expensive >= PARALLEL_MIN_EXPENSIVE_TASKS
+    # Pooled workers build their own index from observations.arrow; only the
+    # sequential path needs one in this process.
+    index = None if pooled else ObservationIndex.from_table(observations_table)
+    if pooled:
+        _log(stderr, f"executing with {workers} worker processes")
+
+    pool = None
+    try:
+        if pooled:
+            pool = ProcessPoolExecutor(
+                max_workers=workers,
+                mp_context=multiprocessing.get_context("spawn"),
+                initializer=init_worker,
+                initargs=(str(job_dir),),
+            )
+        for phase, group in groups:
+            if not group:
+                continue
+            _log(stderr, f"phase {phase} tasks={len(group)}")
             tracker.update(phase, done, total)
-            _raise_on_interrupt(job_dir)
-    return [outcome for outcome in outcomes]
+            if pool is None:
+                for position, task in group:
+                    _raise_on_interrupt(job_dir)
+                    settled[position] = run_task(task, index)
+                    done += 1
+                    tracker.update(phase, done, total)
+                    _raise_on_interrupt(job_dir)
+                continue
+            futures = [pool.submit(run_task_in_worker, task) for _, task in group]
+            try:
+                for (position, _task), future in zip(group, futures):
+                    _raise_on_interrupt(job_dir)
+                    settled[position] = future.result()
+                    done += 1
+                    tracker.update(phase, done, total)
+                    _raise_on_interrupt(job_dir)
+            finally:
+                for future in futures:
+                    future.cancel()
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=True, cancel_futures=True)
+    return settled
 
 
 def _collect_rows(outcomes) -> dict[str, list[dict]]:
