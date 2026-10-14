@@ -38,6 +38,7 @@
 		selectDisplayRun,
 		sortRunsNewestFirst
 	} from '$lib/frontend/jobs';
+	import { isNoWorkspaceError } from '$lib/frontend/workspace';
 
 	const PAGE_SIZE = 50;
 	const desktop = isTauriRuntime();
@@ -478,7 +479,7 @@
 
 				{#if workspaceQuery.isPending}
 					<p class="muted" role="status">Opening workspace…</p>
-				{:else if workspaceQuery.isError}
+				{:else if workspaceQuery.isError && !isNoWorkspaceError(workspaceQuery.error)}
 					<div class="banner banner-error" role="alert">
 						<p>Could not read the workspace: {workspaceQuery.error.message}</p>
 						<button class="btn btn-secondary" onclick={() => void workspaceQuery.refetch()}>
