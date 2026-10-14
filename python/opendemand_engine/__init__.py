@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.0.4"
+__version__ = "0.4.1"
 
 PROTOCOL_ID = "opendemand.sidecar/1"
 ARROW_CONTRACT_ID = "opendemand.arrow/1"
