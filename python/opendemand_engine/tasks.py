@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 from dataclasses import dataclass
+from pathlib import Path
 
 import pyarrow as pa
 
@@ -19,6 +20,7 @@ from . import SUPPORTED_MODELS
 from .errors import (
     CONTRACT_VIOLATION,
     FAIL_INSUFFICIENT_HISTORY,
+    FAIL_INTERNAL_ERROR,
     FAIL_INVALID_GEOMETRY,
     FAIL_MISSING_BACKTEST_ACTUALS,
     FAIL_MISSING_TRAINING_DATA,
@@ -37,6 +39,18 @@ KIND_PRODUCTION = "production"
 KIND_BACKTEST = "backtest"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
+
+# Input tables are read in bounded row chunks so that the whole table is never
+# materialised as Python objects at once. At benchmark scale (1.56M observation
+# rows) a single `to_pylist()` peaks hundreds of megabytes per process; a chunk
+# keeps the transient to a few megabytes while preserving row order exactly.
+ROW_CHUNK = 65_536
+
+
+def _iter_rows(table: pa.Table, chunk_size: int = ROW_CHUNK):
+    """Yield one Python dict per row, chunk by chunk, in file order."""
+    for batch in table.to_batches(max_chunksize=chunk_size):
+        yield from batch.to_pylist()
 
 
 @dataclass(frozen=True)
@@ -73,7 +87,7 @@ class ObservationIndex:
     def from_table(cls, table: pa.Table) -> "ObservationIndex":
         values: dict[tuple[str, str], dict[dt.date, float | None]] = {}
         duplicates: set[tuple[str, str, dt.date]] = set()
-        for row in table.to_pylist():
+        for row in _iter_rows(table):
             key = (row["product_id"], row["location_id"])
             week = row["week_start"]
             series = values.setdefault(key, {})
@@ -98,10 +112,9 @@ class ObservationIndex:
 
 def parse_tasks(table: pa.Table) -> list[TaskRow]:
     """Parse the tasks table; structural row problems are whole-job violations."""
-    rows = table.to_pylist()
     seen: set[str] = set()
     tasks: list[TaskRow] = []
-    for row in rows:
+    for row in _iter_rows(table):
         task_id = row["task_id"]
         if not isinstance(task_id, str) or not task_id:
             raise EngineError(CONTRACT_VIOLATION, "tasks file contains an empty task_id")
@@ -124,6 +137,34 @@ def parse_tasks(table: pa.Table) -> list[TaskRow]:
             )
         )
     return tasks
+
+
+def load_observation_index(job_dir) -> "ObservationIndex":
+    """Read ``observations.arrow`` from ``job_dir`` and build the lookup index.
+
+    Used by a pool worker to obtain its own index without transferring the whole
+    observation table over the IPC pipe.
+    """
+    from . import arrowio
+
+    table = arrowio.read_input_table(
+        Path(job_dir), arrowio.OBSERVATIONS_FILE, arrowio.OBSERVATIONS_SCHEMA, "observations"
+    )
+    return ObservationIndex.from_table(table)
+
+
+def run_task(task: TaskRow, index: ObservationIndex) -> TaskOutcome:
+    """Run one task and convert a task-level failure into a failed outcome.
+
+    This is the single entry point shared by the sequential path and the pool
+    worker, so both produce byte-identical outcomes for the same inputs.
+    """
+    try:
+        return execute_task(task, index)
+    except TaskFailure as failure:
+        return failed_outcome(task, failure.code, failure.detail)
+    except Exception:
+        return failed_outcome(task, FAIL_INTERNAL_ERROR, "unexpected task failure")
 
 
 def failed_outcome(task: TaskRow, code: str, detail: str) -> TaskOutcome:
@@ -259,3 +300,28 @@ def execute_task(task: TaskRow, index: ObservationIndex) -> TaskOutcome:
         metric_row=metric_row,
         point_rows=point_rows,
     )
+
+
+# ---------------------------------------------------------------------------
+# Pool worker entry points
+# ---------------------------------------------------------------------------
+#
+# A worker builds the observation index once, in ``init_worker``, then serves
+# tasks through ``run_task_in_worker``. Both are module-level so the spawn start
+# method can pickle them by name on every platform. The worker never touches
+# SQLite, the cancel flag, or the output files: it only fits and predicts.
+
+_worker_index: "ObservationIndex | None" = None
+
+
+def init_worker(job_dir: str) -> None:
+    """ProcessPoolExecutor initializer: build this worker's observation index."""
+    global _worker_index
+    _worker_index = load_observation_index(job_dir)
+
+
+def run_task_in_worker(task: TaskRow) -> TaskOutcome:
+    """ProcessPoolExecutor task target: run one task with the worker's index."""
+    if _worker_index is None:  # pragma: no cover - requires a broken initializer
+        return failed_outcome(task, FAIL_INTERNAL_ERROR, "worker was not initialized")
+    return run_task(task, _worker_index)

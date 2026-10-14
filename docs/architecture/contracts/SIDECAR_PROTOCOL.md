@@ -9,6 +9,12 @@ packaged `opendemand-engine --job-dir <directory>` binary in a release build.
 The desktop app resolves `OPENDEMAND_ENGINE` first, then the bundled
 `engine/opendemand-engine` resource, then the repository `.venv` fallback.
 
+Process model (ADR-0018): the engine runs as one job process. For a job holding
+enough AutoETS tasks it starts a bounded pool of worker processes inside that
+job; each worker only fits and predicts, and the job process owns their lifetime,
+the output files, and the `cancel.flag` checks. `OPENDEMAND_ENGINE_WORKERS` sets
+the worker count (default `min(4, cpu_count)`; `1` disables the pool).
+
 ## Exchange
 
 1. Python sends `hello`: engine version, contract versions, supported models.

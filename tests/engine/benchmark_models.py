@@ -17,9 +17,12 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -36,6 +39,61 @@ MODELS = [("naive", 12), ("seasonal_naive_52", 104), ("auto_ets_52", 104)]
 HORIZON = 12
 MAX_ORIGINS = 4
 WEEKS = 156
+
+
+class TreeRssSampler(threading.Thread):
+    """Sample the summed RSS of this process and its descendants.
+
+    ``resource.getrusage(RUSAGE_SELF)`` only covers the case process, so worker
+    processes spawned by the engine pool would be invisible. This sampler walks
+    ``ps`` output to include them. Summed RSS double-counts shared pages (a
+    deliberate upper bound) and is unavailable on Windows.
+    """
+
+    def __init__(self, interval: float = 0.2):
+        super().__init__(name="rss-sampler", daemon=True)
+        self._interval = interval
+        self._stop_event = threading.Event()
+        self.peak_kb = 0
+        self.available = resource is not None and shutil.which("ps") is not None
+
+    def run(self) -> None:  # pragma: no cover - timing thread
+        if not self.available:
+            return
+        root = os.getpid()
+        while not self._stop_event.wait(self._interval):
+            try:
+                output = subprocess.run(
+                    ["ps", "-axo", "pid=,ppid=,rss="],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                ).stdout
+            except Exception:
+                continue
+            children: dict[int, list[int]] = {}
+            rss_by_pid: dict[int, int] = {}
+            for line in output.splitlines():
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                try:
+                    pid, ppid, rss = int(parts[0]), int(parts[1]), int(parts[2])
+                except ValueError:
+                    continue
+                children.setdefault(ppid, []).append(pid)
+                rss_by_pid[pid] = rss
+            total = rss_by_pid.get(root, 0)
+            stack = list(children.get(root, []))
+            while stack:
+                pid = stack.pop()
+                total += rss_by_pid.get(pid, 0)
+                stack.extend(children.get(pid, []))
+            self.peak_kb = max(self.peak_kb, total)
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self.join(timeout=5.0)
 
 
 def plan(pid: str, lid: str, start_week, h_len: int) -> list[dict]:
@@ -86,9 +144,12 @@ def run_case(series_count: int) -> dict:
     with tempfile.TemporaryDirectory() as temporary:
         job_dir = Path(temporary)
         h.write_inputs(job_dir, observations, tasks)
+        sampler = TreeRssSampler()
+        sampler.start()
         started = time.perf_counter()
         code, stdout, _ = h.run_inproc(job_dir, [h.job_request()])
         elapsed = time.perf_counter() - started
+        sampler.stop()
         peak_after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss if resource else 0
         status_rows = h.read_table(job_dir / "task_status.arrow").to_pylist()
         metrics_rows = h.read_table(job_dir / "origin_metrics.arrow").num_rows
@@ -113,6 +174,9 @@ def run_case(series_count: int) -> dict:
     # imports, and the job). Bytes on macOS, kibibytes on Linux.
     divisor = 1024 * 1024 if sys.platform == "darwin" else 1024
     peak_mb = round(peak_after / divisor, 1) if resource else None
+    tree_peak_mb = round(sampler.peak_kb / 1024, 1) if sampler.available else None
+
+    from opendemand_engine import engine
 
     return {
         "series": series_count,
@@ -128,6 +192,8 @@ def run_case(series_count: int) -> dict:
         "production_coverage": production_completed / production_total if production_total else 0.0,
         "elapsed_s": round(elapsed, 2),
         "peak_rss_mb": peak_mb,
+        "tree_peak_rss_mb": tree_peak_mb,
+        "workers": engine.worker_count(),
     }
 
 
@@ -136,7 +202,7 @@ def main(argv: list[str]) -> int:
         # Internal mode: run one case in this process and emit a JSON report.
         print(json.dumps(run_case(int(argv[1]))))
         return 0
-    counts = [int(value) for value in argv] or [100]
+    counts = [int(value) for value in argv if not value.startswith("--")] or [100]
     for count in counts:
         result = subprocess.run(
             [sys.executable, str(Path(__file__).resolve()), "--case", str(count)],
@@ -146,12 +212,13 @@ def main(argv: list[str]) -> int:
         )
         report = json.loads(result.stdout.strip().splitlines()[-1])
         print(
-            "series={series} tasks={tasks} completed={completed} failed={failed} "
-            "coverage={coverage:.3f} points={point_rows} metrics={metrics_rows} "
-            "elapsed={elapsed}s peak_rss={peak}MB terminal={terminal}".format(
+            "series={series} tasks={tasks} workers={workers} completed={completed} "
+            "failed={failed} coverage={coverage:.3f} points={point_rows} metrics={metrics_rows} "
+            "elapsed={elapsed}s peak_rss={peak}MB tree_rss={tree}MB terminal={terminal}".format(
                 coverage=report["production_coverage"],
                 elapsed=report["elapsed_s"],
                 peak=report["peak_rss_mb"],
+                tree=report["tree_peak_rss_mb"],
                 **report,
             )
         )

@@ -17,7 +17,10 @@ Design constraints honoured here:
 
 from __future__ import annotations
 
+import multiprocessing
+import os
 import threading
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from . import (
@@ -32,12 +35,10 @@ from . import (
 from .errors import (
     CONTRACT_VIOLATION,
     ENGINE_START_FAILED,
-    FAIL_INTERNAL_ERROR,
     INTERNAL_ERROR,
     PROTOCOL_MISMATCH,
     EngineError,
     JobCancelled,
-    TaskFailure,
 )
 from .protocol import EnvelopeWriter, read_request
 
@@ -45,7 +46,24 @@ EXIT_OK = 0
 EXIT_JOB_ERROR = 1
 EXIT_NO_REQUEST = 2
 
+# Pool only jobs with enough expensive tasks to offset process startup.
+EXPENSIVE_MODELS = frozenset({"auto_ets_52"})
+PARALLEL_MIN_EXPENSIVE_TASKS = 24
+# Default worker ceiling; an explicit environment override takes precedence.
+MAX_WORKERS = 4
+
 EXPECTED_INPUT_FILES = {"observations": OBSERVATIONS_FILE, "tasks": TASKS_FILE}
+
+
+def worker_count() -> int:
+    """Use a capped CPU-based default or the existing environment override."""
+    raw = os.environ.get("OPENDEMAND_ENGINE_WORKERS")
+    if raw is None:
+        return max(1, min(MAX_WORKERS, os.cpu_count() or 1))
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 1
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +120,7 @@ def run_job(
     written: list[Path] = []
     try:
         from . import arrowio  # PyArrow only after hello is on the wire
-        from .tasks import ObservationIndex, parse_tasks
+        from .tasks import parse_tasks
 
         _raise_on_interrupt(job_dir)
         tasks_table = arrowio.read_input_table(
@@ -117,10 +135,9 @@ def run_job(
         observations_table = arrowio.read_input_table(
             job_dir, arrowio.OBSERVATIONS_FILE, arrowio.OBSERVATIONS_SCHEMA, "observations"
         )
-        index = ObservationIndex.from_table(observations_table)
         _raise_on_interrupt(job_dir)
 
-        outcomes = _execute_all(task_rows, index, job_dir, tracker, stderr)
+        outcomes = _execute_all(task_rows, observations_table, job_dir, tracker, stderr)
         tracker.update("write_output", total, total)
         _log(stderr, f"phase write_output completed={total}")
 
@@ -155,35 +172,63 @@ def run_job(
 # ---------------------------------------------------------------------------
 
 
-def _execute_all(task_rows, index, job_dir, tracker, stderr):
-    from .tasks import execute_task, failed_outcome
+def _execute_all(task_rows, observations_table, job_dir, tracker, stderr):
+    """Keep result order, progress, and cancellation checks common to both paths."""
+    from .tasks import ObservationIndex, init_worker, run_task, run_task_in_worker
 
     total = len(task_rows)
-    ordered = list(enumerate(task_rows))
-    groups = (
-        ("backtest", [(position, task) for position, task in ordered if task.kind == "backtest"]),
-        ("production", [(position, task) for position, task in ordered if task.kind != "backtest"]),
-    )
-    outcomes: list = [None] * total
+    groups = {"backtest": [], "production": []}
+    for position, task in enumerate(task_rows):
+        phase = "backtest" if task.kind == "backtest" else "production"
+        groups[phase].append((position, task))
+    outcomes = [None] * total
     done = 0
-    for phase, group in groups:
-        if not group:
-            continue
-        _log(stderr, f"phase {phase} tasks={len(group)}")
-        tracker.update(phase, done, total)
-        for position, task in group:
-            _raise_on_interrupt(job_dir)
-            try:
-                outcome = execute_task(task, index)
-            except TaskFailure as failure:
-                outcome = failed_outcome(task, failure.code, failure.detail)
-            except Exception:
-                outcome = failed_outcome(task, FAIL_INTERNAL_ERROR, "unexpected task failure")
-            outcomes[position] = outcome
-            done += 1
+
+    workers = worker_count()
+    expensive = sum(1 for task in task_rows if task.model_id in EXPENSIVE_MODELS)
+    pooled = workers > 1 and expensive >= PARALLEL_MIN_EXPENSIVE_TASKS
+    # Pooled workers build their own index from observations.arrow; only the
+    # sequential path needs one in this process.
+    index = None if pooled else ObservationIndex.from_table(observations_table)
+    if pooled:
+        _log(stderr, f"executing with {workers} worker processes")
+
+    pool = None
+    try:
+        if pooled:
+            pool = ProcessPoolExecutor(
+                max_workers=workers,
+                mp_context=multiprocessing.get_context("spawn"),
+                initializer=init_worker,
+                initargs=(str(job_dir),),
+            )
+        for phase, group in groups.items():
+            if not group:
+                continue
+            _log(stderr, f"phase {phase} tasks={len(group)}")
             tracker.update(phase, done, total)
-            _raise_on_interrupt(job_dir)
-    return [outcome for outcome in outcomes]
+            futures = []
+            if pool is None:
+                results = (run_task(task, index) for _, task in group)
+            else:
+                futures = [pool.submit(run_task_in_worker, task) for _, task in group]
+                results = (future.result() for future in futures)
+            try:
+                for position, _task in group:
+                    # Resolve lazily so cancellation is checked before any task
+                    # runs or the parent waits for its result.
+                    _raise_on_interrupt(job_dir)
+                    outcomes[position] = next(results)
+                    done += 1
+                    tracker.update(phase, done, total)
+                    _raise_on_interrupt(job_dir)
+            finally:
+                for future in futures:
+                    future.cancel()
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=True, cancel_futures=True)
+    return outcomes
 
 
 def _collect_rows(outcomes) -> dict[str, list[dict]]:

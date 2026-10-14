@@ -9,7 +9,7 @@ flowchart LR
     subgraph Desktop["Desktop application"]
         UI["SvelteKit UI (static webview)"]
         CORE["Rust core (Tauri v2)"]
-        SIDE["Python sidecar (one per forecast job)"]
+        SIDE["Python sidecar (one job process, bounded worker pool)"]
     end
     MCP["FastMCP adapter (separate process)"]
     CLIENT["MCP client"]
@@ -27,7 +27,7 @@ flowchart LR
 
 - The **SvelteKit UI** is a presentation layer: it renders state and sends typed commands. It has no filesystem or database access.
 - The **Rust core** is the only component that opens the workspace database, validates data, orchestrates jobs, creates backups, and writes exports (ADR-0002).
-- The **Python sidecar** runs one process per forecast job, exchanging Arrow IPC files and JSONL v1 control messages (ADR-0003). It never opens the database.
+- The **Python sidecar** runs one job process per forecast job, exchanging Arrow IPC files and JSONL v1 control messages (ADR-0003). For expensive model fitting it runs a bounded pool of short-lived worker processes inside that job (ADR-0018); workers only fit and predict. It never opens the database.
 - The **FastMCP adapter** is a separate process speaking MCP over stdio to a client; it reaches data only through allowlisted read-only calls to the core over local IPC (ADR-0010).
 - The **workspace directory** contains the SQLite database, retained source CSV copies, exported CSV copies, backups with manifests, and the job temp area.
 
@@ -37,7 +37,7 @@ flowchart LR
 |----------|-------------|-------------|
 | Webview UI | Untrusted presentation | No FS/DB access; typed commands only; all rendering from command results |
 | Rust core | Trusted | Sole DB owner; applies pragmas; single serialized writer; owns validation and job orchestration |
-| Sidecar process | Trusted code, crash-isolated | No DB access; reads/writes only its job temp dir; bounded lifetime per job |
+| Sidecar process | Trusted code, crash-isolated | One job process per job; a bounded worker pool inside it only fits and predicts (ADR-0018); no DB access; reads/writes only its job temp dir; bounded lifetime per job |
 | MCP adapter | Restricted | Read-only; local IPC + per-session token; fixed workspace; allowlisted tools; paginated results; audited |
 | MCP client | External, untrusted | Sees only allowlisted read-only data for the selected workspace |
 | Source CSV files | Untrusted input | Parsed and validated at import; encoding and schema checks fail closed |
@@ -66,7 +66,7 @@ Concurrency rules: exactly one forecast job at a time. Imports may run while a f
 
 - Transport: stdin/stdout, one JSON object per line, UTF-8; stdout is protocol-only and logs go to stderr. Protocol id `opendemand.sidecar/1`.
 - Exchange: `hello` (engine version, supported contract versions, supported models) → one `job.request` (job id, task contract version, fixed relative input file names) → `job.progress` (phase: `validate_input`, `backtest`, `production`, `write_output`) → one terminal `job.result` (output file names, row counts, SHA-256 values), `job.error` (stable code, message, retryable), or `job.cancelled`.
-- Rules: unknown message type or protocol mismatch fails the job with a user-correctable error; heartbeat at most 30 seconds apart; 5-second hello timeout; configurable job timeout (30 minutes default); cancellation by a `cancel.flag` file in the job directory (stdin carries only `job.request` and is closed after it, ADR-0016) followed by a 5-second grace, then the process is killed and reaped; at most one whole-job retry for `engine_start_failed` or `unexpected_eof` before output is accepted; contract/input errors, timeouts, and cancellations are never retried.
+- Rules: unknown message type or protocol mismatch fails the job with a user-correctable error; heartbeat at most 30 seconds apart; 5-second hello timeout; configurable job timeout (30 minutes default); cancellation by a `cancel.flag` file in the job directory (stdin carries only `job.request` and is closed after it, ADR-0016) followed by a 5-second grace, then the process is killed and reaped; a job timeout uses the same flag-and-grace stop so a running worker pool shuts down before the kill; at most one whole-job retry for `engine_start_failed` or `unexpected_eof` before output is accepted; contract/input errors, timeouts, and cancellations are never retried.
 - Exact envelopes, error codes, and file-name rules: `contracts/SIDECAR_PROTOCOL.md`.
 
 ### 3.3 Arrow IPC Data Contract
@@ -127,6 +127,8 @@ All numeric targets are hypotheses (ADR-0011), especially the 10k-SKU forecast t
 | Installer size | ≤ 600 MB | CI artifact measurement |
 
 Protocol: synthetic generator (10k × 156), wall-clock + peak RSS on the reference host (4 CPU / 8 GB / SSD), results recorded under `docs/benchmarks/` with pass/fail. Mitigations if a target fails (no schema changes required): fewer backtest windows or models, chunked/batched processing, streaming I/O, bounded parallelism. Progress reporting and cancellation are architecture guarantees independent of these targets.
+
+Milestone 4 applied bounded parallelism (ADR-0018) and measured the result: `docs/benchmarks/2026-10-14-milestone-4-performance.md` records a 3.7x speed-up on the 100/1,000-series cases and a measured 10,000-series run of about 24 minutes. The 10-minute target is therefore documented as unmet: four cores cannot close a nine-fold gap, and the remaining bottleneck is the irreducible per-series AutoETS fit.
 
 ## 7. Storage Growth
 
