@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
 	adoptDetectionOnce,
+	applyConfig,
 	applyDetected,
 	blockingFindings,
 	canImport,
@@ -173,4 +174,47 @@ test('descriptor type keeps optional units unset', () => {
 	const descriptor: ParsingDescriptor = descriptorFromForm(completeForm(), 'csv', []);
 	assert.equal(descriptor.unit_column, null);
 	assert.equal(descriptor.descriptor_version, 1);
+});
+
+test('applying a saved configuration still requires confirmation', () => {
+	const saved: ParsingDescriptor = {
+		...descriptorFromForm(completeForm(), 'csv', []),
+		delimiter: ';',
+		encoding: 'windows-1250'
+	};
+	const form = applyConfig(saved);
+	assert.equal(form.delimiter, ';');
+	assert.equal(form.encoding, 'windows-1250');
+	assert.deepEqual(form.keyColumns, ['Kod towaru']);
+	assert.equal(mappingComplete(form), true);
+
+	// The gate is unchanged: a blocking finding on the fresh preview still
+	// disables the import, so a saved configuration never skips confirmation.
+	assert.equal(canImport(previewFixture({ findings: [blocking] }), form, false), false);
+	assert.equal(canImport(previewFixture(), form, false), true);
+});
+
+test('a saved configuration without optional fields falls back to wizard defaults', () => {
+	const form = applyConfig({
+		descriptor_version: 1,
+		format: 'csv',
+		encoding: null,
+		delimiter: null,
+		header_row: null,
+		sheet: null,
+		key_columns: null,
+		key_separator: null,
+		date_column: null,
+		quantity_column: null,
+		unit_column: null,
+		date_formats: null,
+		decimal_separator: null,
+		thousands_separator: null,
+		aggregation: null
+	} as ParsingDescriptor);
+	assert.equal(form.keySeparator, '|');
+	assert.equal(form.headerRow, 1);
+	assert.equal(form.encoding, 'utf-8');
+	assert.deepEqual(form.dateFormats, ['%Y-%m-%d', '%d.%m.%Y', '%d/%m/%Y', '%Y%m%d']);
+	assert.equal(mappingComplete(form), false);
 });

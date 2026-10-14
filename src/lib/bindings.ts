@@ -47,6 +47,9 @@ export const commands = {
 	thousands_separator: string | null,
 	aggregation: string | null,
 } | null) => typedError<ImportPreview, AppError>(__TAURI_INVOKE("import_preview", { path, descriptor })),
+	importConfigsList: () => typedError<ImportConfig[], AppError>(__TAURI_INVOKE("import_configs_list")),
+	importConfigSave: (name: string, descriptor: ParsingDescriptor) => typedError<ImportConfig, AppError>(__TAURI_INVOKE("import_config_save", { name, descriptor })),
+	importConfigDelete: (id: number) => typedError<null, AppError>(__TAURI_INVOKE("import_config_delete", { id })),
 	forecastStart: (revisionId: number) => typedError<JobInfo, AppError>(__TAURI_INVOKE("forecast_start", { revisionId })),
 	jobStatus: (jobId: string) => typedError<JobInfo, AppError>(__TAURI_INVOKE("job_status", { jobId })),
 	jobCancel: (jobId: string) => typedError<JobInfo, AppError>(__TAURI_INVOKE("job_cancel", { jobId })),
@@ -94,6 +97,14 @@ export type HistoryPoint = {
 	week_start: string,
 	quantity: number | null,
 	status: string,
+};
+
+/**  A named, profile-scoped parsing descriptor the guided import can reuse. */
+export type ImportConfig = {
+	id: number,
+	name: string,
+	descriptor: ParsingDescriptor,
+	updated_at: string,
 };
 
 /**  The result of a read-only preview pass over the head of a source file. */

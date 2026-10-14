@@ -1,7 +1,8 @@
 <script lang="ts">
-	import type { ParsingDescriptor } from '#lib/bindings.ts';
+	import type { ImportConfig, ParsingDescriptor } from '#lib/bindings.ts';
 	import {
 		adoptDetectionOnce,
+		applyConfig,
 		blockingFindings,
 		canImport,
 		DATE_FORMAT_CHOICES,
@@ -14,7 +15,14 @@
 		warningFindings,
 		type WizardForm
 	} from '#lib/frontend/import-wizard.ts';
-	import { describeError, pickImportSource, previewImport } from '#lib/frontend/ipc.ts';
+	import {
+		deleteImportConfig,
+		describeError,
+		fetchImportConfigs,
+		pickImportSource,
+		previewImport,
+		saveImportConfig
+	} from '#lib/frontend/ipc.ts';
 	import { t, type Locale } from '#lib/frontend/i18n.ts';
 
 	let {
@@ -35,10 +43,78 @@
 	let error = $state<string | null>(null);
 	let adoptDetection = $state(false);
 	let requestId = 0;
+	let configs = $state<ImportConfig[]>([]);
+	let selectedConfigId = $state<number | null>(null);
+	let configName = $state('');
 
 	const blocking = $derived(preview ? blockingFindings(preview.findings) : []);
 	const warnings = $derived(preview ? warningFindings(preview.findings) : []);
 	const ready = $derived(canImport(preview, form, busy || importing));
+	const canSaveConfig = $derived(
+		preview !== null && mappingComplete(form) && configName.trim().length > 0
+	);
+
+	$effect(() => {
+		void loadConfigs();
+	});
+
+	async function loadConfigs() {
+		try {
+			configs = await fetchImportConfigs();
+		} catch (caught) {
+			error = describeError(caught).message;
+		}
+	}
+
+	function selectedConfig(): ImportConfig | undefined {
+		return configs.find((candidate) => candidate.id === selectedConfigId);
+	}
+
+	function onConfigSelect(event: Event) {
+		const value = (event.currentTarget as HTMLSelectElement).value;
+		if (value === '') {
+			selectedConfigId = null;
+			return;
+		}
+		selectedConfigId = Number(value);
+		loadSelectedConfig();
+	}
+
+	/** Swap in the saved mapping; the preview and the findings gate still run. */
+	function loadSelectedConfig() {
+		const config = selectedConfig();
+		if (!config) return;
+		form = applyConfig(config.descriptor);
+		configName = config.name;
+		void refresh();
+	}
+
+	async function saveConfig() {
+		if (preview === null || !canSaveConfig) return;
+		error = null;
+		try {
+			const saved = await saveImportConfig(
+				configName,
+				descriptorFromForm(form, sourceFormat(preview), preview.sheets)
+			);
+			selectedConfigId = saved.id;
+			await loadConfigs();
+		} catch (caught) {
+			error = describeError(caught).message;
+		}
+	}
+
+	async function deleteConfig() {
+		if (selectedConfigId === null) return;
+		error = null;
+		try {
+			await deleteImportConfig(selectedConfigId);
+			selectedConfigId = null;
+			await loadConfigs();
+		} catch (caught) {
+			error = describeError(caught).message;
+		}
+	}
 
 	async function chooseFile() {
 		error = null;
@@ -47,8 +123,9 @@
 			if (!selected) return;
 			path = selected;
 			preview = null;
-			form = emptyForm();
-			adoptDetection = true;
+			const config = selectedConfig();
+			form = config ? applyConfig(config.descriptor) : emptyForm();
+			adoptDetection = config === undefined;
 			await refresh();
 		} catch (caught) {
 			error = describeError(caught).message;
@@ -141,6 +218,41 @@
 	{/if}
 
 	{#if preview !== null}
+		<fieldset class="configs">
+			<legend>{t(locale, 'wizard.savedConfigs')}</legend>
+			{#if configs.length === 0}
+				<p class="muted small">{t(locale, 'wizard.noConfigs')}</p>
+			{/if}
+			<div class="row">
+				<select
+					aria-label={t(locale, 'wizard.savedConfigs')}
+					value={selectedConfigId ?? ''}
+					onchange={onConfigSelect}
+				>
+					<option value="">—</option>
+					{#each configs as config (config.id)}
+						<option value={config.id}>{config.name}</option>
+					{/each}
+				</select>
+				<input
+					type="text"
+					maxlength="200"
+					aria-label={t(locale, 'wizard.configName')}
+					placeholder={t(locale, 'wizard.configName')}
+					bind:value={configName}
+				/>
+				<button class="btn btn-secondary" disabled={!canSaveConfig} onclick={saveConfig}>
+					{t(locale, 'wizard.saveConfig')}
+				</button>
+				<button
+					class="btn btn-secondary"
+					disabled={selectedConfigId === null}
+					onclick={deleteConfig}
+				>
+					{t(locale, 'wizard.deleteConfig')}
+				</button>
+			</div>
+		</fieldset>
 		<div class="grid">
 			<fieldset>
 				<legend>{t(locale, 'wizard.structure')}</legend>
@@ -333,6 +445,16 @@
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
 		gap: 0.8rem;
+	}
+
+	.configs {
+		margin-bottom: 0.8rem;
+	}
+
+	.configs select,
+	.configs input {
+		width: auto;
+		min-width: 12rem;
 	}
 
 	fieldset {

@@ -10,7 +10,7 @@
 
 use crate::{
     error::{AppError, AppResult},
-    preprocess::{self, descriptor_json, ParsingDescriptor},
+    preprocess::{self, descriptor_json, ImportConfig, ParsingDescriptor},
     selection,
     types::{
         ExportResult, ForecastInput, ForecastPoint, HistoryPoint, ImportResult, InputSeries,
@@ -59,6 +59,8 @@ const SOURCE_FILENAME: &str = "source.csv";
 const BACKUP_DIRECTORY: &str = "backups";
 /// How many pre-migration backup pairs (database + manifest) to keep.
 const PRE_MIGRATION_BACKUPS_KEPT: usize = 3;
+/// Upper bound on the length of a saved configuration name.
+const MAX_CONFIG_NAME_CHARS: usize = 200;
 const LIST_LIMIT_MAX: u32 = 200;
 /// Upper bound on the number of dense weekly points materialised for a single
 /// series, protecting memory against a corrupted or absurd date span.
@@ -339,6 +341,87 @@ impl Workspace {
         .await
     }
 
+    /// List the saved import configurations of the active profile by name.
+    pub async fn list_import_configs(&self) -> AppResult<Vec<ImportConfig>> {
+        let profile_id = active_profile_id(&self.pool).await?;
+        let rows = sqlx::query(
+            "SELECT id, name, descriptor_json, updated_at FROM import_config
+             WHERE profile_id = ? ORDER BY name",
+        )
+        .bind(profile_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut configs = Vec::new();
+        for row in &rows {
+            configs.push(import_config_from_row(row)?);
+        }
+        Ok(configs)
+    }
+
+    /// Save a named descriptor. Saving an existing name updates that row in
+    /// place; revisions already committed keep their frozen snapshot.
+    pub async fn save_import_config(
+        &self,
+        name: &str,
+        descriptor: &ParsingDescriptor,
+    ) -> AppResult<ImportConfig> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > MAX_CONFIG_NAME_CHARS {
+            return Err(err(
+                "invalid_config",
+                format!("The configuration name must be 1 to {MAX_CONFIG_NAME_CHARS} characters."),
+            ));
+        }
+        let serialized = descriptor_json(descriptor).map_err(|_| {
+            err(
+                "contract_violation",
+                "The parsing descriptor could not be serialized.",
+            )
+        })?;
+        let _guard = self.writer.lock().await;
+        let profile_id = active_profile_id(&self.pool).await?;
+        let timestamp = now_iso();
+        sqlx::query(
+            "INSERT INTO import_config (profile_id, name, descriptor_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (profile_id, name) DO UPDATE SET
+                 descriptor_json = excluded.descriptor_json,
+                 updated_at = excluded.updated_at",
+        )
+        .bind(profile_id)
+        .bind(name)
+        .bind(serialized.as_str())
+        .bind(timestamp.as_str())
+        .bind(timestamp.as_str())
+        .execute(&self.pool)
+        .await?;
+        let row = sqlx::query(
+            "SELECT id, name, descriptor_json, updated_at FROM import_config
+             WHERE profile_id = ? AND name = ?",
+        )
+        .bind(profile_id)
+        .bind(name)
+        .fetch_one(&self.pool)
+        .await?;
+        import_config_from_row(&row)
+    }
+
+    /// Delete a saved configuration. Revisions keep their own snapshot.
+    pub async fn delete_import_config(&self, id: i32) -> AppResult<()> {
+        let _guard = self.writer.lock().await;
+        let deleted = sqlx::query("DELETE FROM import_config WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(err(
+                "config_not_found",
+                "No saved import configuration has this id.",
+            ));
+        }
+        Ok(())
+    }
+
     /// Commit a parsed import: map identities, compute the fingerprint, check
     /// idempotency, stage the retained file, and persist one revision in a
     /// single serialized transaction.
@@ -461,10 +544,19 @@ impl Workspace {
         }
 
         let timestamp = now_iso();
+        let descriptor_snapshot = match spec.descriptor {
+            Some(descriptor) => Some(descriptor_json(descriptor).map_err(|_| {
+                err(
+                    "contract_violation",
+                    "The parsing descriptor could not be serialized.",
+                )
+            })?),
+            None => None,
+        };
         let mut transaction = self.pool.begin().await?;
         let inserted = sqlx::query(
-            "INSERT INTO import_revision (profile_id, content_hash, mapping_fingerprint, contract_version, source_filename, imported_at, row_count, observation_count, issue_count)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO import_revision (profile_id, content_hash, mapping_fingerprint, contract_version, source_filename, imported_at, row_count, observation_count, issue_count, descriptor_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(profile_id)
         .bind(content_hash)
@@ -475,6 +567,7 @@ impl Workspace {
         .bind(row_count)
         .bind(observation_count)
         .bind(issue_count)
+        .bind(descriptor_snapshot)
         .execute(&mut *transaction)
         .await?;
         let revision_id = inserted.last_insert_rowid();
@@ -1814,6 +1907,42 @@ fn source_filename(source: &Path) -> String {
         .map(|name| name.to_string_lossy().to_string())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| SOURCE_FILENAME.to_string())
+}
+
+async fn active_profile_id(pool: &SqlitePool) -> AppResult<i64> {
+    sqlx::query_scalar("SELECT id FROM source_profile WHERE is_active = 1")
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| {
+            err(
+                "no_active_profile",
+                "The workspace has no active source profile.",
+            )
+        })
+}
+
+fn import_config_from_row(row: &SqliteRow) -> AppResult<ImportConfig> {
+    let id: i64 = row.get("id");
+    if !(1..=i32::MAX as i64).contains(&id) {
+        return Err(err(
+            "contract_violation",
+            "A saved configuration has an unsupported id.",
+        ));
+    }
+    let name: String = row.get("name");
+    let json: String = row.get("descriptor_json");
+    let descriptor: ParsingDescriptor = serde_json::from_str(&json).map_err(|_| {
+        err(
+            "contract_violation",
+            format!("Saved configuration '{name}' is unreadable."),
+        )
+    })?;
+    Ok(ImportConfig {
+        id: id as i32,
+        name,
+        descriptor,
+        updated_at: row.get("updated_at"),
+    })
 }
 
 fn parse_canonical(bytes: &[u8], cancel: &AtomicBool) -> AppResult<ParsedImport> {

@@ -43,7 +43,12 @@ const en = {
 	'wizard.mappingIncomplete': 'Select at least one key column, a date column, and a quantity column.',
 	'wizard.import': 'Import',
 	'wizard.cancel': 'Close',
-	'wizard.refreshing': 'Reading the file…'
+	'wizard.refreshing': 'Reading the file…',
+	'wizard.savedConfigs': 'Saved configurations',
+	'wizard.configName': 'Configuration name',
+	'wizard.saveConfig': 'Save configuration',
+	'wizard.deleteConfig': 'Delete',
+	'wizard.noConfigs': 'No saved configurations yet.'
 };
 
 export type MessageKey = keyof typeof en;
@@ -84,7 +89,12 @@ const pl: Record<MessageKey, string> = {
 	'wizard.mappingIncomplete': 'Wybierz co najmniej jedną kolumnę klucza, kolumnę daty i kolumnę ilości.',
 	'wizard.import': 'Importuj',
 	'wizard.cancel': 'Zamknij',
-	'wizard.refreshing': 'Wczytywanie pliku…'
+	'wizard.refreshing': 'Wczytywanie pliku…',
+	'wizard.savedConfigs': 'Zapisane konfiguracje',
+	'wizard.configName': 'Nazwa konfiguracji',
+	'wizard.saveConfig': 'Zapisz konfigurację',
+	'wizard.deleteConfig': 'Usuń',
+	'wizard.noConfigs': 'Brak zapisanych konfiguracji.'
 };
 
 const es: Record<MessageKey, string> = {
@@ -124,7 +134,12 @@ const es: Record<MessageKey, string> = {
 		'Selecciona al menos una columna de clave, una columna de fecha y una columna de cantidad.',
 	'wizard.import': 'Importar',
 	'wizard.cancel': 'Cerrar',
-	'wizard.refreshing': 'Leyendo el archivo…'
+	'wizard.refreshing': 'Leyendo el archivo…',
+	'wizard.savedConfigs': 'Configuraciones guardadas',
+	'wizard.configName': 'Nombre de la configuración',
+	'wizard.saveConfig': 'Guardar configuración',
+	'wizard.deleteConfig': 'Eliminar',
+	'wizard.noConfigs': 'Todavía no hay configuraciones guardadas.'
 };
 
 export const messages: Record<Locale, Record<MessageKey, string>> = { en, pl, es };

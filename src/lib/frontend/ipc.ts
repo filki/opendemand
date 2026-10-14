@@ -9,6 +9,7 @@ import { commands } from '#lib/bindings.ts';
 import type {
 	AppError,
 	ExportResult,
+	ImportConfig,
 	ImportPreview,
 	JobInfo,
 	OverrideEdit,
@@ -87,6 +88,21 @@ export async function previewImport(
 	descriptor: ParsingDescriptor | null
 ): Promise<ImportPreview> {
 	return unwrap(await commands.importPreview(path, descriptor));
+}
+
+export async function fetchImportConfigs(): Promise<ImportConfig[]> {
+	return unwrap(await commands.importConfigsList());
+}
+
+export async function saveImportConfig(
+	name: string,
+	descriptor: ParsingDescriptor
+): Promise<ImportConfig> {
+	return unwrap(await commands.importConfigSave(name, descriptor));
+}
+
+export async function deleteImportConfig(id: number): Promise<void> {
+	await unwrap(await commands.importConfigDelete(id));
 }
 
 export async function startForecast(revisionId: number): Promise<JobInfo> {

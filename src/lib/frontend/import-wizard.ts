@@ -164,3 +164,24 @@ export function adoptDetectionOnce(
 	if (!adopt) return { form, applied: false };
 	return { form: applyDetected(form, preview), applied: true };
 }
+
+/**
+ * Build a form from a saved configuration. The wizard still re-previews the
+ * chosen file and shows the findings before anything can be imported, so a
+ * saved configuration never skips confirmation.
+ */
+export function applyConfig(descriptor: ParsingDescriptor): WizardForm {
+	const form = emptyForm();
+	form.encoding = descriptor.encoding ?? form.encoding;
+	form.delimiter = descriptor.delimiter ?? form.delimiter;
+	form.headerRow = descriptor.header_row ?? form.headerRow;
+	form.sheet = descriptor.sheet ?? '';
+	form.keyColumns = descriptor.key_columns ?? [];
+	form.keySeparator = descriptor.key_separator ?? DEFAULT_KEY_SEPARATOR;
+	form.dateColumn = descriptor.date_column ?? '';
+	form.quantityColumn = descriptor.quantity_column ?? '';
+	form.dateFormats = descriptor.date_formats ?? [...DEFAULT_DATE_FORMATS];
+	form.decimalSeparator = descriptor.decimal_separator ?? form.decimalSeparator;
+	form.thousandsSeparator = descriptor.thousands_separator ?? '';
+	return form;
+}

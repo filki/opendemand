@@ -427,6 +427,34 @@ async fn import_preview(
 
 #[tauri::command]
 #[specta::specta]
+async fn import_configs_list(
+    state: State<'_, Service>,
+) -> AppResult<Vec<crate::preprocess::ImportConfig>> {
+    state.current().await?.list_import_configs().await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn import_config_save(
+    name: String,
+    descriptor: crate::preprocess::ParsingDescriptor,
+    state: State<'_, Service>,
+) -> AppResult<crate::preprocess::ImportConfig> {
+    state
+        .current()
+        .await?
+        .save_import_config(&name, &descriptor)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn import_config_delete(id: i32, state: State<'_, Service>) -> AppResult<()> {
+    state.current().await?.delete_import_config(id).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn forecast_start(
     revision_id: i32,
     app: AppHandle,
@@ -529,6 +557,9 @@ fn command_builder() -> Builder<tauri::Wry> {
             workspace_info,
             import_start,
             import_preview,
+            import_configs_list,
+            import_config_save,
+            import_config_delete,
             forecast_start,
             job_status,
             job_cancel,

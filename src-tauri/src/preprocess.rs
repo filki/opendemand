@@ -88,6 +88,15 @@ pub struct PreviewCell {
     pub status: String,
 }
 
+/// A named, profile-scoped parsing descriptor the guided import can reuse.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct ImportConfig {
+    pub id: i32,
+    pub name: String,
+    pub descriptor: ParsingDescriptor,
+    pub updated_at: String,
+}
+
 /// A validation finding. `severity` is `blocking` (commit must not proceed) or
 /// `warning` (commit may proceed, the report lists it).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]

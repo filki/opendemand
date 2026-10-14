@@ -574,3 +574,125 @@ async fn xlsx_sheet_not_found_is_blocking() {
     assert_eq!(revisions, 0);
     workspace.pool.close().await;
 }
+
+#[tokio::test]
+async fn import_config_round_trips_and_updates_in_place() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = Workspace::create(directory.path().join("workspace"))
+        .await
+        .unwrap();
+    let descriptor = subiekt_descriptor();
+    let saved = workspace
+        .save_import_config("  Subiekt monthly  ", &descriptor)
+        .await
+        .unwrap();
+    assert_eq!(saved.name, "Subiekt monthly");
+    let listed = workspace.list_import_configs().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].descriptor, descriptor);
+
+    // Saving the same name updates the row instead of adding another one.
+    let mut changed = descriptor.clone();
+    changed.delimiter = Some(",".into());
+    let updated = workspace
+        .save_import_config("Subiekt monthly", &changed)
+        .await
+        .unwrap();
+    assert_eq!(updated.id, saved.id);
+    let listed = workspace.list_import_configs().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].descriptor.delimiter.as_deref(), Some(","));
+
+    workspace.delete_import_config(saved.id).await.unwrap();
+    assert!(workspace.list_import_configs().await.unwrap().is_empty());
+    workspace.pool.close().await;
+}
+
+#[tokio::test]
+async fn blank_config_names_and_unknown_deletes_are_rejected() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = Workspace::create(directory.path().join("workspace"))
+        .await
+        .unwrap();
+    let blank = workspace
+        .save_import_config("   ", &subiekt_descriptor())
+        .await
+        .unwrap_err();
+    assert_eq!(blank.code, "invalid_config");
+    let missing = workspace.delete_import_config(42).await.unwrap_err();
+    assert_eq!(missing.code, "config_not_found");
+    workspace.pool.close().await;
+}
+
+#[tokio::test]
+async fn raw_import_freezes_the_descriptor_and_canonical_stays_null() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = Workspace::create(directory.path().join("workspace"))
+        .await
+        .unwrap();
+    let descriptor = subiekt_descriptor();
+    let raw = import_raw(&workspace, &example("subiekt-sprzedaz.csv"), &descriptor).await;
+    let canonical = workspace
+        .import_csv(&fixture("demo.csv"), &AtomicBool::new(false))
+        .await
+        .unwrap();
+
+    let frozen: String =
+        sqlx::query_scalar("SELECT descriptor_json FROM import_revision WHERE id = ?")
+            .bind(raw.revision_id)
+            .fetch_one(&workspace.pool)
+            .await
+            .unwrap();
+    let frozen: ParsingDescriptor = serde_json::from_str(&frozen).unwrap();
+    assert_eq!(frozen, descriptor);
+    let direct: Option<String> =
+        sqlx::query_scalar("SELECT descriptor_json FROM import_revision WHERE id = ?")
+            .bind(canonical.revision_id)
+            .fetch_one(&workspace.pool)
+            .await
+            .unwrap();
+    assert!(direct.is_none());
+    workspace.pool.close().await;
+}
+
+#[tokio::test]
+async fn editing_a_config_never_rewrites_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = Workspace::create(directory.path().join("workspace"))
+        .await
+        .unwrap();
+    let source = example("subiekt-sprzedaz.csv");
+    let first = subiekt_descriptor();
+    let saved = workspace
+        .save_import_config("Subiekt monthly", &first)
+        .await
+        .unwrap();
+    let revision_one = import_raw(&workspace, &source, &first).await;
+
+    // Edit the saved configuration, then import the same bytes with it.
+    let mut second = first.clone();
+    second.quantity_column = Some("Wartość netto".into());
+    second.decimal_separator = Some(",".into());
+    workspace
+        .save_import_config(&saved.name, &second)
+        .await
+        .unwrap();
+    let revision_two = import_raw(&workspace, &source, &second).await;
+    assert_ne!(revision_two.revision_id, revision_one.revision_id);
+
+    // Revision one keeps the descriptor it was committed with.
+    let frozen: String =
+        sqlx::query_scalar("SELECT descriptor_json FROM import_revision WHERE id = ?")
+            .bind(revision_one.revision_id)
+            .fetch_one(&workspace.pool)
+            .await
+            .unwrap();
+    let frozen: ParsingDescriptor = serde_json::from_str(&frozen).unwrap();
+    assert_eq!(frozen, first);
+
+    // Re-importing with the frozen descriptor is still a no-op.
+    let again = import_raw(&workspace, &source, &first).await;
+    assert!(again.is_duplicate);
+    assert_eq!(again.revision_id, revision_one.revision_id);
+    workspace.pool.close().await;
+}
