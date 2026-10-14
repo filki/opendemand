@@ -1,13 +1,13 @@
 <script lang="ts">
-	import type { JobInfo } from '$lib/bindings';
-	import StatusChip from '$lib/components/StatusChip.svelte';
-	import { shortId } from '$lib/frontend/format';
+	import type { JobInfo } from '#lib/bindings.ts';
+	import StatusChip from '#lib/components/StatusChip.svelte';
+	import { shortId } from '#lib/frontend/format.ts';
 	import {
 		isActiveJobStatus,
 		jobKindLabel,
 		jobStatusLabel,
 		progressPercent
-	} from '$lib/frontend/jobs';
+	} from '#lib/frontend/jobs.ts';
 
 	let {
 		job,

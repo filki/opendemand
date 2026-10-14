@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { SeriesSummary } from '$lib/bindings';
-	import StatusChip from '$lib/components/StatusChip.svelte';
-	import { qualificationLabel } from '$lib/frontend/format';
+	import type { SeriesSummary } from '#lib/bindings.ts';
+	import StatusChip from '#lib/components/StatusChip.svelte';
+	import { qualificationLabel } from '#lib/frontend/format.ts';
 
 	let {
 		series,

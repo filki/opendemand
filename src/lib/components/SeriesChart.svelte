@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { buildChartModel, describeChart, mergeTableRows, planValueSourceLabel } from '$lib/frontend/chart';
-	import type { ForecastPointInput, HistoryPointInput, PlanningPointInput } from '$lib/frontend/chart';
-	import { formatQuantity, observationStatusLabel } from '$lib/frontend/format';
+	import { buildChartModel, describeChart, mergeTableRows, planValueSourceLabel } from '#lib/frontend/chart.ts';
+	import type { ForecastPointInput, HistoryPointInput, PlanningPointInput } from '#lib/frontend/chart.ts';
+	import { formatQuantity, observationStatusLabel } from '#lib/frontend/format.ts';
 
 	let {
 		seriesKey,

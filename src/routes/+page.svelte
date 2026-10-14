@@ -1,14 +1,14 @@
 <script lang="ts">
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
-	import type { JobInfo, OverrideEdit, SeriesSummary } from '$lib/bindings';
-	import BrowserFallback from '$lib/components/BrowserFallback.svelte';
-	import CsvFormatCard from '$lib/components/CsvFormatCard.svelte';
-	import JobMonitor from '$lib/components/JobMonitor.svelte';
-	import SeriesDetailPanel from '$lib/components/SeriesDetailPanel.svelte';
-	import SeriesList from '$lib/components/SeriesList.svelte';
-	import StatusChip from '$lib/components/StatusChip.svelte';
-	import WorkspacePanel from '$lib/components/WorkspacePanel.svelte';
-	import { formatPercent, formatTimestamp, humanizeToken, shortId } from '$lib/frontend/format';
+	import type { JobInfo, OverrideEdit, SeriesSummary } from '#lib/bindings.ts';
+	import BrowserFallback from '#lib/components/BrowserFallback.svelte';
+	import CsvFormatCard from '#lib/components/CsvFormatCard.svelte';
+	import JobMonitor from '#lib/components/JobMonitor.svelte';
+	import SeriesDetailPanel from '#lib/components/SeriesDetailPanel.svelte';
+	import SeriesList from '#lib/components/SeriesList.svelte';
+	import StatusChip from '#lib/components/StatusChip.svelte';
+	import WorkspacePanel from '#lib/components/WorkspacePanel.svelte';
+	import { formatPercent, formatTimestamp, humanizeToken, shortId } from '#lib/frontend/format.ts';
 	import {
 		IpcError,
 		cancelJob,
@@ -29,7 +29,7 @@
 		saveOverride,
 		startForecast,
 		startImport
-	} from '$lib/frontend/ipc';
+	} from '#lib/frontend/ipc.ts';
 	import {
 		isActiveJobStatus,
 		isTerminalJobStatus,
@@ -37,8 +37,8 @@
 		jobStatusLabel,
 		selectDisplayRun,
 		sortRunsNewestFirst
-	} from '$lib/frontend/jobs';
-	import { isNoWorkspaceError } from '$lib/frontend/workspace';
+	} from '#lib/frontend/jobs.ts';
+	import { isNoWorkspaceError } from '#lib/frontend/workspace.ts';
 
 	const PAGE_SIZE = 50;
 	const desktop = isTauriRuntime();
