@@ -25,6 +25,7 @@ pub struct ImportResult {
 pub struct SeriesSummary {
     pub product_id: String,
     pub location_id: String,
+    pub location_code: String,
     pub series_key: String,
     pub h_length: u32,
     pub qualification_status: String,
@@ -44,12 +45,50 @@ pub struct ForecastPoint {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct PlanningPoint {
+    pub week_start: String,
+    pub horizon: u32,
+    pub baseline: Option<f64>,
+    pub override_value: Option<f64>,
+    pub effective: Option<f64>,
+    pub value_source: String,
+    pub override_revision: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct OverrideEdit {
+    pub run_id: String,
+    pub product_id: String,
+    pub location_id: String,
+    pub week_start: String,
+    // Preserve the input text across IPC so NaN, infinity, and blanks cannot
+    // become an accidental NULL clear through JSON number serialization.
+    pub value: Option<String>,
+    pub expected_revision: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct OverrideRevision {
+    pub revision: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ExportResult {
+    pub export_id: String,
+    pub path: String,
+    pub row_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct SeriesDetail {
     pub product_id: String,
     pub location_id: String,
+    pub location_code: String,
     pub series_key: String,
     pub history: Vec<HistoryPoint>,
     pub forecast: Vec<ForecastPoint>,
+    pub planning: Vec<PlanningPoint>,
+    pub can_override: bool,
     pub run_id: Option<String>,
     pub outcome: Option<String>,
     pub reason: Option<String>,

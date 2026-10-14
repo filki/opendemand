@@ -1,21 +1,23 @@
 <script lang="ts">
-	import { buildChartModel, describeChart, mergeTableRows } from '$lib/frontend/chart';
-	import type { ForecastPointInput, HistoryPointInput } from '$lib/frontend/chart';
+	import { buildChartModel, describeChart, mergeTableRows, planValueSourceLabel } from '$lib/frontend/chart';
+	import type { ForecastPointInput, HistoryPointInput, PlanningPointInput } from '$lib/frontend/chart';
 	import { formatQuantity, observationStatusLabel } from '$lib/frontend/format';
 
 	let {
 		seriesKey,
 		history,
-		forecast
+		forecast,
+		planning = []
 	}: {
 		seriesKey: string;
 		history: HistoryPointInput[];
 		forecast: ForecastPointInput[];
+		planning?: PlanningPointInput[];
 	} = $props();
 
-	const model = $derived(buildChartModel(history, forecast));
-	const ariaLabel = $derived(describeChart(seriesKey, history, forecast, model));
-	const rows = $derived(mergeTableRows(history, forecast));
+	const model = $derived(buildChartModel(history, forecast, undefined, planning));
+	const ariaLabel = $derived(describeChart(seriesKey, history, forecast, model, planning));
+	const rows = $derived(mergeTableRows(history, forecast, planning));
 </script>
 
 <div class="chart-block">
@@ -99,11 +101,30 @@
 			{#if model.connector}
 				<path class="forecast-connector" d={model.connector} />
 			{/if}
-			{#if model.forecastPath}
-				<path class="forecast" d={model.forecastPath} />
+			{#if planning.length === 0}
+				{#if model.forecastPath}
+					<path class="forecast" d={model.forecastPath} />
+				{/if}
+				{#each model.isolatedForecastPoints as point}
+					<circle class="forecast-point" cx={point.x} cy={point.y} r="2.6" />
+				{/each}
 			{/if}
-			{#each model.isolatedForecastPoints as point}
+
+			{#each model.planningBaselinePaths as path}
+				<path class="forecast" d={path} />
+			{/each}
+			{#each model.isolatedPlanningBaselinePoints as point}
 				<circle class="forecast-point" cx={point.x} cy={point.y} r="2.6" />
+			{/each}
+
+			{#each model.effectivePaths as path}
+				<path class="plan" d={path} />
+			{/each}
+			{#each model.isolatedEffectivePoints as point}
+				<circle class="plan-point" cx={point.x} cy={point.y} r="2.6" />
+			{/each}
+			{#each model.overridePoints as point}
+				<circle class="override-point" cx={point.x} cy={point.y} r="3.4" />
 			{/each}
 
 			{#if model.forecastZone && model.forecastZone.width > 90}
@@ -115,7 +136,13 @@
 
 		<ul class="legend">
 			<li><span class="swatch swatch-history"></span> History</li>
-			<li><span class="swatch swatch-forecast"></span> Forecast (persisted, dashed)</li>
+			<li><span class="swatch swatch-forecast"></span> {planning.length > 0 ? 'Baseline (model, dashed)' : 'Forecast (persisted, dashed)'}</li>
+			{#if model.planningWeeks > 0}
+				<li><span class="swatch swatch-plan"></span> Plan (effective, solid)</li>
+				{#if model.overridePoints.length > 0}
+					<li><span class="swatch swatch-override"></span> Manual override</li>
+				{/if}
+			{/if}
 			{#if model.gapCount > 0}
 				<li class="muted">
 					{model.gapCount} week{model.gapCount === 1 ? '' : 's'} without a numeric value — the history
@@ -141,10 +168,16 @@
 					{#each rows as row (row.kind + row.week_start)}
 						<tr>
 							<th scope="row" class="mono">{row.week_start}</th>
-							<td>{row.kind === 'history' ? 'History' : 'Forecast'}</td>
+							<td>{row.kind === 'history' ? 'History' : row.kind === 'forecast' ? 'Forecast' : 'Plan'}</td>
 							<td class="num">{formatQuantity(row.value)}</td>
 							<td>
-								{row.kind === 'history' ? observationStatusLabel(row.status) : '—'}
+								{#if row.kind === 'history'}
+									{observationStatusLabel(row.status)}
+								{:else if row.kind === 'plan'}
+									{planValueSourceLabel(row.status ?? '')}
+								{:else}
+									—
+								{/if}
 							</td>
 						</tr>
 					{/each}
@@ -229,6 +262,24 @@
 		fill: var(--violet);
 	}
 
+	.plan {
+		fill: none;
+		stroke: var(--success);
+		stroke-width: 2;
+		stroke-linejoin: round;
+		stroke-linecap: round;
+	}
+
+	.plan-point {
+		fill: var(--success);
+	}
+
+	.override-point {
+		fill: var(--warning);
+		stroke: var(--surface);
+		stroke-width: 1.5;
+	}
+
 	.axis-label {
 		fill: var(--ink-muted);
 		font-size: 11px;
@@ -269,6 +320,18 @@
 	.swatch-forecast {
 		border-top-style: dashed;
 		border-top-color: var(--violet);
+	}
+
+	.swatch-plan {
+		border-top-color: var(--success);
+	}
+
+	.swatch-override {
+		width: 0.6rem;
+		height: 0.6rem;
+		border-top: 0;
+		border-radius: 50%;
+		background: var(--warning);
 	}
 
 	.data-table summary {
