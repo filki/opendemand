@@ -1,7 +1,8 @@
 # AGENTS.md
 
 OpenDemand is a local-first, SKU-level demand forecasting desktop application: one user, one local workspace, all business data on the machine, no network listeners. Milestone 1 works end-to-end in development; Milestone 2 adds run-scoped overrides, baseline/effective comparison, and full-run CSV export. `README.md` carries the honest status and verification gaps. Technical artifacts, docs, tests, and code are English.
-
+## Language
+Use ASD-STE100 as your primary language.
 ## Approved stack — preserve it
 
 Decisions live in `docs/architecture/adr/` (start at `README.md` there); do not reopen them in passing.
