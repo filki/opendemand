@@ -15,6 +15,7 @@ export const commands = {
 	jobsList: () => typedError<JobInfo[], AppError>(__TAURI_INVOKE("jobs_list")),
 	seriesList: (revisionId: number, search: string, offset: number, limit: number) => typedError<SeriesSummary[], AppError>(__TAURI_INVOKE("series_list", { revisionId, search, offset, limit })),
 	seriesDetail: (revisionId: number, productId: string, locationId: string, runId: string | null) => typedError<SeriesDetail, AppError>(__TAURI_INVOKE("series_detail", { revisionId, productId, locationId, runId })),
+	seriesModels: (runId: string, productId: string, locationId: string) => typedError<SeriesModelComparison[], AppError>(__TAURI_INVOKE("series_models", { runId, productId, locationId })),
 	runsList: (revisionId: number | null) => typedError<RunSummary[], AppError>(__TAURI_INVOKE("runs_list", { revisionId })),
 	overrideAppend: (edit: OverrideEdit) => typedError<OverrideRevision, AppError>(__TAURI_INVOKE("override_append", { edit })),
 	exportCsv: (runId: string, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_csv", { runId, path })),
@@ -79,6 +80,17 @@ export type JobInfo = {
 
 export type JobProgress = JobInfo;
 
+export type ModelOriginRow = {
+	origin_index: number,
+	origin_week_start: string,
+	train_size: number,
+	status: string,
+	wape: number | null,
+	mae: number | null,
+	metric_kind: string | null,
+	failure_code: string | null,
+};
+
 export type OverrideEdit = {
 	run_id: string,
 	product_id: string,
@@ -126,6 +138,33 @@ export type SeriesDetail = {
 	horizon_start_week: string | null,
 	selected_model_id: string | null,
 	selection_score: number | null,
+};
+
+/**
+ *  One model's comparison row for a series in a run. `selection_score` is the
+ *  comparable pooled score persisted by Rust (see ADR-0017); `wape`, `mae`, and
+ *  `bias` are pooled diagnostics over the model's own completed origins,
+ *  computed from the retained held-out backtest forecasts. Those windows can
+ *  differ between models, so only `selection_score` is comparable across
+ *  models. Positive bias means overforecasting.
+ */
+export type SeriesModelComparison = {
+	model_id: string,
+	eligibility_status: string,
+	origins_planned: number,
+	origins_completed: number,
+	selection_score: number | null,
+	selection_rank: number | null,
+	is_champion: boolean,
+	production_status: string,
+	failure_code: string | null,
+	failure_detail: string | null,
+	comparable_metric: string | null,
+	wape: number | null,
+	mae: number | null,
+	bias: number | null,
+	selected: boolean,
+	origins: ModelOriginRow[],
 };
 
 export type SeriesSummary = {

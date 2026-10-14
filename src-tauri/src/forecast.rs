@@ -1,6 +1,15 @@
+//! Forecasting orchestration: planning, sidecar execution, and persistence.
+//!
+//! ADR-0006 fixes the model set, per-model training floors, the 12-week
+//! horizon, and at most four rolling origins per model. ADR-0012 keeps
+//! evaluation per series x model x origin; ADR-0017 defines the comparable
+//! pooled selection scores this module persists. Rust plans and selects;
+//! Python only fits, predicts, and computes per-origin metrics.
+
 use crate::{
     engine::{self, EngineOutput, Progress, Task},
     error::{AppError, AppResult},
+    selection::{self, ModelEvidence},
     types::{ForecastInput, ForecastResult},
     workspace::Workspace,
 };
@@ -14,6 +23,18 @@ use std::{
     },
 };
 use uuid::Uuid;
+
+/// Model ids with their training floors (ADR-0006). SeasonalNaive and AutoETS
+/// use two full 52-week cycles; verified against statsforecast 2.1.1, where
+/// SeasonalNaive needs at least 52 observations for finite forecasts and
+/// AutoETS fits short, zero, negative, and intermittent histories.
+pub const MODELS: [(&str, i32); 3] = [
+    ("naive", 12),
+    ("seasonal_naive_52", 104),
+    ("auto_ets_52", 104),
+];
+const HORIZON_WEEKS: i32 = 12;
+const MAX_ORIGINS: i32 = 4;
 
 fn cancelled(cancel: &AtomicBool) -> AppResult<()> {
     if cancel.load(Ordering::SeqCst) {
@@ -29,7 +50,7 @@ fn cancelled(cancel: &AtomicBool) -> AppResult<()> {
 fn plan_tasks(input: &ForecastInput) -> AppResult<Vec<Task>> {
     let mut tasks = Vec::new();
     for series in &input.series {
-        if series.qualification_status != "eligible" || series.h_length < 12 {
+        if series.qualification_status != "eligible" {
             continue;
         }
         let h = series.h_length as i32;
@@ -42,29 +63,40 @@ fn plan_tasks(input: &ForecastInput) -> AppResult<Vec<Task>> {
                     "Series history exceeds the supported calendar.",
                 )
             })?;
-        let mut add_task = |kind: &str, index: Option<i32>, train_size: i32| {
-            let train_end = start + Duration::weeks((train_size - 1) as i64);
-            tasks.push(Task {
-                id: format!(
-                    "{}:{}:{kind}:{}",
-                    series.product_id,
-                    series.location_id,
-                    index.unwrap_or(0)
-                ),
-                product_id: series.product_id,
-                location_id: series.location_id,
-                kind: kind.into(),
-                origin_index: index,
-                train_start: start,
-                train_end,
-                forecast_start: train_end + Duration::weeks(1),
-                train_size,
-            });
-        };
-        add_task("production", None, h);
-        let origins = ((h - 12) / 12).clamp(0, 4);
-        for index in 1..=origins {
-            add_task("backtest", Some(index), h - 12 * (origins - index + 1));
+        for (model_id, floor) in MODELS {
+            if h < floor {
+                continue;
+            }
+            let mut add_task = |kind: &str, index: Option<i32>, train_size: i32| {
+                let train_end = start + Duration::weeks((train_size - 1) as i64);
+                tasks.push(Task {
+                    id: format!(
+                        "{}:{}:{}:{kind}:{}",
+                        series.product_id,
+                        series.location_id,
+                        model_id,
+                        index.unwrap_or(0)
+                    ),
+                    product_id: series.product_id,
+                    location_id: series.location_id,
+                    model_id: model_id.into(),
+                    kind: kind.into(),
+                    origin_index: index,
+                    train_start: start,
+                    train_end,
+                    forecast_start: train_end + Duration::weeks(1),
+                    train_size,
+                });
+            };
+            add_task("production", None, h);
+            let origins = ((h - floor) / HORIZON_WEEKS).clamp(0, MAX_ORIGINS);
+            for index in 1..=origins {
+                add_task(
+                    "backtest",
+                    Some(index),
+                    h - HORIZON_WEEKS * (origins - index + 1),
+                );
+            }
         }
     }
     Ok(tasks)
@@ -112,6 +144,136 @@ pub async fn run_forecast(
     .await
 }
 
+/// One model's evidence for one series: planned origins, completed origins
+/// with their held-out sums, and its production task outcome.
+struct SeriesModel<'a> {
+    model_id: &'static str,
+    production_eligible: bool,
+    production: Option<&'a Task>,
+    backtests: Vec<&'a Task>,
+    evidence: ModelEvidence,
+}
+
+fn series_models<'a>(
+    series: &crate::types::InputSeries,
+    scoped: &[&'a Task],
+    output: &EngineOutput,
+) -> Vec<SeriesModel<'a>> {
+    let h = series.h_length as i32;
+    MODELS
+        .into_iter()
+        .map(|(model_id, floor)| {
+            let model_tasks = scoped
+                .iter()
+                .filter(|task| task.model_id == model_id)
+                .copied()
+                .collect::<Vec<_>>();
+            let production = model_tasks
+                .iter()
+                .find(|task| task.kind == "production")
+                .copied();
+            let mut backtests = model_tasks
+                .iter()
+                .filter(|task| task.kind == "backtest")
+                .copied()
+                .collect::<Vec<_>>();
+            backtests.sort_by_key(|task| task.origin_index);
+            let completed = backtests
+                .iter()
+                .filter(|task| output.statuses[&task.id].status == "completed")
+                .filter_map(|task| {
+                    output
+                        .sums
+                        .get(&task.id)
+                        .map(|sums| (task.train_end, *sums))
+                })
+                .collect::<Vec<_>>();
+            let production_completed =
+                production.is_some_and(|task| output.statuses[&task.id].status == "completed");
+            let production_eligible = series.qualification_status == "eligible" && h >= floor;
+            SeriesModel {
+                model_id,
+                production_eligible,
+                production,
+                backtests,
+                evidence: ModelEvidence {
+                    model_id: model_id.into(),
+                    production_eligible,
+                    production_completed,
+                    completed,
+                },
+            }
+        })
+        .collect()
+}
+
+fn eligibility_status(model: &SeriesModel<'_>) -> &'static str {
+    if !model.production_eligible {
+        "not_eligible"
+    } else if model.evidence.completed.len() >= 2 {
+        "champion_eligible"
+    } else {
+        "production_only"
+    }
+}
+
+fn production_status<'a>(model: &SeriesModel<'_>, output: &'a EngineOutput) -> &'a str {
+    match model.production {
+        None => "not_run",
+        Some(task) => &output.statuses[&task.id].status,
+    }
+}
+
+fn outcome_for(
+    series: &crate::types::InputSeries,
+    models: &[SeriesModel<'_>],
+    champion: Option<&String>,
+    used: Option<&String>,
+) -> (&'static str, Option<String>) {
+    if series.qualification_status == "invalid_data" {
+        return ("invalid_data", series.reason.clone());
+    }
+    if !models.iter().any(|model| model.production_eligible) {
+        return (
+            "insufficient_history",
+            Some(format!(
+                "Naive requires 12 consecutive known weeks; this series has {}.",
+                series.h_length
+            )),
+        );
+    }
+    let Some(used) = used else {
+        return (
+            "model_failure",
+            Some("No fallback candidate produced a forecast.".into()),
+        );
+    };
+    match champion {
+        Some(champion) if champion == used => ("ok", None),
+        Some(champion) => (
+            "ok",
+            Some(format!(
+                "Champion {champion} production failed; using {used}."
+            )),
+        ),
+        // Without a champion the fallback chain can only have used Naive.
+        None => (
+            "fallback_naive",
+            Some(
+                if models
+                    .iter()
+                    .any(|model| model.evidence.completed.len() >= 2)
+                {
+                    "No common backtest origins across models; using the Naive baseline."
+                } else {
+                    "Fewer than two completed backtest origins; using the Naive baseline."
+                }
+                .into(),
+            ),
+        ),
+    }
+}
+
 async fn persist(
     workspace: &Workspace,
     input: &ForecastInput,
@@ -126,28 +288,51 @@ async fn persist(
     let mut transaction = workspace.pool.begin().await?;
     let run_id = Uuid::now_v7();
     let finished_at = Utc::now().to_rfc3339();
-    let config = serde_json::json!({"models":["naive"],"window_weeks":12,"max_origins":4,"floors":{"naive":12},"contract":"opendemand.arrow/1"}).to_string();
+    let models = serde_json::json!(MODELS.map(|(model_id, _)| model_id));
+    let floors = serde_json::Value::Object(
+        MODELS
+            .iter()
+            .map(|(model_id, floor)| ((*model_id).to_owned(), serde_json::json!(floor)))
+            .collect(),
+    );
+    let config = serde_json::json!({
+        "models": models,
+        "window_weeks": HORIZON_WEEKS,
+        "max_origins": MAX_ORIGINS,
+        "floors": floors,
+        "selection": "comparable_pooled_wape",
+        "contract": "opendemand.arrow/1",
+    })
+    .to_string();
     sqlx::query("INSERT INTO forecast_run (id, revision_id, created_at, finished_at, status, horizon_weeks, horizon_start_week, timezone, config_json, app_version, engine_version) VALUES (?, ?, ?, ?, 'completed', 12, ?, ?, ?, ?, ?)")
         .bind(run_id.as_bytes().as_slice()).bind(input.revision_id).bind(started_at).bind(&finished_at)
         .bind((input.cutoff + Duration::weeks(1)).to_string()).bind(&input.timezone).bind(config)
         .bind(env!("CARGO_PKG_VERSION")).bind(&output.engine_version).execute(&mut *transaction).await?;
-    let completed = output
-        .statuses
-        .values()
-        .filter(|status| status.status == "completed")
-        .count() as i32;
-    let failed = tasks.len() as i32 - completed;
-    let status = if tasks.is_empty() {
-        "not_run"
-    } else if failed == 0 {
-        "completed"
-    } else if completed == 0 {
-        "failed"
-    } else {
-        "partial"
-    };
-    sqlx::query("INSERT INTO run_model (run_id, model_id, status, tasks_planned, tasks_completed, tasks_failed) VALUES (?, 'naive', ?, ?, ?, ?)")
-        .bind(run_id.as_bytes().as_slice()).bind(status).bind(tasks.len() as i32).bind(completed).bind(failed).execute(&mut *transaction).await?;
+
+    for (model_id, _) in MODELS {
+        let model_tasks = tasks
+            .iter()
+            .filter(|task| task.model_id == model_id)
+            .collect::<Vec<_>>();
+        let completed = model_tasks
+            .iter()
+            .filter(|task| output.statuses[&task.id].status == "completed")
+            .count() as i32;
+        let planned = model_tasks.len() as i32;
+        let failed = planned - completed;
+        let status = if planned == 0 {
+            "not_run"
+        } else if failed == 0 {
+            "completed"
+        } else if completed == 0 {
+            "failed"
+        } else {
+            "partial"
+        };
+        sqlx::query("INSERT INTO run_model (run_id, model_id, status, tasks_planned, tasks_completed, tasks_failed) VALUES (?, ?, ?, ?, ?, ?)")
+            .bind(run_id.as_bytes().as_slice()).bind(model_id).bind(status).bind(planned).bind(completed).bind(failed)
+            .execute(&mut *transaction).await?;
+    }
 
     let mut series_tasks: HashMap<(Uuid, Uuid), Vec<&Task>> = HashMap::new();
     for task in tasks {
@@ -159,93 +344,76 @@ async fn persist(
     let mut forecast_count = 0;
     let mut covered_series = 0;
     for series in &input.series {
-        let scoped_tasks = series_tasks
+        let scoped = series_tasks
             .get(&(series.product_id, series.location_id))
             .cloned()
             .unwrap_or_default();
-        let origins = scoped_tasks
+        let models = series_models(series, &scoped, output);
+        let evidences = models
             .iter()
-            .filter(|task| task.kind == "backtest")
+            .map(|model| model.evidence.clone())
             .collect::<Vec<_>>();
-        let completed_origins = origins
-            .iter()
-            .filter_map(|task| output.origins.get(&task.id))
-            .collect::<Vec<_>>();
-        let champion = completed_origins.len() >= 2;
-        let score = (!completed_origins.is_empty()).then(|| {
-            completed_origins
+        let selected = selection::select(&evidences);
+        for model in &models {
+            let ranked = selected
+                .ranked
                 .iter()
-                .map(|metric| metric.metric_value / completed_origins.len() as f64)
-                .sum::<f64>()
-        });
-        let production = scoped_tasks.iter().find(|task| task.kind == "production");
-        let production_status = production.map(|task| &output.statuses[&task.id]);
-        let eligible = series.qualification_status == "eligible" && series.h_length >= 12;
-        let eligibility = if !eligible {
-            "not_eligible"
-        } else if champion {
-            "champion_eligible"
-        } else {
-            "production_only"
-        };
-        let succeeded = production_status.is_some_and(|status| status.status == "completed");
-        sqlx::query("INSERT INTO series_model_evaluation (run_id, product_id, location_id, model_id, eligibility_status, origins_planned, origins_completed, selection_score, selection_rank, is_champion, production_status, failure_code, failure_detail) VALUES (?, ?, ?, 'naive', ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-            .bind(run_id.as_bytes().as_slice()).bind(series.product_id.as_bytes().as_slice()).bind(series.location_id.as_bytes().as_slice())
-            .bind(eligibility).bind(origins.len() as i32).bind(completed_origins.len() as i32).bind(score)
-            .bind(champion.then_some(1i32)).bind(i32::from(champion)).bind(production_status.map_or("not_run", |status| status.status.as_str()))
-            .bind(production_status.and_then(|status| status.failure_code.as_deref())).bind(production_status.and_then(|status| status.failure_detail.as_deref()))
-            .execute(&mut *transaction).await?;
-
-        for task in origins {
-            let status = &output.statuses[&task.id];
-            let metric = output.origins.get(&task.id);
-            sqlx::query("INSERT INTO series_model_origin (run_id, product_id, location_id, model_id, origin_index, origin_week_start, train_size, status, wape, mae, metric_kind, metric_value, failure_code, failure_detail) VALUES (?, ?, ?, 'naive', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                .position(|score| score.model_id == model.model_id);
+            let rank = ranked.map(|position| position as i32 + 1);
+            let score = ranked.map(|position| selected.ranked[position].score);
+            let status = production_status(model, output);
+            let failure = model
+                .production
+                .map(|task| &output.statuses[&task.id])
+                .filter(|status| status.status == "failed");
+            sqlx::query("INSERT INTO series_model_evaluation (run_id, product_id, location_id, model_id, eligibility_status, origins_planned, origins_completed, selection_score, selection_rank, is_champion, production_status, failure_code, failure_detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                 .bind(run_id.as_bytes().as_slice()).bind(series.product_id.as_bytes().as_slice()).bind(series.location_id.as_bytes().as_slice())
-                .bind(task.origin_index).bind(task.train_end.to_string()).bind(task.train_size).bind(&status.status)
-                .bind(metric.and_then(|metric| metric.wape)).bind(metric.map(|metric| metric.mae)).bind(metric.map(|metric| metric.metric_kind.as_str())).bind(metric.map(|metric| metric.metric_value))
-                .bind(&status.failure_code).bind(&status.failure_detail).execute(&mut *transaction).await?;
-            if let Some(points) = output.points.get(&task.id) {
-                for point in points {
-                    sqlx::query("INSERT INTO backtest_forecast (run_id, product_id, location_id, model_id, origin_index, week_start, value) VALUES (?, ?, ?, 'naive', ?, ?, ?)")
-                        .bind(run_id.as_bytes().as_slice()).bind(series.product_id.as_bytes().as_slice()).bind(series.location_id.as_bytes().as_slice())
-                        .bind(task.origin_index).bind(&point.week_start).bind(point.value).execute(&mut *transaction).await?;
+                .bind(model.model_id).bind(eligibility_status(model))
+                .bind(model.backtests.len() as i32).bind(model.evidence.completed.len() as i32)
+                .bind(score).bind(rank)
+                .bind(i32::from(selected.champion.as_deref() == Some(model.model_id)))
+                .bind(status)
+                .bind(failure.and_then(|status| status.failure_code.as_deref()))
+                .bind(failure.and_then(|status| status.failure_detail.as_deref()))
+                .execute(&mut *transaction).await?;
+
+            for task in &model.backtests {
+                let status = &output.statuses[&task.id];
+                let metric = output.origins.get(&task.id);
+                sqlx::query("INSERT INTO series_model_origin (run_id, product_id, location_id, model_id, origin_index, origin_week_start, train_size, status, wape, mae, metric_kind, metric_value, failure_code, failure_detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                    .bind(run_id.as_bytes().as_slice()).bind(series.product_id.as_bytes().as_slice()).bind(series.location_id.as_bytes().as_slice())
+                    .bind(model.model_id).bind(task.origin_index).bind(task.train_end.to_string()).bind(task.train_size).bind(&status.status)
+                    .bind(metric.and_then(|metric| metric.wape)).bind(metric.map(|metric| metric.mae)).bind(metric.map(|metric| metric.metric_kind.as_str())).bind(metric.map(|metric| metric.metric_value))
+                    .bind(&status.failure_code).bind(&status.failure_detail).execute(&mut *transaction).await?;
+                if let Some(points) = output.points.get(&task.id) {
+                    for point in points {
+                        sqlx::query("INSERT INTO backtest_forecast (run_id, product_id, location_id, model_id, origin_index, week_start, value) VALUES (?, ?, ?, ?, ?, ?, ?)")
+                            .bind(run_id.as_bytes().as_slice()).bind(series.product_id.as_bytes().as_slice()).bind(series.location_id.as_bytes().as_slice())
+                            .bind(model.model_id).bind(task.origin_index).bind(&point.week_start).bind(point.value).execute(&mut *transaction).await?;
+                    }
                 }
             }
         }
-        let (outcome, reason) = if series.qualification_status == "invalid_data" {
-            ("invalid_data", series.reason.clone())
-        } else if !eligible {
-            (
-                "insufficient_history",
-                Some(format!(
-                    "Naive requires 12 consecutive known weeks; this series has {}.",
-                    series.h_length
-                )),
-            )
-        } else if !succeeded {
-            (
-                "model_failure",
-                production_status
-                    .and_then(|status| status.failure_detail.clone())
-                    .or_else(|| Some("Naive production forecast failed.".into())),
-            )
-        } else if champion {
-            ("ok", None)
-        } else {
-            (
-                "fallback_naive",
-                Some("Fewer than two completed backtest origins; using the Naive baseline.".into()),
-            )
-        };
+        let (outcome, reason) = outcome_for(
+            series,
+            &models,
+            selected.champion.as_ref(),
+            selected.used.as_ref(),
+        );
         sqlx::query("INSERT INTO forecast_series_status (run_id, product_id, location_id, status, selected_model_id, reason) VALUES (?, ?, ?, ?, ?, ?)")
             .bind(run_id.as_bytes().as_slice()).bind(series.product_id.as_bytes().as_slice()).bind(series.location_id.as_bytes().as_slice())
-            .bind(outcome).bind(succeeded.then_some("naive")).bind(reason).execute(&mut *transaction).await?;
-        if succeeded {
+            .bind(outcome).bind(selected.used.as_deref()).bind(reason).execute(&mut *transaction).await?;
+        if let Some(used) = selected.used.as_deref() {
             covered_series += 1;
-            for point in &output.points[&production.unwrap().id] {
-                sqlx::query("INSERT INTO forecast (run_id, product_id, location_id, week_start, value, selected_model_id) VALUES (?, ?, ?, ?, ?, 'naive')")
+            let production = models
+                .iter()
+                .find(|model| model.model_id == used)
+                .and_then(|model| model.production)
+                .expect("the used model produced a completed production task");
+            for point in &output.points[&production.id] {
+                sqlx::query("INSERT INTO forecast (run_id, product_id, location_id, week_start, value, selected_model_id) VALUES (?, ?, ?, ?, ?, ?)")
                     .bind(run_id.as_bytes().as_slice()).bind(series.product_id.as_bytes().as_slice()).bind(series.location_id.as_bytes().as_slice())
-                    .bind(&point.week_start).bind(point.value).execute(&mut *transaction).await?;
+                    .bind(&point.week_start).bind(point.value).bind(used).execute(&mut *transaction).await?;
                 forecast_count += 1;
             }
         }
@@ -277,31 +445,52 @@ mod tests {
     use crate::types::InputSeries;
     use chrono::NaiveDate;
 
-    #[test]
-    fn naive_plan_uses_series_specific_rolling_origins_and_production_floor() {
-        let input = ForecastInput {
+    fn series(h: u32) -> InputSeries {
+        InputSeries {
+            product_id: Uuid::now_v7(),
+            location_id: Uuid::now_v7(),
+            series_key: h.to_string(),
+            h_length: h,
+            qualification_status: if h >= 12 {
+                "eligible"
+            } else {
+                "insufficient_history"
+            }
+            .into(),
+            reason: None,
+            observations: vec![],
+        }
+    }
+
+    fn input(series: Vec<InputSeries>) -> ForecastInput {
+        ForecastInput {
             revision_id: 1,
             cutoff: NaiveDate::from_ymd_opt(2026, 2, 23).unwrap(),
             timezone: "UTC".into(),
-            series: [60, 20, 6]
-                .into_iter()
-                .map(|h| InputSeries {
-                    product_id: Uuid::now_v7(),
-                    location_id: Uuid::now_v7(),
-                    series_key: h.to_string(),
-                    h_length: h,
-                    qualification_status: if h >= 12 {
-                        "eligible"
-                    } else {
-                        "insufficient_history"
-                    }
-                    .into(),
-                    reason: None,
-                    observations: vec![],
-                })
-                .collect(),
-        };
-        let tasks = plan_tasks(&input).unwrap();
+            series,
+        }
+    }
+
+    fn tasks_for(h: u32, model_id: &str) -> Vec<Task> {
+        plan_tasks(&input(vec![series(h)]))
+            .unwrap()
+            .into_iter()
+            .filter(|task| task.model_id == model_id)
+            .collect()
+    }
+
+    fn origin_sizes(h: u32, model_id: &str) -> Vec<i32> {
+        tasks_for(h, model_id)
+            .iter()
+            .filter(|task| task.kind == "backtest")
+            .map(|task| task.train_size)
+            .collect()
+    }
+
+    #[test]
+    fn naive_plan_uses_series_specific_rolling_origins_and_production_floor() {
+        let tasks = plan_tasks(&input([60, 20, 6].into_iter().map(series).collect())).unwrap();
+        // 60: production + 4 origins; 20: production only; 6: nothing.
         assert_eq!(tasks.len(), 6);
         let origins = tasks
             .iter()
@@ -325,5 +514,144 @@ mod tests {
             .iter()
             .filter(|task| task.kind == "production")
             .all(|task| task.forecast_start.to_string() == "2026-03-02"));
+    }
+
+    #[test]
+    fn every_series_model_task_id_is_globally_unique() {
+        let tasks = plan_tasks(&input(vec![series(152), series(152)])).unwrap();
+        let mut ids = tasks.iter().map(|task| task.id.clone()).collect::<Vec<_>>();
+        let total = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), total);
+        assert!(tasks
+            .iter()
+            .any(|task| task.id.contains("seasonal_naive_52")));
+        assert!(tasks.iter().any(|task| task.id.contains("auto_ets_52")));
+    }
+
+    #[test]
+    fn model_thresholds_match_the_approved_table() {
+        // Production floors: Naive 12, SeasonalNaive and AutoETS 104.
+        assert_eq!(origin_sizes(104, "naive"), vec![56, 68, 80, 92]);
+        assert!(origin_sizes(103, "seasonal_naive_52").is_empty());
+        assert_eq!(origin_sizes(104, "seasonal_naive_52"), Vec::<i32>::new());
+        // 116: first SeasonalNaive/AutoETS origin (train 104).
+        assert_eq!(origin_sizes(116, "seasonal_naive_52"), vec![104]);
+        assert_eq!(origin_sizes(116, "auto_ets_52"), vec![104]);
+        // 128: two origins, so champion eligibility becomes possible.
+        assert_eq!(origin_sizes(128, "seasonal_naive_52"), vec![104, 116]);
+        assert_eq!(origin_sizes(128, "auto_ets_52"), vec![104, 116]);
+        // 152: four origins (the maximum).
+        assert_eq!(
+            origin_sizes(152, "seasonal_naive_52"),
+            vec![104, 116, 128, 140]
+        );
+        assert_eq!(origin_sizes(152, "auto_ets_52"), vec![104, 116, 128, 140]);
+        // Naive thresholds stay unchanged from Milestone 1.
+        assert_eq!(origin_sizes(36, "naive"), vec![12, 24]);
+        assert_eq!(origin_sizes(24, "naive"), vec![12]);
+        assert!(origin_sizes(23, "naive").is_empty());
+    }
+
+    #[test]
+    fn seasonal_origin_dates_align_with_the_naive_grid_for_comparable_evidence() {
+        let tasks = plan_tasks(&input(vec![series(128)])).unwrap();
+        let ends = |model: &str| {
+            tasks
+                .iter()
+                .filter(|task| task.model_id == model && task.kind == "backtest")
+                .map(|task| task.train_end.to_string())
+                .collect::<Vec<_>>()
+        };
+        let naive = ends("naive");
+        let seasonal = ends("seasonal_naive_52");
+        // The two seasonal origins are the most recent naive origin dates.
+        assert_eq!(seasonal, naive[naive.len() - 2..].to_vec());
+    }
+
+    fn fake_model(model_id: &'static str, production_eligible: bool) -> SeriesModel<'static> {
+        fake_model_with_origins(model_id, production_eligible, 0)
+    }
+
+    fn fake_model_with_origins(
+        model_id: &'static str,
+        production_eligible: bool,
+        origins: usize,
+    ) -> SeriesModel<'static> {
+        let start = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
+        let completed = (0..origins)
+            .map(|index| {
+                (
+                    start + Duration::weeks(index as i64),
+                    selection::OriginSums::default(),
+                )
+            })
+            .collect();
+        SeriesModel {
+            model_id,
+            production_eligible,
+            production: None,
+            backtests: vec![],
+            evidence: ModelEvidence {
+                model_id: model_id.into(),
+                production_eligible,
+                production_completed: false,
+                completed,
+            },
+        }
+    }
+
+    #[test]
+    fn outcome_reports_model_failure_when_no_production_candidate_succeeded() {
+        let models = vec![fake_model("naive", true)];
+        let (outcome, reason) = outcome_for(&series(12), &models, Some(&"naive".to_string()), None);
+        assert_eq!(outcome, "model_failure");
+        assert!(reason.unwrap().contains("No fallback candidate"));
+    }
+
+    #[test]
+    fn outcome_stays_ok_when_champion_production_failed_and_another_model_served() {
+        let models = vec![fake_model("naive", true), fake_model("auto_ets_52", true)];
+        let champion = "auto_ets_52".to_string();
+        let used = "naive".to_string();
+        let (outcome, reason) = outcome_for(&series(60), &models, Some(&champion), Some(&used));
+        assert_eq!(outcome, "ok");
+        assert!(reason
+            .unwrap()
+            .contains("Champion auto_ets_52 production failed"));
+    }
+
+    #[test]
+    fn outcome_is_fallback_naive_only_without_a_champion() {
+        let models = vec![fake_model("naive", true)];
+        let used = "naive".to_string();
+        let (outcome, reason) = outcome_for(&series(20), &models, None, Some(&used));
+        assert_eq!(outcome, "fallback_naive");
+        assert!(reason
+            .unwrap()
+            .contains("Fewer than two completed backtest origins"));
+    }
+
+    #[test]
+    fn outcome_is_insufficient_history_below_every_floor() {
+        let models = vec![fake_model("naive", false)];
+        let (outcome, reason) = outcome_for(&series(6), &models, None, None);
+        assert_eq!(outcome, "insufficient_history");
+        assert!(reason.unwrap().contains("12 consecutive known weeks"));
+    }
+
+    #[test]
+    fn outcome_reports_no_common_origins_when_backtests_are_disjoint() {
+        let models = vec![
+            fake_model_with_origins("naive", true, 2),
+            fake_model_with_origins("seasonal_naive_52", true, 2),
+        ];
+        let used = "naive".to_string();
+        let (outcome, reason) = outcome_for(&series(128), &models, None, Some(&used));
+        assert_eq!(outcome, "fallback_naive");
+        assert!(reason
+            .unwrap()
+            .contains("No common backtest origins across models"));
     }
 }

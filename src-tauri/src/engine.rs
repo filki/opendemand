@@ -1,5 +1,6 @@
 use crate::{
     error::{AppError, AppResult},
+    selection::OriginSums,
     types::{ForecastInput, ForecastPoint},
 };
 use arrow_array::{
@@ -38,6 +39,7 @@ pub struct Task {
     pub id: String,
     pub product_id: Uuid,
     pub location_id: Uuid,
+    pub model_id: String,
     pub kind: String,
     pub origin_index: Option<i32>,
     pub train_start: NaiveDate,
@@ -67,6 +69,7 @@ pub struct EngineOutput {
     pub statuses: HashMap<String, TaskResult>,
     pub origins: HashMap<String, OriginMetric>,
     pub points: HashMap<String, Vec<ForecastPoint>>,
+    pub sums: HashMap<String, OriginSums>,
     pub engine_version: String,
 }
 
@@ -232,7 +235,12 @@ pub fn write_inputs(directory: &Path, input: &ForecastInput, tasks: &[Task]) -> 
                     .map(|task| task.location_id.to_string())
                     .collect::<Vec<_>>(),
             )),
-            Arc::new(StringArray::from(vec!["naive"; tasks.len()])),
+            Arc::new(StringArray::from(
+                tasks
+                    .iter()
+                    .map(|task| task.model_id.as_str())
+                    .collect::<Vec<_>>(),
+            )),
             Arc::new(StringArray::from(
                 tasks
                     .iter()
@@ -371,6 +379,7 @@ fn decode_outputs(
         statuses: HashMap::new(),
         origins: HashMap::new(),
         points: HashMap::new(),
+        sums: HashMap::new(),
         engine_version,
     };
     for batch in read_table(directory, "task_status", &files["task_status"], tasks.len())? {
@@ -521,6 +530,11 @@ pub fn validate_outputs(
             })
             .collect::<AppResult<Vec<_>>>()?;
         let denominator: f64 = actuals.iter().map(|value| value.abs()).sum();
+        let signed_error: f64 = points
+            .iter()
+            .zip(&actuals)
+            .map(|(point, actual)| point.value - actual)
+            .sum();
         let absolute_error: f64 = points
             .iter()
             .zip(&actuals)
@@ -548,6 +562,15 @@ pub fn validate_outputs(
                 "Engine origin metrics do not match the planned window and returned forecasts.",
             ));
         }
+        output.sums.insert(
+            task.id.clone(),
+            OriginSums {
+                points: 12,
+                absolute_error,
+                actual_magnitude: denominator,
+                signed_error,
+            },
+        );
     }
     Ok(())
 }
@@ -617,7 +640,15 @@ async fn run_process(
         .map_err(|_| AppError::new("timeout", "Forecast engine did not complete its startup handshake."))??
         .ok_or_else(|| AppError::new("unexpected_eof", "Forecast engine exited during startup."))?;
     let hello: Value = serde_json::from_str(&hello)?;
-    if hello["protocol"] != PROTOCOL || hello["type"] != "hello" || !hello["job_id"].is_null() || !hello["contracts"].as_array().is_some_and(|values| values.iter().any(|value| value == CONTRACT)) || !hello["models"].as_array().is_some_and(|values| values.iter().any(|value| value == "naive")) {
+    let advertised = hello["models"]
+        .as_array()
+        .map(|values| values.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .unwrap_or_default();
+    // Every model the task plan needs must be advertised by the engine hello.
+    let supports_plan = tasks
+        .iter()
+        .all(|task| advertised.contains(&task.model_id.as_str()));
+    if hello["protocol"] != PROTOCOL || hello["type"] != "hello" || !hello["job_id"].is_null() || !hello["contracts"].as_array().is_some_and(|values| values.iter().any(|value| value == CONTRACT)) || !supports_plan {
         return Err(AppError::new("protocol_mismatch", "Forecast engine is not compatible with this application."));
     }
     let engine_version = hello["engine_version"].as_str().filter(|value| !value.is_empty()).ok_or_else(|| violation("Engine hello has no version."))?.to_owned();

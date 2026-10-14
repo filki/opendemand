@@ -98,6 +98,44 @@ pub struct SeriesDetail {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ModelOriginRow {
+    pub origin_index: u32,
+    pub origin_week_start: String,
+    pub train_size: u32,
+    pub status: String,
+    pub wape: Option<f64>,
+    pub mae: Option<f64>,
+    pub metric_kind: Option<String>,
+    pub failure_code: Option<String>,
+}
+
+/// One model's comparison row for a series in a run. `selection_score` is the
+/// comparable pooled score persisted by Rust (see ADR-0017); `wape`, `mae`, and
+/// `bias` are pooled diagnostics over the model's own completed origins,
+/// computed from the retained held-out backtest forecasts. Those windows can
+/// differ between models, so only `selection_score` is comparable across
+/// models. Positive bias means overforecasting.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct SeriesModelComparison {
+    pub model_id: String,
+    pub eligibility_status: String,
+    pub origins_planned: u32,
+    pub origins_completed: u32,
+    pub selection_score: Option<f64>,
+    pub selection_rank: Option<u32>,
+    pub is_champion: bool,
+    pub production_status: String,
+    pub failure_code: Option<String>,
+    pub failure_detail: Option<String>,
+    pub comparable_metric: Option<String>,
+    pub wape: Option<f64>,
+    pub mae: Option<f64>,
+    pub bias: Option<f64>,
+    pub selected: bool,
+    pub origins: Vec<ModelOriginRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct RunSummary {
     pub id: String,
     pub revision_id: i32,

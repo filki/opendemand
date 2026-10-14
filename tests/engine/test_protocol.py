@@ -57,7 +57,7 @@ class ProtocolTests(unittest.TestCase):
                 "job_id": None,
                 "engine_version": opendemand_engine.__version__,
                 "contracts": [h.CONTRACT_ID],
-                "models": ["naive"],
+                "models": ["naive", "seasonal_naive_52", "auto_ets_52"],
             },
         )
         self.assert_protocol_only(envelopes)
@@ -271,7 +271,7 @@ class ProtocolTests(unittest.TestCase):
 class HeartbeatTests(unittest.TestCase):
     def test_heartbeat_reemits_last_progress(self):
         import io
-        import time
+        import threading
 
         from opendemand_engine.engine import Heartbeat, ProgressTracker
         from opendemand_engine.protocol import EnvelopeWriter
@@ -279,10 +279,24 @@ class HeartbeatTests(unittest.TestCase):
         buffer = io.StringIO()
         tracker = ProgressTracker(EnvelopeWriter(buffer), "job-hb")
         tracker.update("backtest", 1, 3)
-        heartbeat = Heartbeat(0.05, tracker.flush)
+        # Wait for two observed flushes instead of racing a fixed sleep against
+        # stop(): the second heartbeat tick can otherwise land after stop().
+        two_flushes = threading.Event()
+        flushes = 0
+
+        def flush():
+            nonlocal flushes
+            tracker.flush()
+            flushes += 1
+            if flushes >= 2:
+                two_flushes.set()
+
+        heartbeat = Heartbeat(0.05, flush)
         heartbeat.start()
         try:
-            time.sleep(0.2)
+            self.assertTrue(
+                two_flushes.wait(5.0), "heartbeat did not re-emit progress twice"
+            )
         finally:
             heartbeat.stop()
 

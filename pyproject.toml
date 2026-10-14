@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opendemand-engine"
-version = "0.0.1"
-description = "OpenDemand Python forecasting sidecar (Milestone 1 Naive engine)."
+version = "0.0.2"
+description = "OpenDemand Python forecasting sidecar (Naive, SeasonalNaive, AutoETS)."
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 license = "AGPL-3.0-only"
