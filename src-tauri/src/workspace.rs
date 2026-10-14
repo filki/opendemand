@@ -10,10 +10,11 @@
 
 use crate::{
     error::{AppError, AppResult},
+    selection,
     types::{
         ExportResult, ForecastInput, ForecastPoint, HistoryPoint, ImportResult, InputSeries,
-        ObservationRecord, OverrideEdit, OverrideRevision, PlanningPoint, RunSummary, SeriesDetail,
-        SeriesSummary, WorkspaceInfo,
+        ModelOriginRow, ObservationRecord, OverrideEdit, OverrideRevision, PlanningPoint,
+        RunSummary, SeriesDetail, SeriesModelComparison, SeriesSummary, WorkspaceInfo,
     },
 };
 use chrono::{Datelike, Duration as ChronoDuration, NaiveDate, Utc, Weekday};
@@ -733,6 +734,223 @@ impl Workspace {
             }
         }
         Ok(detail)
+    }
+
+    /// Model comparison evidence for one series in one run: stored evaluation
+    /// rows and per-origin metrics plus pooled diagnostics computed from the
+    /// retained held-out backtest forecasts against the pinned revision actuals.
+    pub async fn series_models(
+        &self,
+        run_id: &str,
+        product_id: &str,
+        location_id: &str,
+    ) -> AppResult<Vec<SeriesModelComparison>> {
+        let run = parse_uuid(run_id, "run_id")?;
+        let product = parse_uuid(product_id, "product_id")?;
+        let location = parse_uuid(location_id, "location_id")?;
+        let run_bytes = run.as_bytes().to_vec();
+        let product_bytes = product.as_bytes().to_vec();
+        let location_bytes = location.as_bytes().to_vec();
+
+        sqlx::query("SELECT id FROM forecast_run WHERE id = ?")
+            .bind(run_bytes.as_slice())
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| {
+                err(
+                    "unknown_run",
+                    "The forecast run does not exist in this workspace.",
+                )
+            })?;
+        let status_row = sqlx::query(
+            "SELECT selected_model_id FROM forecast_series_status
+             WHERE run_id = ? AND product_id = ? AND location_id = ?",
+        )
+        .bind(run_bytes.as_slice())
+        .bind(product_bytes.as_slice())
+        .bind(location_bytes.as_slice())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| {
+            err(
+                "unknown_series",
+                "The selected series is not part of this forecast run.",
+            )
+        })?;
+        let selected_model: Option<String> = status_row.get("selected_model_id");
+
+        let evaluations = sqlx::query(
+            "SELECT model_id, eligibility_status, origins_planned, origins_completed,
+                    selection_score, selection_rank, is_champion, production_status,
+                    failure_code, failure_detail
+             FROM series_model_evaluation
+             WHERE run_id = ? AND product_id = ? AND location_id = ?",
+        )
+        .bind(run_bytes.as_slice())
+        .bind(product_bytes.as_slice())
+        .bind(location_bytes.as_slice())
+        .fetch_all(&self.pool)
+        .await?;
+        let origin_rows = sqlx::query(
+            "SELECT model_id, origin_index, origin_week_start, train_size, status,
+                    wape, mae, metric_kind, failure_code
+             FROM series_model_origin
+             WHERE run_id = ? AND product_id = ? AND location_id = ?
+             ORDER BY model_id, origin_index",
+        )
+        .bind(run_bytes.as_slice())
+        .bind(product_bytes.as_slice())
+        .bind(location_bytes.as_slice())
+        .fetch_all(&self.pool)
+        .await?;
+        let sum_rows = sqlx::query(
+            "SELECT bf.model_id AS model_id, bf.origin_index AS origin_index,
+                    SUM(ABS(bf.value - o.quantity)) AS error,
+                    SUM(ABS(o.quantity)) AS magnitude,
+                    SUM(bf.value - o.quantity) AS signed,
+                    COUNT(*) AS points
+             FROM backtest_forecast bf
+             JOIN forecast_run r ON r.id = bf.run_id
+             JOIN observation o ON o.revision_id = r.revision_id
+                 AND o.product_id = bf.product_id AND o.location_id = bf.location_id
+                 AND o.week_start = bf.week_start
+             WHERE bf.run_id = ? AND bf.product_id = ? AND bf.location_id = ?
+                 AND o.quantity IS NOT NULL
+             GROUP BY bf.model_id, bf.origin_index",
+        )
+        .bind(run_bytes.as_slice())
+        .bind(product_bytes.as_slice())
+        .bind(location_bytes.as_slice())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut sums: HashMap<(String, i32), selection::OriginSums> = HashMap::new();
+        for row in &sum_rows {
+            sums.insert(
+                (
+                    row.get("model_id"),
+                    row.get::<i64, _>("origin_index") as i32,
+                ),
+                selection::OriginSums {
+                    points: row.get::<i64, _>("points") as u32,
+                    absolute_error: row.get("error"),
+                    actual_magnitude: row.get("magnitude"),
+                    signed_error: row.get("signed"),
+                },
+            );
+        }
+        let mut origins_by_model: HashMap<String, Vec<ModelOriginRow>> = HashMap::new();
+        for row in &origin_rows {
+            origins_by_model
+                .entry(row.get("model_id"))
+                .or_default()
+                .push(ModelOriginRow {
+                    origin_index: row.get::<i64, _>("origin_index") as u32,
+                    origin_week_start: row.get("origin_week_start"),
+                    train_size: row.get::<i64, _>("train_size") as u32,
+                    status: row.get("status"),
+                    wape: row.get("wape"),
+                    mae: row.get("mae"),
+                    metric_kind: row.get("metric_kind"),
+                    failure_code: row.get("failure_code"),
+                });
+        }
+
+        struct Evaluation {
+            model_id: String,
+            eligibility_status: String,
+            origins_planned: u32,
+            origins_completed: u32,
+            selection_score: Option<f64>,
+            selection_rank: Option<u32>,
+            is_champion: bool,
+            production_status: String,
+            failure_code: Option<String>,
+            failure_detail: Option<String>,
+        }
+        let mut entries: Vec<Evaluation> = evaluations
+            .iter()
+            .map(|row| Evaluation {
+                model_id: row.get("model_id"),
+                eligibility_status: row.get("eligibility_status"),
+                origins_planned: row.get::<i64, _>("origins_planned") as u32,
+                origins_completed: row.get::<i64, _>("origins_completed") as u32,
+                selection_score: row.get("selection_score"),
+                selection_rank: row
+                    .get::<Option<i64>, _>("selection_rank")
+                    .map(|v| v as u32),
+                is_champion: row.get::<i64, _>("is_champion") == 1,
+                production_status: row.get("production_status"),
+                failure_code: row.get("failure_code"),
+                failure_detail: row.get("failure_detail"),
+            })
+            .collect();
+        entries.sort_by_key(|entry| {
+            selection::MODELS
+                .iter()
+                .position(|model| *model == entry.model_id)
+                .unwrap_or(usize::MAX)
+        });
+
+        let completed_origins =
+            |model_id: &str| -> AppResult<Vec<(NaiveDate, selection::OriginSums)>> {
+                let mut completed = Vec::new();
+                for origin in origins_by_model.get(model_id).into_iter().flatten() {
+                    if origin.status != "completed" {
+                        continue;
+                    }
+                    let Some(value) = sums.get(&(model_id.to_owned(), origin.origin_index as i32))
+                    else {
+                        continue;
+                    };
+                    let week = NaiveDate::parse_from_str(&origin.origin_week_start, "%Y-%m-%d")
+                        .map_err(|_| err("database_error", "Stored origin week is invalid."))?;
+                    completed.push((week, *value));
+                }
+                Ok(completed)
+            };
+        let mut evidences = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            evidences.push(selection::ModelEvidence {
+                model_id: entry.model_id.clone(),
+                production_eligible: entry.eligibility_status != "not_eligible",
+                production_completed: entry.production_status == "completed",
+                completed: completed_origins(&entry.model_id)?,
+            });
+        }
+        let ranked = selection::rank(&evidences);
+
+        let mut comparisons = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let completed = completed_origins(&entry.model_id)?;
+            let diagnostics = selection::diagnostics(&completed);
+            let comparable_metric = ranked
+                .iter()
+                .find(|score| score.model_id == entry.model_id)
+                .map(|score| score.metric_kind.to_owned());
+            comparisons.push(SeriesModelComparison {
+                selected: selected_model.as_deref() == Some(entry.model_id.as_str()),
+                model_id: entry.model_id.clone(),
+                eligibility_status: entry.eligibility_status,
+                origins_planned: entry.origins_planned,
+                origins_completed: entry.origins_completed,
+                selection_score: entry.selection_score,
+                selection_rank: entry.selection_rank,
+                is_champion: entry.is_champion,
+                production_status: entry.production_status,
+                failure_code: entry.failure_code,
+                failure_detail: entry.failure_detail,
+                comparable_metric,
+                wape: diagnostics.wape,
+                mae: diagnostics.mae,
+                bias: diagnostics.bias,
+                origins: origins_by_model
+                    .get(&entry.model_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            });
+        }
+        Ok(comparisons)
     }
 
     /// Append one cell revision, including a NULL clearing revision, after

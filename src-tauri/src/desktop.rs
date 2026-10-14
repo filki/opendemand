@@ -144,6 +144,21 @@ async fn series_detail(
 
 #[tauri::command]
 #[specta::specta]
+async fn series_models(
+    run_id: String,
+    product_id: String,
+    location_id: String,
+    state: State<'_, Service>,
+) -> AppResult<Vec<SeriesModelComparison>> {
+    state
+        .current()
+        .await?
+        .series_models(&run_id, &product_id, &location_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn runs_list(
     revision_id: Option<i32>,
     state: State<'_, Service>,
@@ -498,6 +513,7 @@ fn command_builder() -> Builder<tauri::Wry> {
             jobs_list,
             series_list,
             series_detail,
+            series_models,
             runs_list,
             override_append,
             export_csv
