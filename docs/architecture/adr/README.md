@@ -27,6 +27,7 @@ This directory records the accepted architecture decisions for OpenDemand. Each 
 | [0019](0019-raw-source-preprocessing-layer.md) | Raw-source preprocessing layer | Accepted | 2026-10-14 |
 | [0020](0020-parsing-descriptor-in-the-mapping-fingerprint.md) | Parsing configuration in the mapping fingerprint | Accepted | 2026-10-14 |
 | [0021](0021-import-config-persistence-and-migration-gate-mechanism.md) | Import configuration persistence and the pre-migration backup mechanism | Accepted | 2026-10-14 |
+| [0022](0022-weekly-planning-workflow-and-run-comparison.md) | Weekly planning workflow and run comparison | Accepted | 2026-10-14 |
 
 Schema status: migration 001 is frozen (2026-10-13; SHA-256 recorded in `../schema/001_init.sha256`); migration 002 adds `import_config` and `import_revision.descriptor_json` and is applied only behind the verified pre-migration backup (ADR-0021). All schema changes use new numbered migrations.
 

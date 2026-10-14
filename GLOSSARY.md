@@ -2,6 +2,7 @@
 
 Vocabulary for issues, tests, ADRs, docs, and UI copy. Definitions here are concise; the authoritative semantics live in `docs/architecture/DATA_ARCHITECTURE.md` and the ADRs under `docs/architecture/adr/`. Use these terms as written — do not drift to synonyms.
 
+- **Adjacent revisions** — the two newest import revisions of the active source profile; the default weekly comparison never skips an unforecast revision (ADR-0022).
 - **Backtest origin** — one rolling-origin training cutoff per model inside a forecast run; a run plans up to four (`origin_index` 1–4), each with its own origin date and train size.
 - **Baseline forecast** — immutable model output for one product/location/week cell. Never edited; manual edits are overrides.
 - **canonical/1** — the frozen CSV input contract: `series_key`, `week_start`, `quantity`. Raw planner exports are converted into it by the preprocessing layer (ADR-0019); the contract itself does not change.
@@ -11,9 +12,11 @@ Vocabulary for issues, tests, ADRs, docs, and UI copy. Definitions here are conc
 - **Content hash** — SHA-256 of the original retained source bytes (CSV, TXT, or XLSX), qualified by the input contract version; part of the import idempotency key.
 - **Coverage** — share of series in a run whose outcome is `ok` or `fallback_naive`.
 - **Effective forecast** — derived at read time as the latest override ?? baseline. Never stored.
+- **Demand change** — a read-time cell difference between two revisions at one `product × location × week_start`: `added`, `removed`, or `changed` quantity/status; `missing` stays distinct from zero (ADR-0022).
 - **Eligibility status** — per series × model × run: `not_eligible` (below the model floor), `production_only` (too few completed origins), or `champion_eligible`.
 - **fallback_naive** — a run outcome: no champion was available (too few completed origins, or no origin common to all candidates), so the Naive baseline was used; flagged.
 - **Forecast bias** — `sum(forecast − actual) / sum(|actual|)` pooled over a model's completed origins; positive means overforecasting; unavailable when the actual total is zero; diagnostic only, never a ranking input.
+- **Forecast change** — a read-time baseline difference between two runs at the same `week_start`; horizon edge weeks are non-comparable and count as no change (ADR-0022).
 - **Forecast run** — immutable record of one forecast execution; pins the import revision, horizon, timezone, config, and versions.
 - **H (usable history)** — number of consecutive weeks with numeric values ending at the last completed week; `missing` and `partial` weeks break the run (ADR-0005).
 - **Import revision** — immutable full-snapshot import; never mutated or auto-deleted.
@@ -30,5 +33,6 @@ Vocabulary for issues, tests, ADRs, docs, and UI copy. Definitions here are conc
 - **Series qualification** — per-revision eligibility: `eligible`, `insufficient_history` (`H < 12`), or `invalid_data`.
 - **SKU** — the product's canonical display code; product identity is the UUIDv7 id, not the SKU (ADR-0004).
 - **WAPE** — weighted absolute percentage error: `sum(|actual − forecast|) / sum(|actual|)`; unavailable when the actual total is zero (MAE fallback).
+- **Weekly comparison** — derived, read-time comparison of two adjacent import revisions and their completed forecast runs; never stored, never zero-filled (ADR-0022).
 - **week_start** — ISO date (`YYYY-MM-DD`) of the Monday that identifies a calendar week in the workspace timezone.
 - **Workspace** — the user-chosen directory holding the SQLite database, retained source CSV copies, exported CSV copies, backups with manifests, and job temp files.

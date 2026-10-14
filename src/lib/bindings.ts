@@ -50,6 +50,10 @@ export const commands = {
 	importConfigsList: () => typedError<ImportConfig[], AppError>(__TAURI_INVOKE("import_configs_list")),
 	importConfigSave: (name: string, descriptor: ParsingDescriptor) => typedError<ImportConfig, AppError>(__TAURI_INVOKE("import_config_save", { name, descriptor })),
 	importConfigDelete: (id: number) => typedError<null, AppError>(__TAURI_INVOKE("import_config_delete", { id })),
+	importConfigSuggestion: () => typedError<number | null, AppError>(__TAURI_INVOKE("import_config_suggestion")),
+	weeklyComparisonContext: () => typedError<WeeklyComparisonContext, AppError>(__TAURI_INVOKE("weekly_comparison_context")),
+	weeklyComparisonSeriesList: (currentRunId: string, previousRunId: string, search: string, offset: number, limit: number) => typedError<SeriesChangeSummary[], AppError>(__TAURI_INVOKE("weekly_comparison_series_list", { currentRunId, previousRunId, search, offset, limit })),
+	weeklyComparisonSeriesDetail: (currentRunId: string, previousRunId: string, productId: string, locationId: string) => typedError<SeriesComparisonDetail, AppError>(__TAURI_INVOKE("weekly_comparison_series_detail", { currentRunId, previousRunId, productId, locationId })),
 	forecastStart: (revisionId: number) => typedError<JobInfo, AppError>(__TAURI_INVOKE("forecast_start", { revisionId })),
 	jobStatus: (jobId: string) => typedError<JobInfo, AppError>(__TAURI_INVOKE("job_status", { jobId })),
 	jobCancel: (jobId: string) => typedError<JobInfo, AppError>(__TAURI_INVOKE("job_cancel", { jobId })),
@@ -73,10 +77,36 @@ export type AppError = {
 	message: string,
 };
 
+/**  One changing observation cell between two import revisions. */
+export type DemandChangePoint = {
+	week_start: string,
+	previous_quantity: number | null,
+	previous_status: string | null,
+	current_quantity: number | null,
+	current_status: string | null,
+	/**  `added`, `removed`, or `changed`. */
+	change_kind: string,
+};
+
 export type ExportResult = {
 	export_id: string,
 	path: string,
 	row_count: number,
+};
+
+/**  One week of the baseline forecast comparison between two runs. */
+export type ForecastChangePoint = {
+	week_start: string,
+	previous_value: number | null,
+	current_value: number | null,
+	delta: number | null,
+	/**  `common`, `previous_only`, or `current_only`. */
+	comparability: string,
+	/**
+	 *  True only for differing values and availability changes inside the other
+	 *  run's horizon; horizon edges are not changes (ADR-0022).
+	 */
+	is_change: boolean,
 };
 
 export type ForecastPoint = {
@@ -230,6 +260,32 @@ export type RunSummary = {
 	engine_version: string,
 };
 
+/**  One changed series in the weekly comparison list. */
+export type SeriesChangeSummary = {
+	product_id: string,
+	location_id: string,
+	location_code: string,
+	series_key: string,
+	demand_change_count: number,
+	forecast_change_count: number,
+	/**  `both`, `current_only`, or `previous_only`. */
+	presence: string,
+};
+
+/**  The weekly comparison detail for one series. */
+export type SeriesComparisonDetail = {
+	product_id: string,
+	location_id: string,
+	location_code: string,
+	series_key: string,
+	presence: string,
+	current_outcome: string | null,
+	previous_outcome: string | null,
+	demand_changes: DemandChangePoint[],
+	forecast_changes: ForecastChangePoint[],
+	planning: PlanningPoint[],
+};
+
 export type SeriesDetail = {
 	product_id: string,
 	location_id: string,
@@ -281,6 +337,16 @@ export type SeriesSummary = {
 	series_key: string,
 	h_length: number,
 	qualification_status: string,
+};
+
+/**
+ *  The default weekly comparison pair (ADR-0022): the newest completed run of
+ *  the latest import revision and of the immediately preceding revision of the
+ *  same source profile. A null member means the comparison is unavailable.
+ */
+export type WeeklyComparisonContext = {
+	current: RunSummary | null,
+	previous: RunSummary | null,
 };
 
 export type WorkspaceInfo = {

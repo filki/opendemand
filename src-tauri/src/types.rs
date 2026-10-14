@@ -148,6 +148,69 @@ pub struct RunSummary {
     pub engine_version: String,
 }
 
+/// The default weekly comparison pair (ADR-0022): the newest completed run of
+/// the latest import revision and of the immediately preceding revision of the
+/// same source profile. A null member means the comparison is unavailable.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct WeeklyComparisonContext {
+    pub current: Option<RunSummary>,
+    pub previous: Option<RunSummary>,
+}
+
+/// One changed series in the weekly comparison list.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct SeriesChangeSummary {
+    pub product_id: String,
+    pub location_id: String,
+    pub location_code: String,
+    pub series_key: String,
+    pub demand_change_count: u32,
+    pub forecast_change_count: u32,
+    /// `both`, `current_only`, or `previous_only`.
+    pub presence: String,
+}
+
+/// One changing observation cell between two import revisions.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct DemandChangePoint {
+    pub week_start: String,
+    pub previous_quantity: Option<f64>,
+    pub previous_status: Option<String>,
+    pub current_quantity: Option<f64>,
+    pub current_status: Option<String>,
+    /// `added`, `removed`, or `changed`.
+    pub change_kind: String,
+}
+
+/// One week of the baseline forecast comparison between two runs.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ForecastChangePoint {
+    pub week_start: String,
+    pub previous_value: Option<f64>,
+    pub current_value: Option<f64>,
+    pub delta: Option<f64>,
+    /// `common`, `previous_only`, or `current_only`.
+    pub comparability: String,
+    /// True only for differing values and availability changes inside the other
+    /// run's horizon; horizon edges are not changes (ADR-0022).
+    pub is_change: bool,
+}
+
+/// The weekly comparison detail for one series.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct SeriesComparisonDetail {
+    pub product_id: String,
+    pub location_id: String,
+    pub location_code: String,
+    pub series_key: String,
+    pub presence: String,
+    pub current_outcome: Option<String>,
+    pub previous_outcome: Option<String>,
+    pub demand_changes: Vec<DemandChangePoint>,
+    pub forecast_changes: Vec<ForecastChangePoint>,
+    pub planning: Vec<PlanningPoint>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ForecastResult {
     pub run_id: String,

@@ -14,6 +14,10 @@ The UI never opens SQLite or runs the Python engine directly. This document cove
 - `import_configs_list()`: return the saved import configurations of the active profile, ordered by name.
 - `import_config_save(name: string, descriptor: ParsingDescriptor)`: save a named configuration; an existing name is updated in place.
 - `import_config_delete(id: number)`: delete a saved configuration; revisions keep their frozen descriptor.
+- `import_config_suggestion()`: return the id of the single saved configuration whose descriptor exactly matches the latest preprocessed revision's frozen descriptor; `null` when there is no match or more than one match.
+- `weekly_comparison_context()`: return the default comparison pair (newest completed run of the latest revision and of the immediately preceding revision). Null members mark an unavailable comparison.
+- `weekly_comparison_series_list(current_run_id: string, previous_run_id: string, search: string, offset: number, limit: number)`: return only changed series of the validated pair, in stable SKU/location order. Rust rejects runs that are not completed or not adjacent revisions of one profile.
+- `weekly_comparison_series_detail(current_run_id: string, previous_run_id: string, product_id: string, location_id: string)`: return the weekly demand and baseline forecast comparison plus the current run's effective plan for one series.
 - `forecast_start(revision_id: number)`: queue a Naive run pinned to an immutable revision and return its initial `JobInfo`.
 - `job_status(job_id: string)`: return progress, terminal error, and import/forecast result.
 - `job_cancel(job_id: string)`: request cancellation; never cancel a committed transaction retroactively.
@@ -43,6 +47,11 @@ Jobs use string ids to correlate Tauri, SQLite, and sidecar messages.
 - `ImportPreview`: `detected` (descriptor with detection results merged in), `headers`, `sample_rows`, `parsed_rows` (composed `series_key`, Monday `week_start`, parsed `quantity`, `status`), `findings`, `can_parse`, `truncated`, and `sheets` (workbook sheet names, empty for text exports).
 - `PreviewFinding`: `severity` (`blocking`/`warning`), stable `code`, `detail`, optional `row_ref` (physical line or sheet row).
 - `ImportConfig`: `id`, `name`, `descriptor`, `updated_at`.
+- `WeeklyComparisonContext`: nullable `current` and `previous` `RunSummary` rows; null `previous` means no comparison exists for the current pair.
+- `SeriesChangeSummary`: `product_id`, `location_id`, `location_code`, `series_key`, `demand_change_count`, `forecast_change_count`, and `presence` (`both | current_only | previous_only`).
+- `DemandChangePoint`: `week_start`, nullable previous/current `quantity` and `status`, and `change_kind` (`added | removed | changed`).
+- `ForecastChangePoint`: `week_start`, nullable previous/current baseline and `delta`, `comparability` (`common | previous_only | current_only`), and `is_change` (false for horizon edges and equal values).
+- `SeriesComparisonDetail`: series identity, `presence`, nullable run outcomes, `demand_changes`, `forecast_changes`, and the current run's `planning` points.
 - `ExportResult`: `export_id` (string form of the database identifier), selected `path`, and `row_count`.
 - `ForecastResult`: `run_id`, `revision_id`, `status`, `series_count`, `forecast_count`, `coverage`.
 - `JobInfo`: `id`, `kind`, `status`, `phase`, `progress` (fraction 0..1), nullable `error`, `import_result`, and `forecast_result`.
@@ -81,6 +90,12 @@ The selected path must be absolute with a case-insensitive `.csv` extension, hav
 Rust writes and syncs temporary files before no-overwrite publication. A successful export includes the selected CSV, a retained workspace copy at `exports/<uuid>.csv`, an `export_record`, and a completed export job. The command returns only after publication and the database transaction succeed; CSV export cancellation is not implemented.
 
 A hard kill between publication and database commit can leave a complete orphan CSV/archive or hidden temporary file without an `export_record`. Startup reconciliation does not reclaim these export artifacts yet (risk R-22). The native save-dialog flow was manually verified on macOS on 2026-10-14: the dialog opens with the suggested file name, honors the chosen folder, cancel leaves no artifacts, and the written file matches the format rules above. Opening the output in Excel remains unverified; browser checks used a simulated dialog with real Rust workspace methods.
+
+## Weekly comparison
+
+`weekly_comparison_context` pairs the newest completed run of the latest revision with the newest completed run of the immediately preceding revision of the same source profile. An unforecast previous revision yields a null `previous` and is never skipped; when the latest revision has no completed run, both members are null.
+
+List and detail commands re-validate the supplied pair: both runs must exist, be completed, and pin adjacent revisions of one profile. Series align by `product_id × location_id` and calendar `week_start`. Forecast deltas compare immutable baselines only; a week inside the other run's horizon without a value counts as an availability change with no numeric delta, and a week outside it is a non-comparable edge (`is_change` false). Demand changes preserve `missing` versus zero and distinguish `NULL` from every value; nothing is zero-filled and no percentage is computed. Comparison output is derived at read time; no comparison rows are stored (ADR-0022).
 
 ## Raw-source preprocessing
 

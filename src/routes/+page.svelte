@@ -8,11 +8,11 @@
 	import SeriesDetailPanel from '#lib/components/SeriesDetailPanel.svelte';
 	import SeriesList from '#lib/components/SeriesList.svelte';
 	import StatusChip from '#lib/components/StatusChip.svelte';
+	import WeeklyComparison from '#lib/components/WeeklyComparison.svelte';
 	import WorkspacePanel from '#lib/components/WorkspacePanel.svelte';
 	import { formatPercent, formatTimestamp, humanizeToken, shortId } from '#lib/frontend/format.ts';
 	import { resolveLocale, t } from '#lib/frontend/i18n.ts';
 	import {
-		IpcError,
 		cancelJob,
 		createWorkspace,
 		describeError,
@@ -29,6 +29,7 @@
 		pickCanonicalCsv,
 		pickCsvExport,
 		pickWorkspaceDirectory,
+		queryErrorCode,
 		saveOverride,
 		startForecast,
 		startImport
@@ -41,6 +42,7 @@
 		selectDisplayRun,
 		sortRunsNewestFirst
 	} from '#lib/frontend/jobs.ts';
+	import { resolveWeeklyStep } from '#lib/frontend/weekly.ts';
 	import { isNoWorkspaceError } from '#lib/frontend/workspace.ts';
 
 	const PAGE_SIZE = 50;
@@ -63,6 +65,8 @@
 	let exportNotice = $state<string | null>(null);
 	let seriesScope = '';
 	let wizardOpen = $state(false);
+	let weeklyFlowActive = $state(false);
+	let comparisonOpen = $state(false);
 
 	// Debounce the series search; a new search always restarts at page one.
 	$effect(() => {
@@ -90,6 +94,7 @@
 		retry: 0
 	}));
 	const runs = $derived(runsQuery.data ?? []);
+	const completedRunCount = $derived(runs.filter((run) => run.status === 'completed').length);
 	const newestRun = $derived(runs.length > 0 ? sortRunsNewestFirst(runs)[0] : null);
 	const displayRun = $derived(selectDisplayRun(runs, latestRevisionId, selectedRunId));
 	const displayRunId = $derived(displayRun?.id ?? null);
@@ -246,15 +251,20 @@
 	async function handleJobTerminal(job: JobInfo) {
 		notice = summarizeJob(job);
 		const keepSelection = plannerDirty || plannerSaving;
-		if (job.kind === 'import' && job.status === 'completed' && job.import_result && !keepSelection) {
+		const importResult = job.kind === 'import' && job.status === 'completed' ? job.import_result : null;
+		const forecastResult =
+			job.kind === 'forecast' && job.status === 'completed' ? job.forecast_result : null;
+
+		if (importResult && !keepSelection && !weeklyFlowActive) {
 			selectedRunId = null;
 			selectedSeries = null;
 			offset = 0;
 		}
-		if (job.kind === 'forecast' && job.status === 'completed' && job.forecast_result && !keepSelection) {
-			selectedRunId = job.forecast_result.run_id;
+		if (forecastResult && !keepSelection) {
+			selectedRunId = forecastResult.run_id;
 			plannerDirty = false;
 		}
+
 		await Promise.all([
 			queryClient.invalidateQueries({ queryKey: ['workspace'] }),
 			queryClient.invalidateQueries({ queryKey: ['runs'] }),
@@ -262,6 +272,43 @@
 			queryClient.invalidateQueries({ queryKey: ['series-models'] }),
 			queryClient.invalidateQueries({ queryKey: ['jobs'] })
 		]);
+
+		if (!weeklyFlowActive) return;
+
+		if (importResult && !keepSelection) {
+			await continueWeeklyFlow(importResult.revision_id);
+		} else if (forecastResult) {
+			weeklyFlowActive = false;
+			comparisonOpen = true;
+		} else {
+			// Failed or cancelled steps end the chain without a comparison.
+			weeklyFlowActive = false;
+		}
+	}
+
+	/**
+	 * Continue the weekly chain after a committed import: reuse the revision's
+	 * newest completed run, or forecast the revision when none exists yet
+	 * (ADR-0022). A duplicate import therefore never creates a redundant run.
+	 */
+	async function continueWeeklyFlow(revisionId: number) {
+		try {
+			const revisionRuns = await fetchRunsList(revisionId);
+			const step = resolveWeeklyStep(revisionRuns, revisionId);
+			if (step.kind === 'reuse') {
+				weeklyFlowActive = false;
+				selectedRunId = step.runId;
+				selectedSeries = null;
+				plannerDirty = false;
+				comparisonOpen = true;
+				notice = `${notice ?? ''} Reused an existing completed run for the comparison.`;
+			} else {
+				beginJob(await startForecast(revisionId));
+			}
+		} catch (error) {
+			weeklyFlowActive = false;
+			actionError = describeError(error);
+		}
 	}
 
 	function beginJob(job: JobInfo) {
@@ -283,6 +330,9 @@
 			plannerDirty = false;
 			exportNotice = null;
 			offset = 0;
+			wizardOpen = false;
+			weeklyFlowActive = false;
+			comparisonOpen = false;
 			await queryClient.invalidateQueries({ queryKey: ['workspace'] });
 		} catch (error) {
 			actionError = describeError(error);
@@ -303,6 +353,9 @@
 			exportNotice = null;
 			offset = 0;
 			searchInput = '';
+			wizardOpen = false;
+			weeklyFlowActive = false;
+			comparisonOpen = false;
 			await queryClient.invalidateQueries({ queryKey: ['workspace'] });
 		} catch (error) {
 			actionError = describeError(error);
@@ -324,6 +377,24 @@
 		actionError = null;
 		beginJob(await startImport(path, descriptor));
 		wizardOpen = false;
+	}
+
+	/** Start the weekly workflow: import with a saved config, forecast, compare. */
+	function handleWeeklyUpdate() {
+		if (jobBusy || plannerDirty || plannerSaving || exporting) return;
+		actionError = null;
+		comparisonOpen = false;
+		weeklyFlowActive = true;
+		wizardOpen = true;
+	}
+
+	function handleWizardClose() {
+		wizardOpen = false;
+		if (!jobBusy) weeklyFlowActive = false;
+	}
+
+	function handleCloseComparison() {
+		comparisonOpen = false;
 	}
 
 	async function handleForecast() {
@@ -406,10 +477,6 @@
 			void queryClient.invalidateQueries({ queryKey: ['jobs'] });
 		}
 	}
-
-	function queryErrorCode(error: unknown): string {
-		return error instanceof IpcError ? error.code : 'query_failed';
-	}
 </script>
 
 {#if !desktop}
@@ -439,6 +506,7 @@
 					onOpen={handleOpenWorkspace}
 					onImport={handleImport}
 					onForecast={handleForecast}
+					onWeekly={handleWeeklyUpdate}
 				/>
 				<JobMonitor
 					job={activeJob}
@@ -493,7 +561,8 @@
 						</div>
 						<div class="export-controls">
 							<button class="btn btn-secondary" disabled={!displayRun || displayRun.status !== 'completed' || plannerDirty || plannerSaving || exporting} onclick={handleExport}>{exporting ? 'Exporting CSV...' : 'Export CSV'}</button>
-							<p class="muted">{plannerDirty ? 'Save or discard edits before switching series, runs, or exporting.' : 'Exports every series in the selected run.'}</p>
+							<button class="btn btn-secondary" disabled={jobBusy || plannerDirty || plannerSaving || exporting || completedRunCount < 2} onclick={() => (comparisonOpen = true)}>Compare runs</button>
+							<p class="muted">{plannerDirty ? 'Save or discard edits before switching series, runs, or exporting.' : 'Exports every series in the selected run. The comparison pairs the latest revision with the immediately previous one.'}</p>
 						</div>
 					</section>
 				{/if}
@@ -506,7 +575,13 @@
 					</p>
 				{/if}
 
-				{#if workspaceQuery.isPending}
+				{#if wizardOpen && workspace}
+					<div class="stack">
+						<ImportWizard {locale} onImport={handleWizardImport} onClose={handleWizardClose} />
+					</div>
+				{:else if comparisonOpen && workspace}
+					<WeeklyComparison onClose={handleCloseComparison} />
+				{:else if workspaceQuery.isPending}
 					<p class="muted" role="status">Opening workspace…</p>
 				{:else if workspaceQuery.isError && !isNoWorkspaceError(workspaceQuery.error)}
 					<div class="banner banner-error" role="alert">
@@ -539,16 +614,12 @@
 					<div class="stack">
 						<CsvFormatCard
 							onImport={handleImport}
-							onGuidedImport={() => (wizardOpen = true)}
+							onGuidedImport={() => {
+								weeklyFlowActive = false;
+								wizardOpen = true;
+							}}
 							guidedLabel={t(locale, 'wizard.title')}
 						/>
-						{#if wizardOpen}
-							<ImportWizard
-								{locale}
-								onImport={handleWizardImport}
-								onClose={() => (wizardOpen = false)}
-							/>
-						{/if}
 					</div>
 				{:else if selectedSeries === null}
 					<section class="panel card">

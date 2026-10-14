@@ -13,9 +13,10 @@ use crate::{
     preprocess::{self, descriptor_json, ImportConfig, ParsingDescriptor},
     selection,
     types::{
-        ExportResult, ForecastInput, ForecastPoint, HistoryPoint, ImportResult, InputSeries,
-        ModelOriginRow, ObservationRecord, OverrideEdit, OverrideRevision, PlanningPoint,
-        RunSummary, SeriesDetail, SeriesModelComparison, SeriesSummary, WorkspaceInfo,
+        DemandChangePoint, ExportResult, ForecastChangePoint, ForecastInput, ForecastPoint,
+        HistoryPoint, ImportResult, InputSeries, ModelOriginRow, ObservationRecord, OverrideEdit,
+        OverrideRevision, PlanningPoint, RunSummary, SeriesChangeSummary, SeriesComparisonDetail,
+        SeriesDetail, SeriesModelComparison, SeriesSummary, WeeklyComparisonContext, WorkspaceInfo,
     },
 };
 use chrono::{Datelike, Duration as ChronoDuration, NaiveDate, Utc, Weekday};
@@ -102,6 +103,92 @@ const PLANNING_ROWS_SQL: &str = "
             WHERE run_id = s.run_id AND product_id = s.product_id
                 AND location_id = s.location_id AND week_start = w.week_start)
     ORDER BY s.product_id, s.location_id, w.horizon";
+
+// Changed series across two adjacent revisions (ADR-0022): demand cells compare
+// observation rows, forecast changes compare immutable baselines on common
+// calendar weeks plus availability gaps inside the other run's horizon. The
+// count queries mirror the detail derivation exactly.
+const WEEKLY_CHANGED_SERIES_SQL: &str = "
+    WITH scope AS (
+        SELECT product_id, location_id,
+               MAX(CASE WHEN revision_id = ? THEN 1 ELSE 0 END) AS in_current,
+               MAX(CASE WHEN revision_id = ? THEN 1 ELSE 0 END) AS in_previous
+        FROM series_qualification
+        WHERE revision_id IN (?, ?)
+        GROUP BY product_id, location_id
+    ),
+    demand AS (
+        SELECT product_id, location_id, COUNT(*) AS changes FROM (
+            SELECT c.product_id, c.location_id
+            FROM observation c
+            LEFT JOIN observation p
+                ON p.revision_id = ? AND p.product_id = c.product_id
+                AND p.location_id = c.location_id AND p.week_start = c.week_start
+            WHERE c.revision_id = ?
+                AND (p.week_start IS NULL OR p.quantity IS NOT c.quantity OR p.status IS NOT c.status)
+            UNION ALL
+            SELECT p.product_id, p.location_id
+            FROM observation p
+            LEFT JOIN observation c
+                ON c.revision_id = ? AND c.product_id = p.product_id
+                AND c.location_id = p.location_id AND c.week_start = p.week_start
+            WHERE p.revision_id = ? AND c.week_start IS NULL
+        ) GROUP BY product_id, location_id
+    ),
+    forecast_changes AS (
+        SELECT product_id, location_id, COUNT(*) AS changes FROM (
+            SELECT c.product_id, c.location_id
+            FROM forecast c
+            JOIN forecast p
+                ON p.run_id = ? AND p.product_id = c.product_id
+                AND p.location_id = c.location_id AND p.week_start = c.week_start
+            WHERE c.run_id = ? AND c.value IS NOT p.value
+            UNION ALL
+            SELECT c.product_id, c.location_id
+            FROM forecast c
+            WHERE c.run_id = ?
+                AND c.week_start >= ? AND c.week_start <= ?
+                AND NOT EXISTS (
+                    SELECT 1 FROM forecast p
+                    WHERE p.run_id = ? AND p.product_id = c.product_id
+                        AND p.location_id = c.location_id AND p.week_start = c.week_start)
+            UNION ALL
+            SELECT p.product_id, p.location_id
+            FROM forecast p
+            WHERE p.run_id = ?
+                AND p.week_start >= ? AND p.week_start <= ?
+                AND NOT EXISTS (
+                    SELECT 1 FROM forecast c
+                    WHERE c.run_id = ? AND c.product_id = p.product_id
+                        AND c.location_id = p.location_id AND c.week_start = p.week_start)
+        ) GROUP BY product_id, location_id
+    )
+    SELECT s.product_id, s.location_id, l.code AS location_code, p.sku AS sku,
+           COALESCE(d.changes, 0) AS demand_changes,
+           COALESCE(f.changes, 0) AS forecast_changes,
+           s.in_current, s.in_previous
+    FROM scope s
+    JOIN product p ON p.id = s.product_id
+    JOIN location l ON l.id = s.location_id
+    LEFT JOIN demand d ON d.product_id = s.product_id AND d.location_id = s.location_id
+    LEFT JOIN forecast_changes f ON f.product_id = s.product_id AND f.location_id = s.location_id
+    WHERE (COALESCE(d.changes, 0) > 0 OR COALESCE(f.changes, 0) > 0
+           OR s.in_current = 0 OR s.in_previous = 0)
+      AND p.sku LIKE ?
+    ORDER BY p.sku, s.location_id
+    LIMIT ? OFFSET ?";
+
+/// Resolved, validated comparison pair for the weekly read models.
+struct ComparisonPair {
+    current_revision: i32,
+    previous_revision: i32,
+    current_run: Vec<u8>,
+    previous_run: Vec<u8>,
+    current_start: NaiveDate,
+    previous_start: NaiveDate,
+    current_end: NaiveDate,
+    previous_end: NaiveDate,
+}
 
 /// A workspace directory plus the exclusive database connection it owns.
 ///
@@ -420,6 +507,37 @@ impl Workspace {
             ));
         }
         Ok(())
+    }
+
+    /// The id of the single saved configuration whose descriptor exactly
+    /// matches the latest preprocessed revision's frozen descriptor; `None`
+    /// when there is no match or more than one match (ADR-0022).
+    pub async fn import_config_suggestion(&self) -> AppResult<Option<i32>> {
+        let profile_id = active_profile_id(&self.pool).await?;
+        let frozen: Option<String> = sqlx::query_scalar(
+            "SELECT descriptor_json FROM import_revision
+             WHERE profile_id = ? AND descriptor_json IS NOT NULL
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(profile_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(frozen) = frozen else {
+            return Ok(None);
+        };
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM import_config WHERE profile_id = ? AND descriptor_json = ? ORDER BY id",
+        )
+        .bind(profile_id)
+        .bind(frozen.as_str())
+        .fetch_all(&self.pool)
+        .await?;
+        if let [id] = ids.as_slice() {
+            if (1..=i32::MAX as i64).contains(id) {
+                return Ok(Some(*id as i32));
+            }
+        }
+        Ok(None)
     }
 
     /// Commit a parsed import: map identities, compute the fingerprint, check
@@ -1411,17 +1529,439 @@ impl Workspace {
         .await?;
         let mut runs = Vec::with_capacity(rows.len());
         for row in &rows {
-            let id: Vec<u8> = row.get("id");
-            runs.push(RunSummary {
-                id: uuid_from_bytes(&id)?.to_string(),
-                revision_id: row.get("revision_id"),
-                status: row.get("status"),
-                created_at: row.get("created_at"),
-                horizon_start_week: row.get("horizon_start_week"),
-                engine_version: row.get("engine_version"),
-            });
+            runs.push(run_summary_row(row)?);
         }
         Ok(runs)
+    }
+
+    /// The default weekly comparison pair (ADR-0022): the newest completed run
+    /// of the latest revision and of the immediately preceding revision of the
+    /// active profile. An unforecast previous revision is never skipped.
+    pub async fn weekly_comparison_context(&self) -> AppResult<WeeklyComparisonContext> {
+        let profile_id = active_profile_id(&self.pool).await?;
+        let latest: Option<i32> =
+            sqlx::query_scalar("SELECT MAX(id) FROM import_revision WHERE profile_id = ?")
+                .bind(profile_id)
+                .fetch_one(&self.pool)
+                .await?;
+        let Some(current_revision) = latest else {
+            return Ok(WeeklyComparisonContext {
+                current: None,
+                previous: None,
+            });
+        };
+        let Some(current) = self.newest_completed_run(current_revision).await? else {
+            return Ok(WeeklyComparisonContext {
+                current: None,
+                previous: None,
+            });
+        };
+        let previous_revision: Option<i32> = sqlx::query_scalar(
+            "SELECT MAX(id) FROM import_revision WHERE profile_id = ? AND id < ?",
+        )
+        .bind(profile_id)
+        .bind(current_revision)
+        .fetch_one(&self.pool)
+        .await?;
+        let previous = match previous_revision {
+            Some(revision) => self.newest_completed_run(revision).await?,
+            None => None,
+        };
+        Ok(WeeklyComparisonContext {
+            current: Some(current),
+            previous,
+        })
+    }
+
+    async fn newest_completed_run(&self, revision_id: i32) -> AppResult<Option<RunSummary>> {
+        let row = sqlx::query(
+            "SELECT id, revision_id, status, created_at, horizon_start_week, engine_version
+             FROM forecast_run WHERE revision_id = ? AND status = 'completed'
+             ORDER BY created_at DESC, id DESC LIMIT 1",
+        )
+        .bind(revision_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(row) => Ok(Some(run_summary_row(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// List only the series that changed between two adjacent revisions, in
+    /// stable SKU/location order. The pair is re-validated on every call.
+    pub async fn weekly_comparison_series_list(
+        &self,
+        current_run_id: &str,
+        previous_run_id: &str,
+        search: &str,
+        offset: u32,
+        limit: u32,
+    ) -> AppResult<Vec<SeriesChangeSummary>> {
+        let pair = self
+            .comparison_pair(current_run_id, previous_run_id)
+            .await?;
+        let limit = limit.clamp(1, LIST_LIMIT_MAX) as i64;
+        let offset = offset as i64;
+        let pattern = format!("%{search}%");
+        let rows = sqlx::query(WEEKLY_CHANGED_SERIES_SQL)
+            .bind(pair.current_revision)
+            .bind(pair.previous_revision)
+            .bind(pair.current_revision)
+            .bind(pair.previous_revision)
+            .bind(pair.previous_revision)
+            .bind(pair.current_revision)
+            .bind(pair.current_revision)
+            .bind(pair.previous_revision)
+            .bind(pair.previous_run.as_slice())
+            .bind(pair.current_run.as_slice())
+            .bind(pair.current_run.as_slice())
+            .bind(pair.previous_start.to_string())
+            .bind(pair.previous_end.to_string())
+            .bind(pair.previous_run.as_slice())
+            .bind(pair.previous_run.as_slice())
+            .bind(pair.current_start.to_string())
+            .bind(pair.current_end.to_string())
+            .bind(pair.current_run.as_slice())
+            .bind(pattern.as_str())
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut changed = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let product: Vec<u8> = row.get("product_id");
+            let location: Vec<u8> = row.get("location_id");
+            let presence = match (
+                row.get::<i64, _>("in_current"),
+                row.get::<i64, _>("in_previous"),
+            ) {
+                (1, 1) => "both",
+                (1, _) => "current_only",
+                _ => "previous_only",
+            };
+            changed.push(SeriesChangeSummary {
+                product_id: uuid_from_bytes(&product)?.to_string(),
+                location_id: uuid_from_bytes(&location)?.to_string(),
+                location_code: row.get("location_code"),
+                series_key: row.get("sku"),
+                demand_change_count: row.get::<i64, _>("demand_changes") as u32,
+                forecast_change_count: row.get::<i64, _>("forecast_changes") as u32,
+                presence: presence.to_string(),
+            });
+        }
+        Ok(changed)
+    }
+
+    /// Weekly demand and baseline forecast comparison for one series, plus the
+    /// current run's effective plan (ADR-0022).
+    pub async fn weekly_comparison_series_detail(
+        &self,
+        current_run_id: &str,
+        previous_run_id: &str,
+        product_id: &str,
+        location_id: &str,
+    ) -> AppResult<SeriesComparisonDetail> {
+        let pair = self
+            .comparison_pair(current_run_id, previous_run_id)
+            .await?;
+        let product = parse_uuid(product_id, "product_id")?;
+        let location = parse_uuid(location_id, "location_id")?;
+        let product_bytes = product.as_bytes().to_vec();
+        let location_bytes = location.as_bytes().to_vec();
+
+        let sku: Option<String> = sqlx::query_scalar("SELECT sku FROM product WHERE id = ?")
+            .bind(product_bytes.as_slice())
+            .fetch_optional(&self.pool)
+            .await?;
+        let location_code: Option<String> =
+            sqlx::query_scalar("SELECT code FROM location WHERE id = ?")
+                .bind(location_bytes.as_slice())
+                .fetch_optional(&self.pool)
+                .await?;
+        let (Some(series_key), Some(location_code)) = (sku, location_code) else {
+            return Err(err(
+                "unknown_series",
+                "The selected series is not part of the compared runs.",
+            ));
+        };
+
+        let in_current: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM series_qualification
+             WHERE revision_id = ? AND product_id = ? AND location_id = ?)",
+        )
+        .bind(pair.current_revision)
+        .bind(product_bytes.as_slice())
+        .bind(location_bytes.as_slice())
+        .fetch_one(&self.pool)
+        .await?;
+        let in_previous: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM series_qualification
+             WHERE revision_id = ? AND product_id = ? AND location_id = ?)",
+        )
+        .bind(pair.previous_revision)
+        .bind(product_bytes.as_slice())
+        .bind(location_bytes.as_slice())
+        .fetch_one(&self.pool)
+        .await?;
+        if !in_current && !in_previous {
+            return Err(err(
+                "unknown_series",
+                "The selected series is not part of the compared runs.",
+            ));
+        }
+        let presence = match (in_current, in_previous) {
+            (true, true) => "both",
+            (true, false) => "current_only",
+            _ => "previous_only",
+        };
+
+        let current_outcome: Option<String> = sqlx::query_scalar(
+            "SELECT status FROM forecast_series_status
+             WHERE run_id = ? AND product_id = ? AND location_id = ?",
+        )
+        .bind(pair.current_run.as_slice())
+        .bind(product_bytes.as_slice())
+        .bind(location_bytes.as_slice())
+        .fetch_optional(&self.pool)
+        .await?;
+        let previous_outcome: Option<String> = sqlx::query_scalar(
+            "SELECT status FROM forecast_series_status
+             WHERE run_id = ? AND product_id = ? AND location_id = ?",
+        )
+        .bind(pair.previous_run.as_slice())
+        .bind(product_bytes.as_slice())
+        .bind(location_bytes.as_slice())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let current_obs = load_observations(
+            &self.pool,
+            pair.current_revision,
+            &product_bytes,
+            &location_bytes,
+        )
+        .await?;
+        let previous_obs = load_observations(
+            &self.pool,
+            pair.previous_revision,
+            &product_bytes,
+            &location_bytes,
+        )
+        .await?;
+        let mut weeks: BTreeSet<NaiveDate> = BTreeSet::new();
+        weeks.extend(current_obs.keys());
+        weeks.extend(previous_obs.keys());
+        let mut demand_changes = Vec::new();
+        for week in weeks {
+            let current = current_obs.get(&week);
+            let previous = previous_obs.get(&week);
+            let week_start = week.format("%Y-%m-%d").to_string();
+            match (current, previous) {
+                (
+                    Some((current_quantity, current_status)),
+                    Some((previous_quantity, previous_status)),
+                ) => {
+                    if current_quantity != previous_quantity || current_status != previous_status {
+                        demand_changes.push(DemandChangePoint {
+                            week_start,
+                            previous_quantity: *previous_quantity,
+                            previous_status: Some(previous_status.clone()),
+                            current_quantity: *current_quantity,
+                            current_status: Some(current_status.clone()),
+                            change_kind: "changed".to_string(),
+                        });
+                    }
+                }
+                (Some((current_quantity, current_status)), None) => {
+                    demand_changes.push(DemandChangePoint {
+                        week_start,
+                        previous_quantity: None,
+                        previous_status: None,
+                        current_quantity: *current_quantity,
+                        current_status: Some(current_status.clone()),
+                        change_kind: "added".to_string(),
+                    });
+                }
+                (None, Some((previous_quantity, previous_status))) => {
+                    demand_changes.push(DemandChangePoint {
+                        week_start,
+                        previous_quantity: *previous_quantity,
+                        previous_status: Some(previous_status.clone()),
+                        current_quantity: None,
+                        current_status: None,
+                        change_kind: "removed".to_string(),
+                    });
+                }
+                (None, None) => {}
+            }
+        }
+
+        let current_points = load_forecast_rows(
+            &self.pool,
+            &pair.current_run,
+            &product_bytes,
+            &location_bytes,
+        )
+        .await?;
+        let previous_points = load_forecast_rows(
+            &self.pool,
+            &pair.previous_run,
+            &product_bytes,
+            &location_bytes,
+        )
+        .await?;
+        let mut forecast_weeks: BTreeSet<NaiveDate> = BTreeSet::new();
+        forecast_weeks.extend(current_points.keys());
+        forecast_weeks.extend(previous_points.keys());
+        let mut forecast_changes = Vec::new();
+        for week in forecast_weeks {
+            let current_value = current_points.get(&week).copied();
+            let previous_value = previous_points.get(&week).copied();
+            let (comparability, is_change) = match (current_value, previous_value) {
+                (Some(current), Some(previous)) => ("common", current != previous),
+                (Some(_), None) => (
+                    "current_only",
+                    week >= pair.previous_start && week <= pair.previous_end,
+                ),
+                (None, Some(_)) => (
+                    "previous_only",
+                    week >= pair.current_start && week <= pair.current_end,
+                ),
+                (None, None) => continue,
+            };
+            let delta = match (current_value, previous_value) {
+                (Some(current), Some(previous)) => Some(current - previous),
+                _ => None,
+            };
+            forecast_changes.push(ForecastChangePoint {
+                week_start: week.format("%Y-%m-%d").to_string(),
+                previous_value,
+                current_value,
+                delta,
+                comparability: comparability.to_string(),
+                is_change,
+            });
+        }
+
+        let planning = {
+            let mut connection = self.pool.acquire().await?;
+            load_planning_rows(
+                &mut connection,
+                &pair.current_run,
+                Some(&product_bytes),
+                Some(&location_bytes),
+                (&[], &[]),
+                1,
+            )
+            .await?
+            .iter()
+            .map(planning_point)
+            .collect()
+        };
+
+        Ok(SeriesComparisonDetail {
+            product_id: product.to_string(),
+            location_id: location.to_string(),
+            location_code,
+            series_key,
+            presence: presence.to_string(),
+            current_outcome,
+            previous_outcome,
+            demand_changes,
+            forecast_changes,
+            planning,
+        })
+    }
+
+    /// Validate a caller-supplied comparison pair and resolve its revisions,
+    /// run ids, and horizon windows.
+    async fn comparison_pair(
+        &self,
+        current_run_id: &str,
+        previous_run_id: &str,
+    ) -> AppResult<ComparisonPair> {
+        let current = parse_uuid(current_run_id, "current_run_id")?;
+        let previous = parse_uuid(previous_run_id, "previous_run_id")?;
+        let current_row = self.run_row(current.as_bytes()).await?;
+        let previous_row = self.run_row(previous.as_bytes()).await?;
+
+        let current_revision: i32 = current_row.get("revision_id");
+        let previous_revision: i32 = previous_row.get("revision_id");
+        if previous_revision >= current_revision {
+            return Err(err(
+                "invalid_comparison_pair",
+                "The current run must pin a newer revision than the previous run.",
+            ));
+        }
+        let current_profile: i64 =
+            sqlx::query_scalar("SELECT profile_id FROM import_revision WHERE id = ?")
+                .bind(current_revision)
+                .fetch_one(&self.pool)
+                .await?;
+        let previous_profile: i64 =
+            sqlx::query_scalar("SELECT profile_id FROM import_revision WHERE id = ?")
+                .bind(previous_revision)
+                .fetch_one(&self.pool)
+                .await?;
+        if current_profile != previous_profile {
+            return Err(err(
+                "invalid_comparison_pair",
+                "The compared runs pin revisions from different source profiles.",
+            ));
+        }
+        let adjacent: Option<i32> = sqlx::query_scalar(
+            "SELECT MAX(id) FROM import_revision WHERE profile_id = ? AND id < ?",
+        )
+        .bind(current_profile)
+        .bind(current_revision)
+        .fetch_one(&self.pool)
+        .await?;
+        if adjacent != Some(previous_revision) {
+            return Err(err(
+                "not_adjacent_revisions",
+                "The compared runs do not pin adjacent import revisions.",
+            ));
+        }
+
+        let current_start = parse_week(&current_row.get::<String, _>("horizon_start_week"))?;
+        let previous_start = parse_week(&previous_row.get::<String, _>("horizon_start_week"))?;
+        let current_end = horizon_end(current_start, current_row.get("horizon_weeks"))?;
+        let previous_end = horizon_end(previous_start, previous_row.get("horizon_weeks"))?;
+        Ok(ComparisonPair {
+            current_revision,
+            previous_revision,
+            current_run: current.as_bytes().to_vec(),
+            previous_run: previous.as_bytes().to_vec(),
+            current_start,
+            previous_start,
+            current_end,
+            previous_end,
+        })
+    }
+
+    async fn run_row(&self, run: &[u8]) -> AppResult<SqliteRow> {
+        let row = sqlx::query(
+            "SELECT revision_id, status, horizon_start_week, horizon_weeks
+             FROM forecast_run WHERE id = ?",
+        )
+        .bind(run)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| {
+            err(
+                "unknown_run",
+                "The forecast run does not exist in this workspace.",
+            )
+        })?;
+        if row.get::<String, _>("status") != "completed" {
+            return Err(err(
+                "run_not_completed",
+                "Only completed forecast runs can be compared.",
+            ));
+        }
+        Ok(row)
     }
 
     /// Build the sidecar-facing forecast input for a revision: the global cutoff,
@@ -2238,6 +2778,55 @@ async fn load_observations(
             week,
             (row.get::<Option<f64>, _>("quantity"), row.get("status")),
         );
+    }
+    Ok(points)
+}
+
+fn run_summary_row(row: &SqliteRow) -> AppResult<RunSummary> {
+    let id: Vec<u8> = row.get("id");
+    Ok(RunSummary {
+        id: uuid_from_bytes(&id)?.to_string(),
+        revision_id: row.get("revision_id"),
+        status: row.get("status"),
+        created_at: row.get("created_at"),
+        horizon_start_week: row.get("horizon_start_week"),
+        engine_version: row.get("engine_version"),
+    })
+}
+
+fn parse_week(value: &str) -> AppResult<NaiveDate> {
+    NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .map_err(|_| err("invalid_data", "A stored observation date is invalid."))
+}
+
+fn horizon_end(start: NaiveDate, weeks: i64) -> AppResult<NaiveDate> {
+    if weeks < 1 {
+        return Err(err(
+            "invalid_horizon",
+            "The run has an invalid planning horizon.",
+        ));
+    }
+    Ok(start + ChronoDuration::weeks(weeks - 1))
+}
+
+async fn load_forecast_rows(
+    pool: &SqlitePool,
+    run: &[u8],
+    product: &[u8],
+    location: &[u8],
+) -> AppResult<BTreeMap<NaiveDate, f64>> {
+    let rows = sqlx::query(
+        "SELECT week_start, value FROM forecast WHERE run_id = ? AND product_id = ? AND location_id = ? ORDER BY week_start",
+    )
+    .bind(run)
+    .bind(product)
+    .bind(location)
+    .fetch_all(pool)
+    .await?;
+    let mut points = BTreeMap::new();
+    for row in &rows {
+        let week: String = row.get("week_start");
+        points.insert(parse_week(&week)?, row.get("value"));
     }
     Ok(points)
 }

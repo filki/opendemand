@@ -148,6 +148,17 @@ Milestone 2 implements CSV (RFC 4180, UTF-8 with BOM, CRLF records, `.` decimal 
 - Each successful CSV export retains a workspace copy under `exports/` and an `export_record` with row count and coverage metadata. Export reads one saved run snapshot; existing files are never overwritten.
 - Coverage = share of series with outcome `ok` or `fallback_naive`; reported in the XLSX Summary sheet with outcome counts and champion distribution.
 
+## 11. Weekly Planning Comparison (derived)
+
+The weekly workflow (ADR-0022) adds no entities. Everything is derived at read time from immutable revisions, runs, baselines, and overrides:
+
+- Pair selection: newest completed run of the latest revision versus newest completed run of the immediately preceding revision of the same profile; an unforecast previous revision yields "comparison unavailable" and is never skipped.
+- Series align by `product_id × location_id` UUIDs; cells align by `week_start`. Horizon indices are never used for alignment.
+- Demand changes compare observation cells of the two revisions (`added`, `removed`, `changed`); `missing` stays distinct from zero, `NULL` is distinguished from every value, and no percentage or aggregate is computed.
+- Forecast deltas compare immutable baselines of the two runs: a common week changes only when values differ; a week inside the other run's horizon without a value counts as an availability change (no numeric delta); a week outside the other horizon is a non-comparable edge and counts as no change.
+- The current run's effective plan (latest override ?? baseline) is displayed separately; overrides are never carried into a delta.
+- The wizard's configuration suggestion is derived by exact string equality between a saved configuration's descriptor JSON and the latest preprocessed revision's frozen `descriptor_json`; zero or multiple matches suggest nothing.
+
 ## Related Documents
 
 - ADRs: `adr/README.md` (0001–0016; semantics in 0004–0007 and 0012–0015)

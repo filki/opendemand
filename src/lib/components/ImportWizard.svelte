@@ -19,6 +19,7 @@
 		deleteImportConfig,
 		describeError,
 		fetchImportConfigs,
+		fetchImportConfigSuggestion,
 		pickImportSource,
 		previewImport,
 		saveImportConfig
@@ -63,6 +64,19 @@
 			configs = await fetchImportConfigs();
 		} catch (caught) {
 			error = describeError(caught).message;
+		}
+		// Best effort: preselect the single configuration whose descriptor
+		// matches the latest preprocessed revision exactly (ADR-0022).
+		try {
+			const suggested = await fetchImportConfigSuggestion();
+			const config = configs.find((candidate) => candidate.id === suggested);
+			if (config && selectedConfigId === null) {
+				selectedConfigId = config.id;
+				form = applyConfig(config.descriptor);
+				configName = config.name;
+			}
+		} catch {
+			// A failed suggestion never blocks the wizard.
 		}
 	}
 

@@ -9,7 +9,8 @@
 		onCreate,
 		onOpen,
 		onImport,
-		onForecast
+		onForecast,
+		onWeekly
 	}: {
 		workspace: WorkspaceInfo | null;
 		revisionId: number | null;
@@ -18,6 +19,7 @@
 		onOpen: () => void;
 		onImport: () => void;
 		onForecast: () => void;
+		onWeekly: () => void;
 	} = $props();
 </script>
 
@@ -52,7 +54,10 @@
 		{/if}
 
 		<div class="actions">
-			<button class="btn btn-primary btn-block" onclick={onImport} disabled={jobBusy}>
+			<button class="btn btn-primary btn-block" onclick={onWeekly} disabled={jobBusy}>
+				Weekly update…
+			</button>
+			<button class="btn btn-secondary btn-block" onclick={onImport} disabled={jobBusy}>
 				Import CSV…
 			</button>
 			<button
@@ -68,7 +73,7 @@
 			<button class="btn btn-secondary btn-block" onclick={onCreate} disabled={jobBusy}>
 				Create workspace
 			</button>
-			<p class="hint muted">Create uses the application data directory. Switching workspaces is refused while a job runs.</p>
+			<p class="hint muted">Weekly update reuses your saved import configuration, imports new sales, forecasts, and opens the run comparison. Create uses the application data directory. Switching workspaces is refused while a job runs.</p>
 		</div>
 	{:else}
 		<p class="muted">No workspace is open. Create or open one from the main panel.</p>

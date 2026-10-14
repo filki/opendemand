@@ -455,6 +455,58 @@ async fn import_config_delete(id: i32, state: State<'_, Service>) -> AppResult<(
 
 #[tauri::command]
 #[specta::specta]
+async fn import_config_suggestion(state: State<'_, Service>) -> AppResult<Option<i32>> {
+    state.current().await?.import_config_suggestion().await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn weekly_comparison_context(
+    state: State<'_, Service>,
+) -> AppResult<WeeklyComparisonContext> {
+    state.current().await?.weekly_comparison_context().await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn weekly_comparison_series_list(
+    current_run_id: String,
+    previous_run_id: String,
+    search: String,
+    offset: u32,
+    limit: u32,
+    state: State<'_, Service>,
+) -> AppResult<Vec<SeriesChangeSummary>> {
+    state
+        .current()
+        .await?
+        .weekly_comparison_series_list(&current_run_id, &previous_run_id, &search, offset, limit)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn weekly_comparison_series_detail(
+    current_run_id: String,
+    previous_run_id: String,
+    product_id: String,
+    location_id: String,
+    state: State<'_, Service>,
+) -> AppResult<SeriesComparisonDetail> {
+    state
+        .current()
+        .await?
+        .weekly_comparison_series_detail(
+            &current_run_id,
+            &previous_run_id,
+            &product_id,
+            &location_id,
+        )
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn forecast_start(
     revision_id: i32,
     app: AppHandle,
@@ -560,6 +612,10 @@ fn command_builder() -> Builder<tauri::Wry> {
             import_configs_list,
             import_config_save,
             import_config_delete,
+            import_config_suggestion,
+            weekly_comparison_context,
+            weekly_comparison_series_list,
+            weekly_comparison_series_detail,
             forecast_start,
             job_status,
             job_cancel,

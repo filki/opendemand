@@ -16,9 +16,12 @@ import type {
 	OverrideRevision,
 	ParsingDescriptor,
 	RunSummary,
+	SeriesChangeSummary,
+	SeriesComparisonDetail,
 	SeriesDetail,
 	SeriesModelComparison,
 	SeriesSummary,
+	WeeklyComparisonContext,
 	WorkspaceInfo
 } from '#lib/bindings.ts';
 
@@ -43,6 +46,11 @@ export function describeError(error: unknown): { code: string; message: string }
 	if (error instanceof IpcError) return { code: error.code, message: error.message };
 	if (error instanceof Error) return { code: 'unexpected_error', message: error.message };
 	return { code: 'unexpected_error', message: 'Unexpected error.' };
+}
+
+/** Query-error code for banners: the IPC code when the failure crossed IPC. */
+export function queryErrorCode(error: unknown): string {
+	return error instanceof IpcError ? error.code : 'query_failed';
 }
 
 interface TauriScope {
@@ -103,6 +111,37 @@ export async function saveImportConfig(
 
 export async function deleteImportConfig(id: number): Promise<void> {
 	await unwrap(await commands.importConfigDelete(id));
+}
+
+export async function fetchImportConfigSuggestion(): Promise<number | null> {
+	return unwrap(await commands.importConfigSuggestion());
+}
+
+export async function fetchWeeklyComparisonContext(): Promise<WeeklyComparisonContext> {
+	return unwrap(await commands.weeklyComparisonContext());
+}
+
+export async function fetchWeeklyComparisonList(
+	currentRunId: string,
+	previousRunId: string,
+	search: string,
+	offset: number,
+	limit: number
+): Promise<SeriesChangeSummary[]> {
+	return unwrap(
+		await commands.weeklyComparisonSeriesList(currentRunId, previousRunId, search, offset, limit)
+	);
+}
+
+export async function fetchWeeklyComparisonDetail(
+	currentRunId: string,
+	previousRunId: string,
+	productId: string,
+	locationId: string
+): Promise<SeriesComparisonDetail> {
+	return unwrap(
+		await commands.weeklyComparisonSeriesDetail(currentRunId, previousRunId, productId, locationId)
+	);
 }
 
 export async function startForecast(revisionId: number): Promise<JobInfo> {
