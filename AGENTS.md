@@ -1,6 +1,6 @@
 # AGENTS.md
 
-OpenDemand is a local-first, SKU-level demand forecasting desktop application: one user, one local workspace, all business data on the machine, no network listeners. Milestone 1 works end-to-end in development; Milestone 2 adds run-scoped overrides, baseline/effective comparison, and full-run CSV export. `README.md` carries the honest status and verification gaps. Technical artifacts, docs, tests, and code are English.
+OpenDemand is a local-first, SKU-level demand forecasting desktop application: one user, one local workspace, all business data on the machine, no network listeners. Milestones 1–6 work end-to-end in development; the latest completed milestone is Milestone 6, the weekly planning workflow and run comparison (ADR-0022). `README.md` carries the honest status and verification gaps. Technical artifacts, docs, tests, and code are English.
 ## Language
 Use ASD-STE100 as your primary language.
 ## Approved stack — preserve it
@@ -15,7 +15,7 @@ Decisions live in `docs/architecture/adr/` (start at `README.md` there); do not 
 ## Current-phase rules
 
 - **Migration 001 is frozen.** `docs/architecture/schema/001_init.sql` passed 44 integration/recovery tests on 2026-10-13. Its SHA-256 is recorded in `001_init.sha256`. Never edit it; schema changes require a new numbered migration and verified backup.
-- **Current scope: Milestone 2.** Preserve the working import/forecast chain and run-scoped planner functionality. MCP, XLSX export, seasonal models, flexible raw-file parsing, and advanced workspace management remain deferred until separately approved.
+- **Current scope: Milestone 6 (weekly planning workflow).** Preserve the working import/forecast chain, run-scoped planner, raw-source preprocessing, and weekly comparison. MCP, XLSX export, scheduled or automatic imports, periodic backups and restore, and the true monthly forecasting mode remain deferred until separately approved. Weekly comparison output is derived at read time (ADR-0022); never store comparison state.
 - **Accepted ADRs are historical.** To change a decision, add a new ADR that supersedes the old one; the old record keeps its text.
 
 ## Verification
@@ -35,7 +35,7 @@ Run these tests before calling work done:
 - Domain vocabulary: `GLOSSARY.md` — use its terms in issues, tests, and docs.
 - Data semantics: `docs/architecture/DATA_ARCHITECTURE.md`. System structure: `docs/architecture/SYSTEM_ARCHITECTURE.md`.
 - Implemented IPC commands and planner/export semantics: `docs/architecture/contracts/TAURI_IPC.md`; generated `src/lib/bindings.ts` is the type source of truth.
-- Schema: `docs/architecture/schema/001_init.sql`.
+- Schema: `docs/architecture/schema/001_init.sql` (frozen) and `docs/architecture/schema/002_import_config.sql` (current version).
 - Local Kilo commands: `/tdd`, `/review`, `/to-tickets`, `/caveman`, `/find-skills` — thin wrappers in `.kilo/command/` that load the matching skills.
 
 ## Agent skills
