@@ -65,7 +65,7 @@ Concurrency rules: exactly one forecast job at a time. Imports may run while a f
 ### 3.2 Sidecar Control Protocol (JSONL v1)
 
 - Transport: stdin/stdout, one JSON object per line, UTF-8; stdout is protocol-only and logs go to stderr. Protocol id `opendemand.sidecar/1`.
-- Exchange: `hello` (engine version, supported contract versions, supported models) → one `job.request` (job id, fixed relative input file names, model list, horizon, task contract version) → `job.progress` (phase: `validate_input`, `backtest`, `production`, `write_output`) → one terminal `job.result` (output file names, row counts, SHA-256 values), `job.error` (stable code, message, retryable), or `job.cancelled`.
+- Exchange: `hello` (engine version, supported contract versions, supported models) → one `job.request` (job id, task contract version, fixed relative input file names) → `job.progress` (phase: `validate_input`, `backtest`, `production`, `write_output`) → one terminal `job.result` (output file names, row counts, SHA-256 values), `job.error` (stable code, message, retryable), or `job.cancelled`.
 - Rules: unknown message type or protocol mismatch fails the job with a user-correctable error; heartbeat at most 30 seconds apart; 5-second hello timeout; configurable job timeout (30 minutes default); cancellation by a `cancel.flag` file in the job directory (stdin carries only `job.request` and is closed after it, ADR-0016) followed by a 5-second grace, then the process is killed and reaped; at most one whole-job retry for `engine_start_failed` or `unexpected_eof` before output is accepted; contract/input errors, timeouts, and cancellations are never retried.
 - Exact envelopes, error codes, and file-name rules: `contracts/SIDECAR_PROTOCOL.md`.
 

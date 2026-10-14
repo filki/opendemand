@@ -150,7 +150,7 @@ Milestone 2 implements CSV (RFC 4180, UTF-8 with BOM, CRLF records, `.` decimal 
 
 ## Related Documents
 
-- ADRs: `adr/README.md` (0001–0015; semantics in 0004–0007 and 0012–0015)
+- ADRs: `adr/README.md` (0001–0016; semantics in 0004–0007 and 0012–0015)
 - Contracts: `contracts/` (TAURI_IPC, SIDECAR_PROTOCOL, ARROW_SCHEMAS)
 - System structure: `SYSTEM_ARCHITECTURE.md`
 - Schema: `schema/001_init.sql` (frozen; SHA-256 in `schema/001_init.sha256`)
