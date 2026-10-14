@@ -7,12 +7,12 @@
 	<title>OpenDemand — prognozowanie popytu na Twoim komputerze</title>
 	<meta
 		name="description"
-		content="OpenDemand to aplikacja na komputer do prognozowania popytu. Wczytaj tygodniowe liczby z jednego pliku CSV. Otrzymaj prognozę. Dane zostają na Twoim komputerze. Niepodpisana wersja rozwojowa, licencja AGPL-3.0-only."
+		content="OpenDemand to aplikacja na komputer do cotygodniowego prognozowania popytu. Wczytaj eksport z planera — CSV, TXT albo Excel — zapisz mapowanie kolumn, prognozuj każdy produkt najlepszym z trzech modeli, poprawiaj pojedyncze tygodnie, porównuj najnowszy przebieg z poprzednim i eksportuj plan. Dane zostają na Twoim komputerze. Niepodpisana wersja rozwojowa, licencja AGPL-3.0-only."
 	/>
 	<meta property="og:title" content="OpenDemand — prognozowanie popytu na Twoim komputerze" />
 	<meta
 		property="og:description"
-		content="Planuj popyt na swoje produkty z jednego pliku CSV. Wyniki zostają na Twoim komputerze. Otwarty kod, licencja AGPL-3.0-only, niepodpisana wersja rozwojowa."
+		content="Tydzień po tygodniu: wczytaj eksport z planera, prognozuj trzema modelami, porównuj przebiegi i eksportuj plan. Wyniki zostają na Twoim komputerze. Otwarty kod, licencja AGPL-3.0-only, niepodpisana wersja rozwojowa."
 	/>
 	<meta property="og:type" content="website" />
 	<link rel="icon" href="../favicon.svg" type="image/svg+xml" />
@@ -40,10 +40,13 @@
 			<section class="hero">
 				<h1>Prognozowanie popytu, które zostaje na Twoim komputerze.</h1>
 				<p class="lede">
-					OpenDemand to aplikacja na komputer do prognozowania popytu. Wczytaj tygodniowe
-					liczby z jednego pliku CSV. Aplikacja policzy prognozę i pokaże ją na wykresie.
-					Dane zostają na Twoim komputerze. Konto nie jest potrzebne. Aplikacja nie wysyła
-					danych do internetu.
+					OpenDemand to aplikacja na komputer do cotygodniowego prognozowania popytu.
+					Wczytaj eksport z planera — CSV, TXT albo Excel — zmapuj kolumny raz i używaj
+					zapisanej konfiguracji co tydzień. Aplikacja prognozuje każdy produkt
+					najlepszym z trzech modeli, pozwala poprawiać pojedyncze tygodnie, porównać
+					najnowszy przebieg z poprzednim i wyeksportować cały plan. Dane zostają na
+					Twoim komputerze. Konto nie jest potrzebne. Aplikacja nie wysyła danych do
+					internetu.
 				</p>
 				<div class="hero-actions">
 					<a class="button button-primary" href="#download">Pobierz v0.4.1</a>
@@ -66,7 +69,7 @@
 						<desc id="chart-desc">
 							Niebieska linia pokazuje tygodniowy popyt w osiemnastu tygodniach.
 							Fioletowa linia przerywana biegnie dalej od ostatniego tygodnia przez
-							dziewięć tygodni. To jest prognoza bazowa. Powtarza ostatnią wartość.
+							dziewięć tygodni jako przykładowa prognoza bazowa.
 						</desc>
 						<defs>
 							<pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
@@ -127,23 +130,34 @@
 					<li>
 						<h3>Wczytaj dane</h3>
 						<p>
-							Użyj jednego pliku CSV z trzema kolumnami: klucz produktu, tydzień i ilość.
-							Każde wczytanie zapisuje pełną kopię danych.
+							Wczytaj surowy eksport CSV, TXT albo Excel z systemu planistycznego.
+							Kreator wczytania rozpozna format, pozwoli zmapować kolumny na podglądzie
+							i zapisze mapowanie jako konfigurację na kolejny eksport. Każde wczytanie
+							zapisuje pełną kopię danych.
 						</p>
 					</li>
 					<li>
-						<h3>Otrzymaj prognozę</h3>
+						<h3>Uruchom cotygodniową prognozę</h3>
 						<p>
-							Aplikacja prognozuje każdy produkt i wybiera najlepszy z trzech modeli.
-							Wszystko działa na Twoim komputerze. Nie potrzebujesz Pythona ani innych
-							narzędzi.
+							Jedna aktualizacja tygodniowa: wczytaj nowy eksport, a aplikacja policzy
+							prognozę dla najświeższych danych — dla każdego produktu wybierze
+							najlepszy z trzech modeli (Naive, SeasonalNaive, AutoETS). Wszystko działa
+							na Twoim komputerze. Nie potrzebujesz Pythona ani innych narzędzi.
 						</p>
 					</li>
 					<li>
-						<h3>Zachowaj wyniki</h3>
+						<h3>Porównaj i popraw</h3>
 						<p>
-							Aplikacja zapisuje każdy przebieg i jego wyniki na Twoim komputerze. Wykres
-							możesz otworzyć w każdej chwili.
+							Zobacz, co się zmieniło od zeszłego tygodnia: zmiany popytu i prognozy
+							dla każdego produktu, nowa prognoza obok poprzedniego przebiegu. Popraw
+							pojedyncze tygodnie ręcznie i porównaj je z nienaruszoną prognozą bazową.
+						</p>
+					</li>
+					<li>
+						<h3>Eksportuj plan</h3>
+						<p>
+							Wyeksportuj cały plan wybranego przebiegu do CSV — każdy produkt,
+							wszystkie 12 tygodni. Eksport nigdy nie nadpisuje istniejącego pliku.
 						</p>
 					</li>
 				</ol>
@@ -254,20 +268,22 @@
 					<div class="status-col">
 						<h3>Działa dzisiaj</h3>
 						<ul>
-							<li>Wczytywanie tygodniowych liczb z pliku CSV</li>
-							<li>Prognoza z trzech modeli i automatyczny wybór najlepszego</li>
-							<li>Ręczne zmiany prognozy z porównaniem do wartości bazowej</li>
+							<li>Kreator wczytywania surowych eksportów CSV, TXT i Excel z podglądem i walidacją</li>
+							<li>Zapisane konfiguracje wczytywania: jedno mapowanie na kolejne tygodnie</li>
+							<li>Prognozy Naive, SeasonalNaive i AutoETS z automatycznym wyborem dla każdego produktu</li>
+							<li>Aktualizacja tygodniowa: wczytanie, prognoza i porównanie przebiegów w jednym przepływie</li>
+							<li>Zmiany popytu i prognozy bazowej między dwiema wersjami danych</li>
+							<li>Ręczne zmiany prognozy tydzień po tygodniu z porównaniem do wartości bazowej</li>
 							<li>Eksport pełnego przebiegu do CSV</li>
-							<li>Historia przebiegów i wykresy na Twoim komputerze</li>
 							<li>Testy automatyczne danych, silnika, aplikacji i paczek</li>
 						</ul>
 					</div>
 					<div class="status-col">
 						<h3>Jeszcze nie działa</h3>
 						<ul>
-							<li>Kopia zapasowa i przywracanie</li>
+							<li>Okresowe kopie zapasowe i przywracanie (kopia przed migracją już działa)</li>
 							<li>Eksport XLSX</li>
-							<li>Elastyczne wczytywanie surowych plików planistycznych</li>
+							<li>Wczytywanie automatyczne według harmonogramu (aktualizacja tygodniowa jest ręczna)</li>
 							<li>Opcjonalne połączenie MCP tylko do odczytu</li>
 						</ul>
 					</div>

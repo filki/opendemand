@@ -7,12 +7,12 @@
 	<title>OpenDemand — demand forecasting on your computer</title>
 	<meta
 		name="description"
-		content="OpenDemand is a desktop app for demand forecasting. Add your weekly numbers from one CSV file. Get a forecast. Keep all data on your computer. Unsigned development preview, AGPL-3.0-only."
+		content="OpenDemand is a desktop app for weekly demand forecasting. Load a planner export — CSV, TXT, or Excel — keep a saved column mapping, forecast every product with the best of three models, adjust single weeks, compare the newest run with the previous revision, and export the plan. All data stays on your computer. Unsigned development preview, AGPL-3.0-only."
 	/>
 	<meta property="og:title" content="OpenDemand — demand forecasting on your computer" />
 	<meta
 		property="og:description"
-		content="Plan the demand for your products from one CSV file. All results stay on your computer. Open source, AGPL-3.0-only, unsigned development preview."
+		content="Week to week: import your planner export, forecast with three models, compare runs, and export the plan. All results stay on your computer. Open source, AGPL-3.0-only, unsigned development preview."
 	/>
 	<meta property="og:type" content="website" />
 	<link rel="icon" href="favicon.svg" type="image/svg+xml" />
@@ -40,10 +40,12 @@
 			<section class="hero">
 				<h1>Demand forecasting that stays on your computer.</h1>
 				<p class="lede">
-					OpenDemand is a desktop app for demand forecasting. Add your weekly numbers from
-					one CSV file. The app calculates a forecast and shows a chart. All data stays on
-					your computer. You do not need an account. The app does not send data to the
-					internet.
+					OpenDemand is a desktop app for weekly demand forecasting. Load a planner export
+					— CSV, TXT, or Excel — map the columns once, and reuse the saved mapping every
+					week. The app forecasts every product with the best of three models, you can
+					adjust single weeks, compare the newest run with the previous revision, and
+					export the full plan. All data stays on your computer. You do not need an
+					account. The app does not send data to the internet.
 				</p>
 				<div class="hero-actions">
 					<a class="button button-primary" href="#download">Download v0.4.1</a>
@@ -65,8 +67,8 @@
 						<title id="chart-title">Example weekly demand chart with a baseline forecast</title>
 						<desc id="chart-desc">
 							A blue line shows weekly demand for eighteen weeks. A purple dashed line
-							continues from the last week for nine weeks. This is the baseline forecast.
-							It repeats the last value.
+							continues from the last week for nine weeks as an example baseline
+							forecast.
 						</desc>
 						<defs>
 							<pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
@@ -127,22 +129,34 @@
 					<li>
 						<h3>Add your data</h3>
 						<p>
-							Use one CSV file with three columns: product key, week, and quantity. Each
-							import is saved as a complete copy.
+							Load a raw CSV, TXT, or Excel export from your planning system. The guided
+							import detects the format, lets you map the columns on a parsed preview,
+							and saves the mapping as a configuration you reuse on the next export.
+							Each import is stored as a complete copy.
 						</p>
 					</li>
 					<li>
-						<h3>Get a forecast</h3>
+						<h3>Run the weekly forecast</h3>
 						<p>
-							The app forecasts every product and picks the best of three models.
-							Everything runs on your computer. You do not need Python or other tools.
+							One weekly update: load the new export and the app forecasts the freshest
+							data, with the best of three models (Naive, SeasonalNaive, AutoETS) chosen
+							per product. Everything runs on your computer. You do not need Python or
+							other tools.
 						</p>
 					</li>
 					<li>
-						<h3>Keep your results</h3>
+						<h3>Compare and adjust</h3>
 						<p>
-							The app saves every run and its results on your computer. Open a chart again
-							at any time.
+							See what changed since last week: demand edits and forecast movement for
+							every product, the new forecast next to the previous run. Adjust single
+							weeks by hand and compare them with the untouched baseline.
+						</p>
+					</li>
+					<li>
+						<h3>Export the plan</h3>
+						<p>
+							Export the whole plan of the selected run to CSV — every product, all 12
+							weeks. Exports never overwrite an existing file.
 						</p>
 					</li>
 				</ol>
@@ -253,20 +267,22 @@
 					<div class="status-col">
 						<h3>Works today</h3>
 						<ul>
-							<li>Weekly history import from a CSV file</li>
-							<li>Forecast with three models and automatic selection of the best one</li>
-							<li>Manual forecast changes with a baseline comparison</li>
+							<li>Guided import of raw CSV, TXT, and Excel exports with a live preview and validation</li>
+							<li>Saved import configurations: one mapping reused every week</li>
+							<li>Naive, SeasonalNaive, and AutoETS forecasts with automatic per-product selection</li>
+							<li>Weekly update: import, forecast, and run comparison in one flow</li>
+							<li>Demand changes and baseline forecast deltas between two revisions</li>
+							<li>Manual week-by-week forecast changes compared with the baseline</li>
 							<li>Full-run CSV export</li>
-							<li>Run history and charts on your computer</li>
 							<li>Automated tests for data, engine, app, and packages</li>
 						</ul>
 					</div>
 					<div class="status-col">
 						<h3>Not built yet</h3>
 						<ul>
-							<li>Backup and restore</li>
+							<li>Periodic backups and restore (a pre-migration backup exists)</li>
 							<li>XLSX export</li>
-							<li>Flexible import of raw planner files</li>
+							<li>Scheduled or automatic imports (the weekly update is manual)</li>
 							<li>The optional read-only MCP connection</li>
 						</ul>
 					</div>
