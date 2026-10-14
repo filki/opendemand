@@ -25,7 +25,7 @@ the worker count (default `min(4, cpu_count)`; `1` disables the pool).
 5. Python exits. Rust validates output before the single result transaction.
 
 ```json
-{"protocol":"opendemand.sidecar/1","type":"hello","job_id":null,"engine_version":"0.0.3","contracts":["opendemand.arrow/1"],"models":["naive","seasonal_naive_52","auto_ets_52"]}
+{"protocol":"opendemand.sidecar/1","type":"hello","job_id":null,"engine_version":"0.0.4","contracts":["opendemand.arrow/1"],"models":["naive","seasonal_naive_52","auto_ets_52"]}
 {"protocol":"opendemand.sidecar/1","type":"job.request","job_id":"42","contract":"opendemand.arrow/1","input_files":{"observations":"observations.arrow","tasks":"tasks.arrow"}}
 {"protocol":"opendemand.sidecar/1","type":"job.progress","job_id":"42","phase":"backtest","completed":1,"total":5}
 ```

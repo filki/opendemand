@@ -74,11 +74,17 @@ jobs:
           releaseBody: |
             Unsigned development preview of OpenDemand v__VERSION__.
 
-            What works: canonical CSV import; Naive, SeasonalNaive(52) and AutoETS(52)
-            forecasts with automatic per-series model selection; run-scoped manual
-            overrides; baseline/effective forecast charts; and full-run CSV export.
-            Model fitting runs on all available CPU cores, so long forecast runs finish
-            several times faster than in the previous version.
+            What works: canonical CSV import plus a guided import that converts raw
+            SAP, Subiekt, Comarch, and Excel (.xlsx) exports into the same weekly
+            observations, with column mapping, preview, validation, and saved
+            configurations; Naive, SeasonalNaive(52) and AutoETS(52) forecasts with
+            automatic per-series model selection; run-scoped manual overrides;
+            baseline/effective forecast charts; and full-run CSV export. Model fitting
+            runs on all available CPU cores, so long forecast runs finish several
+            times faster than in the previous version.
+
+            An older workspace is upgraded behind a verified pre-migration backup;
+            backups live in the workspace's `backups/` directory.
 
             The installers are not code-signed. macOS shows a Gatekeeper warning until
             notarization, and Windows SmartScreen can warn about an unknown publisher.
