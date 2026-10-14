@@ -1,6 +1,6 @@
 # OpenDemand
 
-Local-first, SKU-level demand forecasting for the desktop. One user, one local workspace: the SQLite database, retained source CSV copies, and backups live in a directory you choose, and no component of the application listens on the network.
+Local-first, SKU-level demand forecasting for the desktop. One user, one local workspace: the SQLite database, retained source and export CSV copies, and backups live in a directory you choose, and no component of the application listens on the network.
 
 > **Status: Milestone 2 planner features are implemented in development.** The chain canonical CSV → SQLite → Python Naive forecast → Rust persistence → Svelte chart runs locally through `npm run tauri dev`. Run-scoped append-only overrides, baseline/effective comparison, and full-run CSV export are covered by automated tests and browser-driven checks against a real Rust workspace. Native save-dialog interaction has not yet been manually verified. Packaging is experimental; backups, seasonal models, and MCP are not implemented yet. Nothing here is ready for production use.
 
@@ -9,7 +9,7 @@ Local-first, SKU-level demand forecasting for the desktop. One user, one local w
 - **Desktop shell**: Tauri v2 with a static SvelteKit frontend (Svelte 5 runes, TanStack Query) and `tauri-specta` typed IPC.
 - **Core**: Rust; sole owner of the workspace SQLite database (WAL, one serialized writer, one transaction per persist).
 - **Forecasting**: Python sidecar, one process per job, Arrow IPC files and versioned JSONL; Naive first, seasonal models later.
-- **Optional MCP adapter**: read-only, opt-in, deferred beyond Milestone 1.
+- **Optional MCP adapter**: read-only, opt-in, deferred beyond the current milestone.
 
 Target platforms are Windows x64, macOS Apple Silicon, and Linux x64.
 
@@ -27,7 +27,7 @@ It is temporary on purpose. Parsing arbitrary planner files is out of scope for 
 
 ## Repository layout
 
-- `docs/architecture/` — accepted decisions (`adr/`), data semantics, system structure, the frozen initial schema (`schema/001_init.sql` plus its SHA-256), and the Milestone 1 IPC/Arrow contracts (`contracts/`).
+- `docs/architecture/` — accepted decisions (`adr/`), data semantics, system structure, the frozen initial schema (`schema/001_init.sql` plus its SHA-256), and the implemented IPC/Arrow contracts (`contracts/`).
 - `docs/agents/` — engineering-skill configuration: issue tracker, triage labels, domain docs.
 - `src-tauri/` — Rust core and Tauri desktop shell (SQLite owner, job orchestration, selection, persistence).
 - `src/` — SvelteKit frontend with generated typed IPC bindings.
@@ -66,7 +66,7 @@ npm run build:desktop  # freezes the Python sidecar, then bundles the app
 
 Bundled resources are enabled only by `src-tauri/tauri.bundle.conf.json`, applied by this command and the Release workflow. Development and tests do not require generated packaging files.
 
-Release automation: pushing a `v*` tag (or running the Release workflow manually) builds Windows x64, macOS Apple Silicon, and Linux x64 bundles and attaches them to a draft GitHub release. Builds are currently unsigned — macOS shows a Gatekeeper warning until notarization lands.
+Release automation runs only through **Actions > Release > Run workflow** (`workflow_dispatch`). It builds Windows x64, macOS Apple Silicon, and Linux x64 bundles and attaches them to a draft GitHub release. Pushing or publishing a tag does not start another build. Builds are currently unsigned; macOS shows a Gatekeeper warning until notarization lands.
 
 CI gates packaging, every platform checks the bundled sidecar through Rust persistence, and successful runs align the draft with the built commit.
 
