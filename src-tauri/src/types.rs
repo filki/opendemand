@@ -14,6 +14,16 @@ pub struct WorkspaceInfo {
     pub recovery_issues: Vec<String>,
 }
 
+/// One row of the home screen's workspace list: a recently opened workspace
+/// plus whether its database still exists on disk.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct WorkspaceRef {
+    pub path: String,
+    pub name: String,
+    pub last_opened_at: String,
+    pub exists: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ImportResult {
     pub revision_id: i32,

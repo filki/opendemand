@@ -6,9 +6,12 @@ The UI never opens SQLite or runs the Python engine directly. This document cove
 
 ## Commands
 
-- `workspace_create(path: string | null)`: create an empty workspace. A null path uses the application data directory.
-- `workspace_open(path: string)`: open an existing workspace and reconcile retained files.
+- `workspace_create(path: string | null)`: create an empty workspace. A null path uses the application data directory. An explicit path must be an empty directory without a workspace database.
+- `workspace_open(path: string)`: open an existing workspace and reconcile retained files. A successful open records the path in the recent-workspaces list.
+- `workspace_close()`: close the active workspace and return to the home flow. Refused with `workspace_busy` while a job runs.
 - `workspace_info()`: return the active workspace, latest revision, locale, and recovery findings.
+- `workspaces_list()`: return the home screen's workspace list — recent workspaces plus the default application-data workspace while it exists — each with `exists` reflecting its database file.
+- `workspaces_forget(path: string)`: remove one recent-workspaces entry. The default application-data workspace reappears while its database exists.
 - `import_start(path: string, descriptor: ParsingDescriptor | null)`: queue an import and return its initial `JobInfo` including the job id. A null descriptor imports a canonical CSV; a descriptor selects the raw-source preprocessing path.
 - `import_preview(path: string, descriptor: ParsingDescriptor | null)`: run the read-only preview pass and return `ImportPreview`. A null descriptor runs detection only; nothing is written and no revision is created.
 - `import_configs_list()`: return the saved import configurations of the active profile, ordered by name.

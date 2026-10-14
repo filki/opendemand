@@ -3,6 +3,7 @@ pub mod error;
 pub mod forecast;
 pub mod imputation;
 pub mod preprocess;
+pub mod recent;
 pub mod selection;
 pub mod types;
 pub mod workspace;

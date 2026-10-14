@@ -3,6 +3,7 @@
 	import type { JobInfo, OverrideEdit, ParsingDescriptor, SeriesSummary } from '#lib/bindings.ts';
 	import BrowserFallback from '#lib/components/BrowserFallback.svelte';
 	import CsvFormatCard from '#lib/components/CsvFormatCard.svelte';
+	import HomeScreen from '#lib/components/HomeScreen.svelte';
 	import ImportWizard from '#lib/components/ImportWizard.svelte';
 	import JobMonitor from '#lib/components/JobMonitor.svelte';
 	import SeriesDetailPanel from '#lib/components/SeriesDetailPanel.svelte';
@@ -10,10 +11,13 @@
 	import StatusChip from '#lib/components/StatusChip.svelte';
 	import WeeklyComparison from '#lib/components/WeeklyComparison.svelte';
 	import WorkspacePanel from '#lib/components/WorkspacePanel.svelte';
+	import WorkspacePicker from '#lib/components/WorkspacePicker.svelte';
 	import { formatPercent, formatTimestamp, humanizeToken, shortId } from '#lib/frontend/format.ts';
+	import { createWorkspaceHint } from '#lib/frontend/home.ts';
 	import { resolveLocale, t } from '#lib/frontend/i18n.ts';
 	import {
 		cancelJob,
+		closeWorkspace,
 		createWorkspace,
 		describeError,
 		exportPlanCsv,
@@ -24,6 +28,8 @@
 		fetchSeriesList,
 		fetchSeriesModels,
 		fetchWorkspaceInfo,
+		fetchWorkspaces,
+		forgetWorkspace,
 		isTauriRuntime,
 		openWorkspace,
 		pickCanonicalCsv,
@@ -69,6 +75,9 @@
 	/** Run-scoped imputation method for forecast runs (ADR-0023). */
 	let imputationMethod = $state<string | null>(null);
 	let comparisonOpen = $state(false);
+	/** Home flow with no workspace open: module menu, then the workspace list. */
+	let homeScreen = $state<'home' | 'picker'>('home');
+	const actionErrorHint = $derived(actionError ? createWorkspaceHint(actionError.code) : null);
 
 	// Debounce the series search; a new search always restarts at page one.
 	$effect(() => {
@@ -88,6 +97,13 @@
 	const workspace = $derived(workspaceQuery.data ?? null);
 	const latestRevisionId = $derived(workspace?.latest_revision_id ?? null);
 	const locale = $derived(resolveLocale(workspace?.locale));
+
+	const workspacesQuery = createQuery(() => ({
+		queryKey: ['workspaces'],
+		queryFn: fetchWorkspaces,
+		enabled: desktop && workspace === null && homeScreen === 'picker',
+		retry: 0
+	}));
 
 	const runsQuery = createQuery(() => ({
 		queryKey: ['runs', workspace?.path],
@@ -321,21 +337,39 @@
 		activeJobId = job.id;
 	}
 
+	/** Forget every selection and notice that belongs to the open workspace. */
+	function resetWorkspaceScopedState() {
+		activeJobId = null;
+		activeJobStatus = null;
+		handledJobId = null;
+		notice = null;
+		selectedSeries = null;
+		selectedRunId = null;
+		searchInput = '';
+		plannerDirty = false;
+		exportNotice = null;
+		offset = 0;
+		wizardOpen = false;
+		weeklyFlowActive = false;
+		comparisonOpen = false;
+	}
+
+	async function invalidateWorkspaceQueries() {
+		await Promise.all([
+			queryClient.invalidateQueries({ queryKey: ['workspace'] }),
+			queryClient.invalidateQueries({ queryKey: ['workspaces'] })
+		]);
+	}
+
 	async function handleCreateWorkspace() {
 		actionError = null;
 		try {
-			await createWorkspace(null);
-			activeJobId = null;
-			activeJobStatus = null;
-			selectedSeries = null;
-			selectedRunId = null;
-			plannerDirty = false;
-			exportNotice = null;
-			offset = 0;
-			wizardOpen = false;
-			weeklyFlowActive = false;
-			comparisonOpen = false;
-			await queryClient.invalidateQueries({ queryKey: ['workspace'] });
+			const path = await pickWorkspaceDirectory();
+			if (!path) return;
+			await createWorkspace(path);
+			resetWorkspaceScopedState();
+			homeScreen = 'home';
+			await invalidateWorkspaceQueries();
 		} catch (error) {
 			actionError = describeError(error);
 		}
@@ -347,18 +381,56 @@
 			const path = await pickWorkspaceDirectory();
 			if (!path) return;
 			await openWorkspace(path);
-			activeJobId = null;
-			activeJobStatus = null;
-			selectedSeries = null;
-			selectedRunId = null;
-			plannerDirty = false;
-			exportNotice = null;
-			offset = 0;
-			searchInput = '';
-			wizardOpen = false;
-			weeklyFlowActive = false;
-			comparisonOpen = false;
-			await queryClient.invalidateQueries({ queryKey: ['workspace'] });
+			resetWorkspaceScopedState();
+			homeScreen = 'home';
+			await invalidateWorkspaceQueries();
+		} catch (error) {
+			actionError = describeError(error);
+		}
+	}
+
+	async function handleOpenRecentWorkspace(path: string) {
+		actionError = null;
+		try {
+			await openWorkspace(path);
+			resetWorkspaceScopedState();
+			homeScreen = 'home';
+			await invalidateWorkspaceQueries();
+		} catch (error) {
+			actionError = describeError(error);
+			await queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+		}
+	}
+
+	async function handleCloseWorkspace() {
+		actionError = null;
+		try {
+			await closeWorkspace();
+			resetWorkspaceScopedState();
+			homeScreen = 'home';
+			await invalidateWorkspaceQueries();
+		} catch (error) {
+			actionError = describeError(error);
+		}
+	}
+
+	async function handleSwitchWorkspace() {
+		actionError = null;
+		try {
+			await closeWorkspace();
+			resetWorkspaceScopedState();
+			homeScreen = 'picker';
+			await invalidateWorkspaceQueries();
+		} catch (error) {
+			actionError = describeError(error);
+		}
+	}
+
+	async function handleForgetWorkspace(path: string) {
+		actionError = null;
+		try {
+			await forgetWorkspace(path);
+			await queryClient.invalidateQueries({ queryKey: ['workspaces'] });
 		} catch (error) {
 			actionError = describeError(error);
 		}
@@ -492,6 +564,9 @@
 			</div>
 			{#if workspace}
 				<div class="topbar-meta">
+					<button class="btn btn-secondary" onclick={handleCloseWorkspace} disabled={jobBusy}>
+						Home
+					</button>
 					<span class="path mono" title={workspace.path}>{workspace.path}</span>
 					<StatusChip label="schema {workspace.schema_version}" tone="neutral" />
 				</div>
@@ -505,8 +580,7 @@
 					revisionId={latestRevisionId}
 					jobBusy={jobBusy || plannerDirty || plannerSaving || exporting}
 					imputation={imputationMethod}
-					onCreate={handleCreateWorkspace}
-					onOpen={handleOpenWorkspace}
+					onSwitch={handleSwitchWorkspace}
 					onImport={handleImport}
 					onForecast={handleForecast}
 					onImputationChange={(value) => (imputationMethod = value)}
@@ -577,6 +651,9 @@
 					<p class="banner banner-error" role="alert">
 						[{actionError.code}] {actionError.message}
 					</p>
+					{#if actionErrorHint}
+						<p class="hint muted">{actionErrorHint}</p>
+					{/if}
 				{/if}
 
 				{#if wizardOpen && workspace}
@@ -596,23 +673,24 @@
 					</div>
 				{:else if !workspace}
 					<div class="stack">
-						<section class="panel card" aria-labelledby="welcome-heading">
-							<h2 id="welcome-heading">Open or create a workspace</h2>
-							<p>
-								A workspace is a folder that holds your SQLite database, retained CSV copies, and
-								forecast runs. Create one in the application data directory, or open an existing
-								workspace folder.
-							</p>
-							<div class="row">
-								<button class="btn btn-primary" onclick={handleCreateWorkspace}>
-									Create workspace
-								</button>
-								<button class="btn btn-secondary" onclick={handleOpenWorkspace}>
-									Open workspace…
-								</button>
-							</div>
-						</section>
-						<CsvFormatCard />
+						{#if homeScreen === 'home'}
+							<HomeScreen
+								onPickModule={(id) => {
+									if (id === 'forecasting') homeScreen = 'picker';
+								}}
+							/>
+						{:else}
+							<WorkspacePicker
+								entries={workspacesQuery.data ?? []}
+								loading={workspacesQuery.isPending && workspacesQuery.isFetching}
+								busy={jobBusy}
+								onCreate={handleCreateWorkspace}
+								onOpenDirectory={handleOpenWorkspace}
+								onOpenPath={handleOpenRecentWorkspace}
+								onForget={handleForgetWorkspace}
+								onBack={() => (homeScreen = 'home')}
+							/>
+						{/if}
 					</div>
 				{:else if revisionId === null}
 					<div class="stack">
@@ -799,13 +877,6 @@
 
 	.card p {
 		max-width: 72ch;
-	}
-
-	.row {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.6rem;
-		margin-top: 0.6rem;
 	}
 
 	@media (max-width: 920px) {

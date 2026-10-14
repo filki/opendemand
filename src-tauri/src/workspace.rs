@@ -54,7 +54,7 @@ const DEFAULT_PROFILE_NAME: &str = "canonical/1";
 const DEFAULT_LOCATION_CODE: &str = "__default__";
 const DEFAULT_TIMEZONE: &str = "UTC";
 const DEFAULT_LOCALE: &str = "en";
-const DB_FILENAME: &str = "workspace.sqlite3";
+pub(crate) const DB_FILENAME: &str = "workspace.sqlite3";
 const SOURCE_FILENAME: &str = "source.csv";
 /// Directory holding verified pre-migration backups inside the workspace.
 const BACKUP_DIRECTORY: &str = "backups";

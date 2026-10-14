@@ -22,7 +22,8 @@ import type {
 	SeriesModelComparison,
 	SeriesSummary,
 	WeeklyComparisonContext,
-	WorkspaceInfo
+	WorkspaceInfo,
+	WorkspaceRef
 } from '#lib/bindings.ts';
 
 export type IpcOutcome<T> = { status: 'ok'; data: T } | { status: 'error'; error: AppError };
@@ -82,6 +83,18 @@ export async function createWorkspace(path: string | null): Promise<WorkspaceInf
 
 export async function openWorkspace(path: string): Promise<WorkspaceInfo> {
 	return unwrap(await commands.workspaceOpen(path));
+}
+
+export async function closeWorkspace(): Promise<void> {
+	await unwrap(await commands.workspaceClose());
+}
+
+export async function fetchWorkspaces(): Promise<WorkspaceRef[]> {
+	return unwrap(await commands.workspacesList());
+}
+
+export async function forgetWorkspace(path: string): Promise<void> {
+	await unwrap(await commands.workspacesForget(path));
 }
 
 export async function startImport(

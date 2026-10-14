@@ -7,7 +7,19 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 export const commands = {
 	workspaceCreate: (path: string | null) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_create", { path })),
 	workspaceOpen: (path: string) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_open", { path })),
+	workspaceClose: () => typedError<null, AppError>(__TAURI_INVOKE("workspace_close")),
 	workspaceInfo: () => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_info")),
+	/**
+	 *  The home screen's workspace list: recent workspaces plus the default
+	 *  application-data workspace when it exists. The exists flag reflects the
+	 *  workspace database, not just the folder.
+	 */
+	workspacesList: () => typedError<WorkspaceRef[], AppError>(__TAURI_INVOKE("workspaces_list")),
+	/**
+	 *  Drop one row from the workspace list. The default application-data
+	 *  workspace stays listed while it exists, even after it is forgotten.
+	 */
+	workspacesForget: (path: string) => typedError<null, AppError>(__TAURI_INVOKE("workspaces_forget", { path })),
 	importStart: (path: string, descriptor: {
 	descriptor_version: number,
 	format: string | null,
@@ -366,6 +378,17 @@ export type WorkspaceInfo = {
 	 */
 	locale: string,
 	recovery_issues: string[],
+};
+
+/**
+ *  One row of the home screen's workspace list: a recently opened workspace
+ *  plus whether its database still exists on disk.
+ */
+export type WorkspaceRef = {
+	path: string,
+	name: string,
+	last_opened_at: string,
+	exists: boolean,
 };
 
 /* Tauri Specta runtime */

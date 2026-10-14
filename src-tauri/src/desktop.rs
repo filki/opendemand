@@ -3,8 +3,9 @@ use crate::{
     forecast::run_forecast,
     imputation::ImputationMethod,
     preprocess::ParsingDescriptor,
+    recent,
     types::*,
-    workspace::Workspace,
+    workspace::{Workspace, DB_FILENAME},
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -65,6 +66,40 @@ impl Service {
     }
 }
 
+fn app_data_directory(app: &AppHandle) -> AppResult<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .map_err(|_| AppError::new("io_error", "Application data directory is unavailable."))
+}
+
+fn default_workspace_path(app: &AppHandle) -> AppResult<PathBuf> {
+    app_data_directory(app).map(|directory| directory.join("workspace"))
+}
+
+fn registry_file(app: &AppHandle) -> AppResult<PathBuf> {
+    app_data_directory(app).map(|directory| recent::file_path(&directory))
+}
+
+/// Remember a successfully opened or created workspace in the home screen's
+/// list. A failed write never fails the open itself.
+fn record_recent(app: &AppHandle, workspace_path: &Path) {
+    if let Ok(file) = registry_file(app) {
+        let mut entries = recent::load(&file);
+        recent::record(&mut entries, workspace_path, Utc::now().to_rfc3339());
+        let _ = recent::save(&file, &entries);
+    }
+}
+
+fn workspace_ref(entry: recent::RecentWorkspace) -> WorkspaceRef {
+    let exists = Path::new(&entry.path).join(DB_FILENAME).exists();
+    WorkspaceRef {
+        path: entry.path,
+        name: entry.name,
+        last_opened_at: entry.last_opened_at,
+        exists,
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn workspace_create(
@@ -77,18 +112,15 @@ async fn workspace_create(
     let default_path = path.is_none();
     let path = match path {
         Some(path) => PathBuf::from(path),
-        None => app
-            .path()
-            .app_data_dir()
-            .map_err(|_| AppError::new("io_error", "Application data directory is unavailable."))?
-            .join("workspace"),
+        None => default_workspace_path(&app)?,
     };
     let workspace = if default_path && path.exists() {
-        Workspace::open(path).await?
+        Workspace::open(path.clone()).await?
     } else {
-        Workspace::create(path).await?
+        Workspace::create(path.clone()).await?
     };
     let info = workspace.info().await?;
+    record_recent(&app, &path);
     state.jobs.lock().unwrap().clear();
     *current = Some(workspace);
     Ok(info)
@@ -96,20 +128,64 @@ async fn workspace_create(
 
 #[tauri::command]
 #[specta::specta]
-async fn workspace_open(path: String, state: State<'_, Service>) -> AppResult<WorkspaceInfo> {
+async fn workspace_open(
+    path: String,
+    app: AppHandle,
+    state: State<'_, Service>,
+) -> AppResult<WorkspaceInfo> {
     let mut current = state.workspace.lock().await;
     state.ensure_idle()?;
-    let workspace = Workspace::open(PathBuf::from(path)).await?;
+    let workspace = Workspace::open(PathBuf::from(path.clone())).await?;
     let info = workspace.info().await?;
+    record_recent(&app, Path::new(&path));
     state.jobs.lock().unwrap().clear();
     *current = Some(workspace);
     Ok(info)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn workspace_close(state: State<'_, Service>) -> AppResult<()> {
+    state.ensure_idle()?;
+    *state.workspace.lock().await = None;
+    state.jobs.lock().unwrap().clear();
+    Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn workspace_info(state: State<'_, Service>) -> AppResult<WorkspaceInfo> {
     state.current().await?.info().await
+}
+
+/// The home screen's workspace list: recent workspaces plus the default
+/// application-data workspace when it exists. The exists flag reflects the
+/// workspace database, not just the folder.
+#[tauri::command]
+#[specta::specta]
+async fn workspaces_list(app: AppHandle) -> AppResult<Vec<WorkspaceRef>> {
+    let file = registry_file(&app)?;
+    let mut entries = recent::load(&file);
+    if let Ok(default) = default_workspace_path(&app) {
+        recent::seed_default(&mut entries, &default);
+    }
+    Ok(entries.into_iter().map(workspace_ref).collect())
+}
+
+/// Drop one row from the workspace list. The default application-data
+/// workspace stays listed while it exists, even after it is forgotten.
+#[tauri::command]
+#[specta::specta]
+async fn workspaces_forget(path: String, app: AppHandle) -> AppResult<()> {
+    let file = registry_file(&app)?;
+    let mut entries = recent::load(&file);
+    recent::forget(&mut entries, &path);
+    recent::save(&file, &entries).map_err(|error| {
+        AppError::new(
+            "io_error",
+            format!("Could not update the workspace list: {error}"),
+        )
+    })
 }
 
 #[tauri::command]
@@ -637,7 +713,10 @@ fn command_builder() -> Builder<tauri::Wry> {
         .commands(collect_commands![
             workspace_create,
             workspace_open,
+            workspace_close,
             workspace_info,
+            workspaces_list,
+            workspaces_forget,
             import_start,
             import_preview,
             import_configs_list,
@@ -677,15 +756,10 @@ pub fn run() {
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
-            let path = std::env::var_os("OPENDEMAND_WORKSPACE")
-                .map(PathBuf::from)
-                .or_else(|| {
-                    app.path()
-                        .app_data_dir()
-                        .ok()
-                        .map(|root| root.join("workspace"))
-                        .filter(|path| path.exists())
-                });
+            // The desktop shell starts on the home screen; only an explicit
+            // environment override opens a workspace automatically (dev and
+            // test flows).
+            let path = std::env::var_os("OPENDEMAND_WORKSPACE").map(PathBuf::from);
             if let Some(path) = path {
                 match tauri::async_runtime::block_on(Workspace::open(path)) {
                     Ok(workspace) => tauri::async_runtime::block_on(async {
