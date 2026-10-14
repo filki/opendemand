@@ -45,7 +45,7 @@
 					folder you choose. No accounts, no telemetry, nothing listening on the network.
 				</p>
 				<div class="hero-actions">
-					<a class="button button-primary" href="#download">Download v0.0.1</a>
+					<a class="button button-primary" href="#download">Download v0.0.2</a>
 					<a class="button button-secondary" href="https://github.com/filki/opendemand">Read the source</a>
 				</div>
 				<p class="fine-print">
@@ -151,7 +151,7 @@
 			<section class="section" id="download" aria-labelledby="download-title">
 				<h2 id="download-title">Download</h2>
 				<p class="section-lede">
-					OpenDemand v0.0.1 is a development preview for early testing. Pick the package for
+					OpenDemand v0.0.2 is a development preview for early testing. Pick the package for
 					your system.
 				</p>
 
@@ -160,7 +160,7 @@
 						<img src="assets/icon-512.png" alt="" width="64" height="64" />
 						<div>
 							<h3 class="product-title">
-								OpenDemand <span class="version-chip">v0.0.1</span>
+								OpenDemand <span class="version-chip">v0.0.2</span>
 							</h3>
 							<p class="product-line">
 								Local-first SKU-level demand forecasting for the desktop. Licensed under AGPL-3.0-only.
@@ -178,12 +178,12 @@
 							<div class="os-files">
 								<a
 									class="file"
-									href="https://github.com/filki/opendemand/releases/download/v0.0.1/OpenDemand_0.0.1_x64-setup.exe"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.2/OpenDemand_0.0.2_x64-setup.exe"
 									>.exe <span class="file-note">installer</span></a
 								>
 								<a
 									class="file"
-									href="https://github.com/filki/opendemand/releases/download/v0.0.1/OpenDemand_0.0.1_x64_en-US.msi"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.2/OpenDemand_0.0.2_x64_en-US.msi"
 									>.msi <span class="file-note">managed installs</span></a
 								>
 							</div>
@@ -197,7 +197,7 @@
 							<div class="os-files">
 								<a
 									class="file"
-									href="https://github.com/filki/opendemand/releases/download/v0.0.1/OpenDemand_0.0.1_aarch64.dmg"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.2/OpenDemand_0.0.2_aarch64.dmg"
 									>.dmg <span class="file-note">disk image</span></a
 								>
 							</div>
@@ -212,17 +212,17 @@
 							<div class="os-files">
 								<a
 									class="file"
-									href="https://github.com/filki/opendemand/releases/download/v0.0.1/OpenDemand_0.0.1_amd64.AppImage"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.2/OpenDemand_0.0.2_amd64.AppImage"
 									>.AppImage <span class="file-note">portable</span></a
 								>
 								<a
 									class="file"
-									href="https://github.com/filki/opendemand/releases/download/v0.0.1/OpenDemand_0.0.1_amd64.deb"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.2/OpenDemand_0.0.2_amd64.deb"
 									>.deb <span class="file-note">Debian, Ubuntu</span></a
 								>
 								<a
 									class="file"
-									href="https://github.com/filki/opendemand/releases/download/v0.0.1/OpenDemand-0.0.1-1.x86_64.rpm"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.2/OpenDemand-0.0.2-1.x86_64.rpm"
 									>.rpm <span class="file-note">Fedora, RHEL</span></a
 								>
 							</div>
@@ -233,7 +233,7 @@
 						Builds are unsigned. macOS shows a Gatekeeper warning until notarization lands, and
 						Windows SmartScreen may warn about an unknown publisher. All files and release
 						notes are on
-						<a href="https://github.com/filki/opendemand/releases/tag/v0.0.1">GitHub Releases</a>.
+						<a href="https://github.com/filki/opendemand/releases/tag/v0.0.2">GitHub Releases</a>.
 					</p>
 				</article>
 
@@ -247,8 +247,8 @@
 			<section class="section" aria-labelledby="status-title">
 				<h2 id="status-title">Honest status</h2>
 				<p class="section-lede">
-					Milestone 1 works end-to-end in development, verified by automated tests. Packaging is
-					experimental and nothing here is ready for production use.
+					Milestone 2 planner features are implemented in development, verified by automated tests against
+					a real workspace. Packaging is experimental and nothing here is ready for production use.
 				</p>
 				<div class="status-grid">
 					<div class="status-col">
@@ -257,6 +257,8 @@
 							<li>Canonical CSV import (the <code>canonical/1</code> contract)</li>
 							<li>Naive forecasting through the bundled Python sidecar</li>
 							<li>Persisted run history and forecast charts</li>
+							<li>Run-scoped manual overrides with baseline vs. effective comparison</li>
+							<li>Full-run CSV export</li>
 							<li>Automated tests: schema and recovery, engine, frontend, and per-platform packaging checks</li>
 						</ul>
 					</div>
@@ -264,8 +266,7 @@
 						<h3>Not built yet</h3>
 						<ul>
 							<li>Backups and restores</li>
-							<li>Manual forecast overrides</li>
-							<li>Exports (XLSX)</li>
+							<li>XLSX export</li>
 							<li>Seasonal and other forecasting models</li>
 							<li>Flexible parsing of raw planner files</li>
 							<li>The optional read-only MCP adapter</li>
