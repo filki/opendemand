@@ -2,7 +2,7 @@
 
 Local-first, SKU-level demand forecasting for the desktop. One user, one local workspace: the SQLite database, retained source CSV copies, and backups live in a directory you choose, and no component of the application listens on the network.
 
-> **Status: Milestone 1 works end-to-end in development.** The chain canonical CSV → SQLite → Python Naive forecast → Rust persistence → Svelte chart runs locally through `npm run tauri dev`, verified by automated tests and by running the desktop application against a real imported workspace. Packaging is experimental; backups, overrides, exports, seasonal models, and MCP are not implemented yet. Nothing here is ready for production use.
+> **Status: Milestone 2 planner features are implemented in development.** The chain canonical CSV → SQLite → Python Naive forecast → Rust persistence → Svelte chart runs locally through `npm run tauri dev`. Run-scoped append-only overrides, baseline/effective comparison, and full-run CSV export are covered by automated tests and browser-driven checks against a real Rust workspace. Native save-dialog interaction has not yet been manually verified. Packaging is experimental; backups, seasonal models, and MCP are not implemented yet. Nothing here is ready for production use.
 
 ## Application
 
