@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   milestone:
-    name: Desktop and Milestone 1 Tests
+    name: Desktop and Milestone Tests
     runs-on: macos-latest
     timeout-minutes: 30
     steps:

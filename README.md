@@ -2,13 +2,13 @@
 
 Local-first, SKU-level demand forecasting for the desktop. One user, one local workspace: the SQLite database, retained source and export CSV copies, and backups live in a directory you choose, and no component of the application listens on the network.
 
-> **Status: Milestone 2 planner features are implemented in development.** The chain canonical CSV → SQLite → Python Naive forecast → Rust persistence → Svelte chart runs locally through `npm run tauri dev`. Run-scoped append-only overrides, baseline/effective comparison, and full-run CSV export are covered by automated tests and browser-driven checks against a real Rust workspace. The native save-dialog flow for CSV export was manually verified on macOS on 2026-10-14 (open, choose folder, save, cancel); Windows and Linux remain unverified. Packaging is experimental; backups, seasonal models, and MCP are not implemented yet. Nothing here is ready for production use.
+> **Status: Milestone 3 multi-model forecasting is implemented in development.** The chain canonical CSV → SQLite → Python sidecar (Naive, SeasonalNaive, AutoETS) → Rust champion selection → Svelte chart runs locally through `npm run tauri dev`. Per-series comparable-origin selection (ADR-0017), production fallback, model comparison in the series view, run-scoped append-only overrides, and full-run CSV export are covered by automated tests against a real Rust workspace, including an end-to-end test that runs the packaged sidecar. The three-model path was verified with the PyInstaller sidecar on macOS on 2026-10-14; Windows and Linux remain unverified. The 10,000-series scale target is not demonstrated (a 100/1,000-series benchmark script exists); `model_failure` series and aggregates-only storage are not exercised. Backups, MCP, and XLSX export are not implemented yet. Nothing here is ready for production use.
 
 ## Application
 
 - **Desktop shell**: Tauri v2 with a static SvelteKit frontend (Svelte 5 runes, TanStack Query) and `tauri-specta` typed IPC.
 - **Core**: Rust; sole owner of the workspace SQLite database (WAL, one serialized writer, one transaction per persist).
-- **Forecasting**: Python sidecar, one process per job, Arrow IPC files and versioned JSONL; Naive first, seasonal models later.
+- **Forecasting**: Python sidecar, one process per job, Arrow IPC files and versioned JSONL; Naive, SeasonalNaive(52), and AutoETS(52), with Rust as the only selector.
 - **Optional MCP adapter**: read-only, opt-in, deferred beyond the current milestone.
 
 Target platforms are Windows x64, macOS Apple Silicon, and Linux x64.

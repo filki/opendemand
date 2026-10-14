@@ -34,7 +34,11 @@ horizon_weeks: int32               # exactly 12
 ```
 
 Each task identifies a consecutive numeric training segment. Forecast starts exactly
-one week after train end. Rust plans `k=max(0,min(4,floor((H-f)/12)))` origins.
+one week after train end. `model_id` is one of `naive`, `seasonal_naive_52`, or
+`auto_ets_52`; Rust plans one production task and up to four backtest tasks per
+series x model, so task ids are globally unique across models.
+Rust plans `k=max(0,min(4,floor((H-f)/12)))` origins with `f` from ADR-0006
+(Naive 12; SeasonalNaive and AutoETS 104).
 Origin 1 is earliest; indices increase chronologically per series/model.
 
 ## Output
@@ -65,8 +69,10 @@ metric_value: float64
 Exactly one row per completed backtest. `origin_week_start` equals the task's
 `train_end_week` (the last training Monday), not the first forecast Monday.
 WAPE is `sum(abs(actual-predicted))/sum(abs(actual))`.
-When denominator is zero, WAPE is null and selection uses MAE instead.
-Otherwise selection uses WAPE. MAE is always retained. All metrics are nonnegative and finite.
+When an origin's actual denominator is zero, WAPE is null and `metric_kind` is
+`mae_fallback`. MAE is always retained. All metrics are nonnegative and finite.
+Per-origin rows are diagnostic evidence; the champion ranking pools error sums
+over the comparable origin dates instead (ADR-0017).
 
 `forecast_points.arrow` (`forecast_points`):
 
@@ -88,7 +94,10 @@ Result row counts must match the IPC files. Rust maps task ids to planned series
 Python cannot introduce new products, locations, models, or origins.
 
 Rust ranks each series independently, with at least two completed origins required
-for champion eligibility. The champion flag records the best evaluation; selected
-model records the model actually used after production fallback. Origin summaries
-remain stored even when per-point backtests are omitted. All validated results are
-persisted in one transaction against the pinned import revision.
+for champion eligibility, comparing candidates only on the origin dates all
+champion-eligible candidates completed (ADR-0017). The champion flag records the
+statistically preferred model; selected model records the model actually used after
+production fallback. Forecast bias (`sum(predicted-actual)/sum(abs(actual))`, positive
+means overforecasting) is diagnostics, not ranking. Origin summaries remain stored
+even when per-point backtests are omitted. All validated results are persisted in one
+transaction against the pinned import revision.

@@ -43,3 +43,7 @@ Negative:
 - **Run-level champion and aggregate metric** (previous design): cannot represent per-series origins; rejected.
 - **Python-side selection**: moves policy out of the single Rust owner and makes results engine-version dependent; rejected.
 - **Storing champion metrics in `forecast_series_status`**: duplicates state that must then stay consistent; rejected in favor of querying `series_model_evaluation`.
+
+---
+
+**Partially superseded by [ADR-0017](0017-comparable-origin-selection-scores.md):** the champion-rule sentence ("lowest mean WAPE over completed origins ... acknowledged, not redesigned") is replaced by comparable-origin pooled scores. The schema and evaluation-granularity decisions stand.

@@ -1,4 +1,4 @@
-# Milestone 1 Sidecar Protocol
+# Sidecar Protocol
 
 Protocol id: `opendemand.sidecar/1`. One UTF-8 JSON object per stdout/stdin line.
 Stdin carries exactly one message, `job.request` (ADR-0016).
@@ -19,7 +19,7 @@ The desktop app resolves `OPENDEMAND_ENGINE` first, then the bundled
 5. Python exits. Rust validates output before the single result transaction.
 
 ```json
-{"protocol":"opendemand.sidecar/1","type":"hello","job_id":null,"engine_version":"0.0.1","contracts":["opendemand.arrow/1"],"models":["naive"]}
+{"protocol":"opendemand.sidecar/1","type":"hello","job_id":null,"engine_version":"0.0.2","contracts":["opendemand.arrow/1"],"models":["naive","seasonal_naive_52","auto_ets_52"]}
 {"protocol":"opendemand.sidecar/1","type":"job.request","job_id":"42","contract":"opendemand.arrow/1","input_files":{"observations":"observations.arrow","tasks":"tasks.arrow"}}
 {"protocol":"opendemand.sidecar/1","type":"job.progress","job_id":"42","phase":"backtest","completed":1,"total":5}
 ```
@@ -51,6 +51,7 @@ Task-specific prediction failures are output rows, not a whole-job error.
 - Outputs are written to temporary names, closed, then renamed before `job.result`.
 
 Rust owns the task plan, production eligibility, champion ranking, fallback, and persistence.
-Python uses StatsForecast Naive for each planned task, repeats the last training value
-for 12 weeks, and computes WAPE/MAE for completed backtests.
-Seasonal models are not implemented in Milestone 1.
+Python fits the task's planned model through StatsForecast and never selects one. Supported
+models: `naive` (Naive), `seasonal_naive_52` (SeasonalNaive, `season_length=52`), and
+`auto_ets_52` (AutoETS, `season_length=52`). Training floors (ADR-0006): Naive 12 weeks;
+SeasonalNaive and AutoETS 104 weeks. Python computes WAPE/MAE for completed backtests.

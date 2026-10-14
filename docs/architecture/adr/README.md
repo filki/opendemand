@@ -22,6 +22,7 @@ This directory records the accepted architecture decisions for OpenDemand. Each 
 | [0014](0014-manual-only-overrides.md) | Manual-only forecast overrides | Accepted | 2026-10-13 |
 | [0015](0015-retained-source-file-durability.md) | Retained source-file durability and crash recovery | Accepted | 2026-10-13 |
 | [0016](0016-sidecar-cancellation-flag-file.md) | Sidecar cancellation through a job-directory flag file | Accepted | 2026-10-13 |
+| [0017](0017-comparable-origin-selection-scores.md) | Comparable-origin selection scores | Accepted | 2026-10-14 |
 
 Schema status: migration 001 is frozen (2026-10-13; SHA-256 recorded in `../schema/001_init.sha256`). All schema changes now use new numbered migrations.
 

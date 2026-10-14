@@ -65,3 +65,7 @@ Negative:
 - **Croston / TSB / ADIDA**: needed for intermittent demand, but adds scope; deferred.
 - **Single holdout**: cheaper, but one origin is weak evidence; rejected in favor of four non-overlapping windows.
 - **MAPE/RMSE as the selection metric**: MAPE breaks on zeros; RMSE overweights large series; WAPE chosen for robustness with the MAE guard.
+
+---
+
+**Partially superseded by [ADR-0017](0017-comparable-origin-selection-scores.md):** the champion-rule clause ("lowest mean WAPE over completed origins", with the per-origin MAE fallback) is replaced by comparable-origin pooled scores. All other ADR-0006 decisions, including model floors and the origin-count formula, stand.
