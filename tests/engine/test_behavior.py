@@ -1,7 +1,8 @@
-"""Behaviour tests for the Naive task engine through the public run_job seam."""
+"""Behaviour tests for the model task engine through the public run_job seam."""
 
 from __future__ import annotations
 
+import math
 import unittest
 
 from tests.engine import helpers as h
@@ -175,7 +176,7 @@ class BehaviourTests(unittest.TestCase):
             pid,
             lid,
             h.week_grid(start, 12),
-            model_id="seasonal_naive_52",
+            model_id="auto_arima",
         )
 
         code, stdout, _ = self.run_job(observations, [task])
@@ -347,6 +348,148 @@ class BehaviourTests(unittest.TestCase):
             self.assertEqual(terminal["output_files"][key]["rows"], 0)
             self.assertEqual(terminal["output_files"][key]["path"], filename)
             self.assertTrue(terminal["output_files"][key]["sha256"])
+
+    # -- Milestone 3 models ------------------------------------------------
+
+    def test_seasonal_naive_repeats_the_annual_cycle(self):
+        pid, lid = h.series_uuid("m1"), h.series_uuid("m1")
+        start = h.monday("2024-01-01")
+        values = [float(i % 52) for i in range(104)]
+        observations = h.weekly_rows(pid, lid, start, values)
+        weeks = h.week_grid(start, 104)
+        task = h.production_task(
+            h.series_uuid("m1/prod"), pid, lid, weeks, model_id="seasonal_naive_52"
+        )
+
+        code, stdout, _ = self.run_job(observations, [task])
+        self.assertEqual(code, 0)
+        status, _ = self.status_by_task(stdout)
+        self.assertEqual(status[task["task_id"]]["status"], "completed")
+        points = self.point_rows()
+        self.assertEqual(len(points), 12)
+        # The 52-week cycle repeats: weeks 52..63 of the training window.
+        self.assertEqual([p["value"] for p in points], [float(i % 52) for i in range(52, 64)])
+
+    def test_auto_ets_continues_a_trend_and_reports_wape(self):
+        pid, lid = h.series_uuid("m2"), h.series_uuid("m2")
+        start = h.monday("2023-01-02")
+        values = [10.0 + 2.0 * i for i in range(116)]
+        observations = h.weekly_rows(pid, lid, start, values)
+        weeks = h.week_grid(start, 116)
+        task = h.backtest_task(
+            h.series_uuid("m2/b1"), pid, lid, weeks, 1, 104, model_id="auto_ets_52"
+        )
+
+        code, stdout, _ = self.run_job(observations, [task])
+        self.assertEqual(code, 0)
+        status, _ = self.status_by_task(stdout)
+        self.assertEqual(status[task["task_id"]]["status"], "completed")
+        points = self.point_rows()
+        self.assertEqual(len(points), 12)
+        self.assertTrue(all(math.isfinite(p["value"]) for p in points))
+        # A clean linear trend: ETS should score a low but non-zero WAPE.
+        metrics = self.metrics_rows()
+        self.assertEqual(len(metrics), 1)
+        self.assertEqual(metrics[0]["metric_kind"], "wape")
+        self.assertIsNotNone(metrics[0]["wape"])
+        self.assertLess(metrics[0]["wape"], 0.25)
+
+    def test_seasonal_models_fail_below_their_history_floor(self):
+        pid, lid = h.series_uuid("m3"), h.series_uuid("m3")
+        start = h.monday("2024-01-01")
+        values = [5.0] * 103
+        observations = h.weekly_rows(pid, lid, start, values)
+        weeks = h.week_grid(start, 103)
+        seasonal = h.production_task(
+            h.series_uuid("m3/sn"), pid, lid, weeks, model_id="seasonal_naive_52"
+        )
+        ets = h.production_task(
+            h.series_uuid("m3/ets"), pid, lid, weeks, model_id="auto_ets_52"
+        )
+        naive = h.production_task(h.series_uuid("m3/naive"), pid, lid, weeks)
+
+        code, stdout, _ = self.run_job(observations, [seasonal, ets, naive])
+        self.assertEqual(code, 0)
+        status, _ = self.status_by_task(stdout)
+        self.assertEqual(status[seasonal["task_id"]]["failure_code"], "insufficient_history")
+        self.assertEqual(status[ets["task_id"]]["failure_code"], "insufficient_history")
+        self.assertEqual(status[naive["task_id"]]["status"], "completed")
+        self.assertEqual(len(self.point_rows()), 12)
+
+    def test_all_zero_actuals_use_mae_fallback_for_every_model(self):
+        pid, lid = h.series_uuid("m4"), h.series_uuid("m4")
+        start = h.monday("2024-01-01")
+        values = [5.0] * 116 + [0.0] * 12
+        observations = h.weekly_rows(pid, lid, start, values)
+        weeks = h.week_grid(start, 128)
+        tasks = [
+            h.backtest_task(
+                h.series_uuid(f"m4/{model}"),
+                pid,
+                lid,
+                weeks,
+                1,
+                116,
+                model_id=model,
+            )
+            for model in ("naive", "seasonal_naive_52", "auto_ets_52")
+        ]
+
+        code, stdout, _ = self.run_job(observations, tasks)
+        self.assertEqual(code, 0)
+        status, _ = self.status_by_task(stdout)
+        for task in tasks:
+            self.assertEqual(status[task["task_id"]]["status"], "completed")
+        metrics = {row["task_id"]: row for row in self.metrics_rows()}
+        self.assertEqual(len(metrics), 3)
+        for task in tasks:
+            model = str(task["model_id"])
+            self.assertIsNone(metrics[task["task_id"]]["wape"])
+            self.assertEqual(metrics[task["task_id"]]["metric_kind"], "mae_fallback")
+            self.assertTrue(model in ("naive", "seasonal_naive_52", "auto_ets_52"))
+
+    def test_intermittent_history_forecasts_for_every_model(self):
+        pid, lid = h.series_uuid("m6"), h.series_uuid("m6")
+        start = h.monday("2024-01-01")
+        values = [0.0] * 104
+        for index in range(0, 104, 9):
+            values[index] = 5.0
+        observations = h.weekly_rows(pid, lid, start, values)
+        weeks = h.week_grid(start, 104)
+        tasks = [
+            h.production_task(
+                h.series_uuid(f"m6/{model}"), pid, lid, weeks, model_id=model
+            )
+            for model in ("naive", "seasonal_naive_52", "auto_ets_52")
+        ]
+
+        code, stdout, _ = self.run_job(observations, tasks)
+        self.assertEqual(code, 0)
+        status, _ = self.status_by_task(stdout)
+        for task in tasks:
+            self.assertEqual(status[task["task_id"]]["status"], "completed")
+        points = self.point_rows()
+        self.assertEqual(len(points), 36)
+        self.assertTrue(all(math.isfinite(point["value"]) for point in points))
+
+    def test_seasonal_naive_beats_naive_on_a_seasonal_backtest(self):
+        pid, lid = h.series_uuid("m5"), h.series_uuid("m5")
+        start = h.monday("2024-01-01")
+        values = [float(i % 52) for i in range(116)]
+        observations = h.weekly_rows(pid, lid, start, values)
+        weeks = h.week_grid(start, 116)
+        naive = h.backtest_task(h.series_uuid("m5/naive"), pid, lid, weeks, 1, 104)
+        seasonal = h.backtest_task(
+            h.series_uuid("m5/sn"), pid, lid, weeks, 1, 104, model_id="seasonal_naive_52"
+        )
+
+        code, stdout, _ = self.run_job(observations, [naive, seasonal])
+        self.assertEqual(code, 0)
+        metrics = {row["task_id"]: row for row in self.metrics_rows()}
+        self.assertEqual(len(metrics), 2)
+        self.assertLess(
+            metrics[seasonal["task_id"]]["wape"], metrics[naive["task_id"]]["wape"]
+        )
 
 
 if __name__ == "__main__":

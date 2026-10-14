@@ -1,12 +1,12 @@
-"""OpenDemand Python forecasting sidecar (Milestone 1, Naive engine)."""
+"""OpenDemand Python forecasting sidecar (Milestone 3, Naive/SeasonalNaive/AutoETS)."""
 
 from __future__ import annotations
 
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 PROTOCOL_ID = "opendemand.sidecar/1"
 ARROW_CONTRACT_ID = "opendemand.arrow/1"
-SUPPORTED_MODELS = ("naive",)
+SUPPORTED_MODELS = ("naive", "seasonal_naive_52", "auto_ets_52")
 
 OBSERVATIONS_FILE = "observations.arrow"
 TASKS_FILE = "tasks.arrow"

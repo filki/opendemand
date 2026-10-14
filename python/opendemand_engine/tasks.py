@@ -1,9 +1,10 @@
-"""Task parsing, window validation, and per-task Naive execution.
+"""Task parsing, window validation, and per-task model execution.
 
 Rust owns planning: it sends one row per production/backtest task with a
-consecutive weekly training segment. This module validates that contract
-strictly, fails individual tasks closed with codes (never the whole job),
-and produces task_status / origin_metrics / forecast_points rows.
+consecutive weekly training segment and a model id. This module validates that
+contract strictly, dispatches to the StatsForecast model, fails individual
+tasks closed with codes (never the whole job), and produces
+task_status / origin_metrics / forecast_points rows.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from .errors import (
     TaskFailure,
 )
 from .metrics import compute_metrics
-from .modeling import MODEL_FLOOR, forecast_naive
+from .modeling import MODEL_FLOOR, forecast
 
 HORIZON_WEEKS = 12
 BACKTEST_ORIGIN_RANGE = (1, 4)
@@ -206,10 +207,7 @@ def _read_numeric_window(
 def execute_task(task: TaskRow, index: ObservationIndex) -> TaskOutcome:
     """Run one task; raise TaskFailure for task-level problems."""
     if task.model_id not in SUPPORTED_MODELS:
-        raise _fail(
-            FAIL_UNSUPPORTED_MODEL,
-            f"model is not supported in Milestone 1: {task.model_id}",
-        )
+        raise _fail(FAIL_UNSUPPORTED_MODEL, f"unknown model id: {task.model_id}")
     _validate_geometry(task)
     _require_history_floor(task)
 
@@ -227,7 +225,7 @@ def execute_task(task: TaskRow, index: ObservationIndex) -> TaskOutcome:
             "backtest",
         )
 
-    forecasts = forecast_naive(history, task.horizon_weeks)
+    forecasts = forecast(task.model_id, history, task.horizon_weeks)
 
     metric_row: dict | None = None
     if actuals is not None:
