@@ -4,11 +4,14 @@
  * this module only unwraps the Result envelope, exposes the dialog pickers,
  * and detects whether the page runs inside the Tauri desktop shell.
  */
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { commands } from '$lib/bindings';
 import type {
 	AppError,
+	ExportResult,
 	JobInfo,
+	OverrideEdit,
+	OverrideRevision,
 	RunSummary,
 	SeriesDetail,
 	SeriesSummary,
@@ -107,8 +110,25 @@ export async function fetchSeriesDetail(
 	return unwrap(await commands.seriesDetail(revisionId, productId, locationId, runId));
 }
 
-export async function fetchRunsList(revisionId: number): Promise<RunSummary[]> {
+export async function fetchRunsList(revisionId: number | null): Promise<RunSummary[]> {
 	return unwrap(await commands.runsList(revisionId));
+}
+
+export async function saveOverride(edit: OverrideEdit): Promise<OverrideRevision> {
+	return unwrap(await commands.overrideAppend(edit));
+}
+
+export async function exportPlanCsv(runId: string, path: string): Promise<ExportResult> {
+	return unwrap(await commands.exportCsv(runId, path));
+}
+
+export async function pickCsvExport(runId: string): Promise<string | null> {
+	const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+	return save({
+		title: 'Export saved plan to CSV',
+		defaultPath: `opendemand-${runId}-${timestamp}.csv`,
+		filters: [{ name: 'Planning CSV', extensions: ['csv'] }]
+	});
 }
 
 function firstSelectedPath(selection: unknown): string | null {

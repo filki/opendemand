@@ -2,7 +2,7 @@
 
 ## Status
 
-OpenDemand is pre-release: Milestone 1 is in development and no version is supported for production use. Do not rely on any build for real business data yet.
+OpenDemand is pre-release and no version is supported for production use. See `README.md` for implemented functionality and verification gaps. Do not rely on any build for real business data yet.
 
 ## Reporting a vulnerability
 
@@ -19,6 +19,6 @@ This is a volunteer project: there is no bug bounty, and acknowledgment or fixes
 
 ## Design context for reports
 
-OpenDemand is local-first by design. All business data stays on the user's machine, and no component opens a network listener. The optional MCP adapter is opt-in, read-only, token-guarded, and deferred beyond Milestone 1.
+OpenDemand is local-first by design. All business data stays on the user's machine, and no component opens a network listener. The optional MCP adapter is opt-in, read-only, token-guarded, and deferred beyond the current milestone.
 
-Areas worth probing include: CSV import parsing (untrusted input), the sidecar protocol boundary, SQLite handling and backups, and anything that could leak workspace data or execute code from crafted input.
+Areas worth probing include: CSV import parsing (untrusted input), the sidecar protocol boundary, SQLite handling, override validation, CSV export paths and publication, and anything that could leak workspace data or execute code from crafted input.

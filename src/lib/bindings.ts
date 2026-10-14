@@ -15,7 +15,9 @@ export const commands = {
 	jobsList: () => typedError<JobInfo[], AppError>(__TAURI_INVOKE("jobs_list")),
 	seriesList: (revisionId: number, search: string, offset: number, limit: number) => typedError<SeriesSummary[], AppError>(__TAURI_INVOKE("series_list", { revisionId, search, offset, limit })),
 	seriesDetail: (revisionId: number, productId: string, locationId: string, runId: string | null) => typedError<SeriesDetail, AppError>(__TAURI_INVOKE("series_detail", { revisionId, productId, locationId, runId })),
-	runsList: (revisionId: number) => typedError<RunSummary[], AppError>(__TAURI_INVOKE("runs_list", { revisionId })),
+	runsList: (revisionId: number | null) => typedError<RunSummary[], AppError>(__TAURI_INVOKE("runs_list", { revisionId })),
+	overrideAppend: (edit: OverrideEdit) => typedError<OverrideRevision, AppError>(__TAURI_INVOKE("override_append", { edit })),
+	exportCsv: (runId: string, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_csv", { runId, path })),
 };
 
 /** Events */
@@ -27,6 +29,12 @@ export const events = {
 export type AppError = {
 	code: string,
 	message: string,
+};
+
+export type ExportResult = {
+	export_id: string,
+	path: string,
+	row_count: number,
 };
 
 export type ForecastPoint = {
@@ -71,6 +79,29 @@ export type JobInfo = {
 
 export type JobProgress = JobInfo;
 
+export type OverrideEdit = {
+	run_id: string,
+	product_id: string,
+	location_id: string,
+	week_start: string,
+	value: string | null,
+	expected_revision: number,
+};
+
+export type OverrideRevision = {
+	revision: number,
+};
+
+export type PlanningPoint = {
+	week_start: string,
+	horizon: number,
+	baseline: number | null,
+	override_value: number | null,
+	effective: number | null,
+	value_source: string,
+	override_revision: number,
+};
+
 export type RunSummary = {
 	id: string,
 	revision_id: number,
@@ -83,9 +114,12 @@ export type RunSummary = {
 export type SeriesDetail = {
 	product_id: string,
 	location_id: string,
+	location_code: string,
 	series_key: string,
 	history: HistoryPoint[],
 	forecast: ForecastPoint[],
+	planning: PlanningPoint[],
+	can_override: boolean,
 	run_id: string | null,
 	outcome: string | null,
 	reason: string | null,
@@ -97,6 +131,7 @@ export type SeriesDetail = {
 export type SeriesSummary = {
 	product_id: string,
 	location_id: string,
+	location_code: string,
 	series_key: string,
 	h_length: number,
 	qualification_status: string,

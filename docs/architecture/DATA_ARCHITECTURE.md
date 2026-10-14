@@ -139,12 +139,13 @@ Rules: import revisions, runs, and overrides are never auto-deleted. Backup file
 
 ## 10. Export Contract
 
-CSV (RFC 4180, UTF-8, `.` decimal separator) and XLSX share the same columns:
+Milestone 2 implements CSV (RFC 4180, UTF-8 with BOM, CRLF records, `.` decimal separator). XLSX remains a later-phase capability with the same planned columns:
 
 `run_id`, `product_sku`, `product_name`, `location_code`, `week_start`, `horizon`, `baseline`, `override`, `effective`, `value_source` (`model` | `override` | `missing`), `series_status`, `model_id`.
 
 - One row per series × week for all series in the run scope (eligible and ineligible), so coverage is visible.
 - Missing forecasts: `effective` is blank and `series_status` carries the reason; never zero-filled.
+- Each successful CSV export retains a workspace copy under `exports/` and an `export_record` with row count and coverage metadata. Export reads one saved run snapshot; existing files are never overwritten.
 - Coverage = share of series with outcome `ok` or `fallback_naive`; reported in the XLSX Summary sheet with outcome counts and champion distribution.
 
 ## Related Documents

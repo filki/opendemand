@@ -69,3 +69,14 @@ test('run selection prefers the newest completed run', () => {
 	assert.equal(selectDisplayRun(runs)?.id, 'run-b');
 	assert.equal(selectDisplayRun([runs[2]]), null);
 });
+
+test('a new import without a run stays visible instead of selecting an older revision', () => {
+	const old: RunSummaryLike = {
+		id: 'old-run', revision_id: 1, status: 'completed', created_at: '2026-01-01T10:00:00Z',
+		horizon_start_week: '2026-01-05', engine_version: '0.0.1'
+	};
+	assert.equal(selectDisplayRun([old], 2, null), null);
+	assert.equal(selectDisplayRun([old], 2, old.id)?.id, old.id);
+	assert.equal(selectDisplayRun([old], 2, 'missing-run'), null);
+	assert.equal(selectDisplayRun([old], 1, null)?.id, old.id);
+});
