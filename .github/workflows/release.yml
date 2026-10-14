@@ -74,18 +74,23 @@ jobs:
           releaseBody: |
             Unsigned development preview of OpenDemand v__VERSION__.
 
-            What works: canonical CSV import plus a guided import that converts raw
-            SAP, Subiekt, Comarch, and Excel (.xlsx) exports into the same weekly
+            What works: a home screen that opens a module and a workspace of your
+            choice, with a workspace list, create/open in any folder, and a way back
+            home at any time; canonical CSV import plus a guided import that converts
+            raw SAP, Subiekt, Comarch, and Excel (.xlsx) exports into the same weekly
             observations, with column mapping, preview, validation, and saved
             configurations; a weekly update that reuses the saved configuration,
             forecasts a committed import automatically, and compares the newest run
             with the previous import revision (demand changes and baseline forecast
             deltas per product, aligned by calendar week); Naive, SeasonalNaive(52)
-            and AutoETS(52) forecasts with automatic per-series model selection;
-            run-scoped manual overrides; baseline/effective forecast charts; and
-            full-run CSV export. Model fitting runs on all available CPU cores, so
-            long forecast runs finish several times faster than in the previous
-            version.
+            and AutoETS(52) forecasts with automatic per-series model selection and
+            optional filling of missing weeks in the forecast input only (last known
+            value, same week last year, or mean of the last four known weeks), so
+            gaps no longer block seasonal models while stored history and exports
+            stay untouched; run-scoped manual overrides; baseline/effective forecast
+            charts; and full-run CSV export. Model fitting runs on all available CPU
+            cores, so long forecast runs finish several times faster than in the
+            previous version.
 
             An older workspace is upgraded behind a verified pre-migration backup;
             backups live in the workspace's `backups/` directory.
