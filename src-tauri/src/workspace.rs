@@ -44,8 +44,8 @@ use uuid::Uuid;
 /// SQLx is what `open` verifies against.
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../docs/architecture/schema");
 
-const SCHEMA_VERSION: i64 = 1;
-const SCHEMA_VERSION_TEXT: &str = "1";
+const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION_TEXT: &str = "2";
 const CONTRACT_VERSION: &str = "canonical/1";
 /// Contract version of revisions produced by the preprocessing layer.
 const PREPROCESS_CONTRACT: &str = "preprocess/1";
@@ -55,6 +55,10 @@ const DEFAULT_TIMEZONE: &str = "UTC";
 const DEFAULT_LOCALE: &str = "en";
 const DB_FILENAME: &str = "workspace.sqlite3";
 const SOURCE_FILENAME: &str = "source.csv";
+/// Directory holding verified pre-migration backups inside the workspace.
+const BACKUP_DIRECTORY: &str = "backups";
+/// How many pre-migration backup pairs (database + manifest) to keep.
+const PRE_MIGRATION_BACKUPS_KEPT: usize = 3;
 const LIST_LIMIT_MAX: u32 = 200;
 /// Upper bound on the number of dense weekly points materialised for a single
 /// series, protecting memory against a corrupted or absurd date span.
@@ -139,7 +143,9 @@ impl Workspace {
         } else {
             std::fs::create_dir_all(&path)?;
         }
-        for directory in ["staging", "sources", "recovery", "jobs", "exports"] {
+        for directory in [
+            "staging", "sources", "recovery", "jobs", "exports", "backups",
+        ] {
             std::fs::create_dir_all(path.join(directory))?;
         }
 
@@ -202,8 +208,9 @@ impl Workspace {
     }
 
     /// Open an existing workspace, verifying the schema and reconciling retained
-    /// files. A non-empty, newer, or unversioned database is rejected instead of
-    /// being migrated in place.
+    /// files. A workspace from an older build is migrated only after a verified
+    /// pre-migration backup (ADR-0008); a non-empty, newer, or unversioned
+    /// database is rejected instead of being migrated in place.
     pub async fn open(path: PathBuf) -> AppResult<Self> {
         let database = path.join(DB_FILENAME);
         if !database.exists() {
@@ -213,6 +220,11 @@ impl Workspace {
             ));
         }
         let pool = connect(&database, false).await?;
+        if let Some(version) = schema_version(&pool).await? {
+            if version < SCHEMA_VERSION {
+                upgrade_schema(&path, &pool, version).await?;
+            }
+        }
         verify_schema(&pool).await?;
         mark_interrupted_jobs(&pool).await?;
         let issues = reconcile(&pool, &path).await?;
@@ -1418,6 +1430,173 @@ async fn connect(database: &Path, create: bool) -> AppResult<SqlitePool> {
     Ok(pool)
 }
 
+/// The stored schema version, or `None` when the database is not a versioned
+/// workspace (no settings table or no settings row).
+async fn schema_version(pool: &SqlitePool) -> AppResult<Option<i64>> {
+    let version: Option<String> =
+        match sqlx::query_scalar("SELECT schema_version FROM workspace_settings WHERE id = 1")
+            .fetch_optional(pool)
+            .await
+        {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+    Ok(version.and_then(|value| value.parse().ok()))
+}
+
+/// Migrate an older workspace to this build: verified pre-migration backup
+/// first, then the pending migrations, then the settings version bump. A
+/// workspace is never migrated without the backup (ADR-0008).
+async fn upgrade_schema(root: &Path, pool: &SqlitePool, from: i64) -> AppResult<()> {
+    let backup = backup_before_migration(root, pool, from, SCHEMA_VERSION).await?;
+    MIGRATOR.run(pool).await.map_err(|error| {
+        err(
+            "migration_failed",
+            format!(
+                "The workspace schema upgrade from version {from} failed: {error}. The verified backup is kept at {}.",
+                backup.display()
+            ),
+        )
+    })?;
+    sqlx::query("UPDATE workspace_settings SET schema_version = ?, updated_at = ? WHERE id = 1")
+        .bind(SCHEMA_VERSION_TEXT)
+        .bind(now_iso())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Create and verify the pre-migration backup pair (database plus manifest).
+///
+/// The snapshot uses `VACUUM INTO` under the single-writer invariant: no job
+/// runs while a workspace is being opened. Verification opens the copy
+/// read-only, runs `integrity_check`, and confirms the schema version, so a
+/// backup that cannot be validated aborts the migration.
+async fn backup_before_migration(
+    root: &Path,
+    pool: &SqlitePool,
+    from: i64,
+    to: i64,
+) -> AppResult<PathBuf> {
+    let directory = root.join(BACKUP_DIRECTORY);
+    std::fs::create_dir_all(&directory).map_err(|error| {
+        err(
+            "backup_failed",
+            format!(
+                "The pre-migration backup directory could not be prepared ({error}). The workspace was not migrated."
+            ),
+        )
+    })?;
+    let stamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let file_name = format!("pre-migration-v{from}-to-v{to}-{stamp}.sqlite3");
+    let target = directory.join(&file_name);
+    // The destination is a bound expression, so the statement stays static.
+    sqlx::query("VACUUM INTO ?")
+        .bind(target.display().to_string())
+        .execute(pool)
+        .await
+        .map_err(|error| {
+            err(
+                "backup_failed",
+                format!("The pre-migration backup could not be created ({error}). The workspace was not migrated."),
+            )
+        })?;
+
+    verify_backup_file(&target, from).await?;
+
+    let bytes = std::fs::read(&target)?;
+    let sha256 = hex(&Sha256::digest(&bytes));
+    let manifest = serde_json::json!({
+        "scope": "database",
+        "file": file_name,
+        "sha256": sha256,
+        "byte_size": bytes.len(),
+        "schema_version_before": from.to_string(),
+        "schema_version_after": to.to_string(),
+        "app_version": env!("CARGO_PKG_VERSION"),
+        "created_at": now_iso(),
+    });
+    std::fs::write(
+        directory.join(format!("{file_name}.manifest.json")),
+        serde_json::to_string_pretty(&manifest)?,
+    )?;
+    fsync_dir(&directory);
+    prune_pre_migration_backups(&directory);
+    Ok(target)
+}
+
+/// Open a backup read-only and prove it is intact and at the expected version.
+async fn verify_backup_file(target: &Path, expected_version: i64) -> AppResult<()> {
+    let options = SqliteConnectOptions::new()
+        .filename(target)
+        .read_only(true)
+        .busy_timeout(Duration::from_millis(5_000));
+    let copy = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .map_err(|error| {
+            err(
+                "backup_failed",
+                format!("The pre-migration backup could not be opened for verification ({error}). The workspace was not migrated."),
+            )
+        })?;
+    let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
+        .fetch_one(&copy)
+        .await
+        .map_err(|error| {
+            err(
+                "backup_failed",
+                format!("The pre-migration backup failed its integrity check ({error}). The workspace was not migrated."),
+            )
+        })?;
+    let version: Option<String> =
+        sqlx::query_scalar("SELECT schema_version FROM workspace_settings WHERE id = 1")
+            .fetch_optional(&copy)
+            .await
+            .map_err(|error| {
+                err(
+                    "backup_failed",
+                    format!("The pre-migration backup could not be read back ({error}). The workspace was not migrated."),
+                )
+            })?;
+    copy.close().await;
+    if integrity != "ok" {
+        return Err(err(
+            "backup_failed",
+            "The pre-migration backup failed its integrity check. The workspace was not migrated.",
+        ));
+    }
+    if version.as_deref() != Some(expected_version.to_string().as_str()) {
+        return Err(err(
+            "backup_failed",
+            format!("The pre-migration backup is not at schema version {expected_version}. The workspace was not migrated."),
+        ));
+    }
+    Ok(())
+}
+
+/// Keep only the newest pre-migration backup pairs; pruning covers backup
+/// files only and never touches workspace data (ADR-0009).
+fn prune_pre_migration_backups(directory: &Path) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with("pre-migration-") && name.ends_with(".sqlite3"))
+        .collect();
+    names.sort();
+    if names.len() <= PRE_MIGRATION_BACKUPS_KEPT {
+        return;
+    }
+    for name in &names[..names.len() - PRE_MIGRATION_BACKUPS_KEPT] {
+        let _ = std::fs::remove_file(directory.join(name));
+        let _ = std::fs::remove_file(directory.join(format!("{name}.manifest.json")));
+    }
+}
+
 async fn verify_schema(pool: &SqlitePool) -> AppResult<()> {
     let version: Option<String> =
         sqlx::query_scalar("SELECT schema_version FROM workspace_settings WHERE id = 1")
@@ -1450,32 +1629,33 @@ async fn verify_schema(pool: &SqlitePool) -> AppResult<()> {
         ));
     }
 
-    let stored: Option<Vec<u8>> =
-        sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = 1")
-            .fetch_optional(pool)
-            .await
-            .map_err(|_| {
-                err(
-                    "needs_verified_backup",
-                    "The workspace migration record is missing or unreadable. Restore from a verified backup before opening.",
-                )
-            })?;
-    let stored = stored.ok_or_else(|| {
-        err(
-            "needs_verified_backup",
-            "The workspace is missing its migration 001 record. Restore from a verified backup before opening.",
-        )
-    })?;
-    let expected = MIGRATOR
-        .iter()
-        .find(|migration| migration.version == 1)
-        .map(|migration| migration.checksum.to_vec())
-        .ok_or_else(|| err("unsupported_schema", "This build embeds no migration 001."))?;
-    if stored != expected {
-        return Err(err(
-            "needs_verified_backup",
-            "The workspace schema fingerprint does not match this application build. Restore from a verified backup before opening.",
-        ));
+    for migration in MIGRATOR.iter() {
+        let stored: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = ?")
+                .bind(migration.version)
+                .fetch_optional(pool)
+                .await
+                .map_err(|_| {
+                    err(
+                        "needs_verified_backup",
+                        "The workspace migration record is missing or unreadable. Restore from a verified backup before opening.",
+                    )
+                })?;
+        let stored = stored.ok_or_else(|| {
+            err(
+                "needs_verified_backup",
+                format!(
+                    "The workspace is missing its migration {:03} record. Restore from a verified backup before opening.",
+                    migration.version
+                ),
+            )
+        })?;
+        if stored != migration.checksum.to_vec() {
+            return Err(err(
+                "needs_verified_backup",
+                "The workspace schema fingerprint does not match this application build. Restore from a verified backup before opening.",
+            ));
+        }
     }
     Ok(())
 }
