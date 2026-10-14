@@ -2,13 +2,13 @@
 
 Local-first, SKU-level demand forecasting for the desktop. One user, one local workspace: the SQLite database, retained source and export CSV copies, and backups live in a directory you choose, and no component of the application listens on the network.
 
-> **Status: Milestone 3 multi-model forecasting is implemented in development.** The chain canonical CSV → SQLite → Python sidecar (Naive, SeasonalNaive, AutoETS) → Rust champion selection → Svelte chart runs locally through `npm run tauri dev`. Per-series comparable-origin selection (ADR-0017), production fallback, model comparison in the series view, run-scoped append-only overrides, and full-run CSV export are covered by automated tests against a real Rust workspace, including an end-to-end test that runs the packaged sidecar. The three-model path was verified with the PyInstaller sidecar on macOS on 2026-10-14; Windows and Linux remain unverified. The 10,000-series scale target is not demonstrated (a 100/1,000-series benchmark script exists); `model_failure` series and aggregates-only storage are not exercised. Backups, MCP, and XLSX export are not implemented yet. Nothing here is ready for production use.
+> **Status: Milestone 4 performance work is implemented in development.** The chain canonical CSV → SQLite → Python sidecar (Naive, SeasonalNaive, AutoETS) → Rust champion selection → Svelte chart runs locally through `npm run tauri dev`. Milestone 3 added per-series comparable-origin selection (ADR-0017), production fallback, model comparison in the series view, run-scoped append-only overrides, and full-run CSV export; all are covered by automated tests against a real Rust workspace, including an end-to-end test that runs the packaged sidecar. Milestone 4 makes the AutoETS fit path about 3.7x faster with a bounded in-sidecar worker pool (ADR-0018), with byte-identical forecast output and the same cancellation, timeout, and failure behaviour. The measured 100/1,000/5,000/10,000-series results are in `docs/benchmarks/2026-10-14-milestone-4-performance.md`; the 10,000-series case runs in about 24 minutes, so the 10-minute scale target is documented as unmet and remains a hypothesis. The multi-worker path was verified with the PyInstaller sidecar on macOS on 2026-10-14; Windows and Linux remain unverified. `model_failure` series and aggregates-only storage are not exercised. Backups, MCP, and XLSX export are not implemented yet. Nothing here is ready for production use.
 
 ## Application
 
 - **Desktop shell**: Tauri v2 with a static SvelteKit frontend (Svelte 5 runes, TanStack Query) and `tauri-specta` typed IPC.
 - **Core**: Rust; sole owner of the workspace SQLite database (WAL, one serialized writer, one transaction per persist).
-- **Forecasting**: Python sidecar, one process per job, Arrow IPC files and versioned JSONL; Naive, SeasonalNaive(52), and AutoETS(52), with Rust as the only selector.
+- **Forecasting**: Python sidecar, one job process per job with a bounded worker pool inside it (ADR-0018), Arrow IPC files and versioned JSONL; Naive, SeasonalNaive(52), and AutoETS(52), with Rust as the only selector.
 - **Optional MCP adapter**: read-only, opt-in, deferred beyond the current milestone.
 
 Target platforms are Windows x64, macOS Apple Silicon, and Linux x64.
@@ -31,7 +31,7 @@ It is temporary on purpose. Parsing arbitrary planner files is out of scope for 
 - `docs/agents/` — engineering-skill configuration: issue tracker, triage labels, domain docs.
 - `src-tauri/` — Rust core and Tauri desktop shell (SQLite owner, job orchestration, selection, persistence).
 - `src/` — SvelteKit frontend with generated typed IPC bindings.
-- `python/opendemand_engine/` — Python forecasting sidecar (one process per job, Arrow IPC + JSONL).
+- `python/opendemand_engine/` — Python forecasting sidecar (one job process per job, Arrow IPC + JSONL, bounded worker pool).
 - `tests/` — architecture/schema integration tests, engine tests, frontend tests, and fixtures.
 - `GLOSSARY.md` — the project vocabulary.
 - `.kilo/command/` — local agent commands (`/tdd`, `/review`, `/to-tickets`, `/caveman`, `/find-skills`).
