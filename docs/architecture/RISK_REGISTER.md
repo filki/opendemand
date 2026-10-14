@@ -1,6 +1,6 @@
 # Risk Register — OpenDemand
 
-Scope: risks that can invalidate the Phase 1 architecture or its decisions, with the mitigation and the phase where it must be implemented or verified.
+Scope: risks to the approved architecture and implemented workflows, with the mitigation and the stage where it must be implemented or verified.
 
 - Impact and likelihood are qualitative: H = high, M = medium, L = low.
 - Phase: Impl = core implementation (Rust core, import, database); Release = forecasting, packaging, and release preparation; Ongoing = continuous monitoring or verification.
@@ -28,6 +28,7 @@ Scope: risks that can invalidate the Phase 1 architecture or its decisions, with
 | R-19 | Orphan or stale retained files after a crash | M | M | File-before-row protocol with staged fsync and atomic rename; startup reconciliation detects staging leftovers and orphan finals, quarantines and reports them; never silent deletion (ADR-0015) | Impl |
 | R-20 | Missing or hash-invalid retained file for a committed revision | H | M | Globally unique retained paths; startup reconciliation detects missing committed files and hash mismatches; backup enumerates retained files from its SQLite snapshot and fails closed (ADR-0015) | Impl |
 | R-21 | Manual-only override misuse (out-of-horizon, non-sequential, unguarded clear) | M | M | SQLite triggers enforce completed run, scoped series, persisted horizon, first non-null revision, and sequential append-only revisions; Rust repeats the validations; UPDATE/DELETE rejected (ADR-0014) | Impl |
+| R-22 | Orphan CSV exports or hidden temporary files after a hard kill | M | L | Synced temporary files and no-overwrite publication prevent partial successful exports and replacement of existing data. Files publish before the export transaction commits; a crash can leave orphan files without an export record. Export artifact reconciliation is not implemented yet; never delete retained export history automatically | Ongoing |
 
 Notes:
 
