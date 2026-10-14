@@ -70,3 +70,22 @@ jobs:
           workspaces: src-tauri -> target
       - run: uv sync --frozen
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features
+
+  sidecar-engines:
+    name: Python sidecar engine (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - run: uv sync --frozen
+      # Runs the real engine end to end, including the bounded spawn worker pool
+      # (ADR-0018), on Linux and Windows; the macOS job runs the same suite.
+      - run: uv run --frozen python -m unittest discover -s tests/engine -v
