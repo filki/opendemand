@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="pl">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<meta name="color-scheme" content="light" />
+	<title>OpenDemand — prognozowanie popytu na Twoim komputerze</title>
+	<meta
+		name="description"
+		content="OpenDemand to aplikacja na komputer do prognozowania popytu. Wczytaj tygodniowe liczby z jednego pliku CSV. Otrzymaj prognozę. Dane zostają na Twoim komputerze. Niepodpisana wersja rozwojowa, licencja AGPL-3.0-only."
+	/>
+	<meta property="og:title" content="OpenDemand — prognozowanie popytu na Twoim komputerze" />
+	<meta
+		property="og:description"
+		content="Planuj popyt na swoje produkty z jednego pliku CSV. Wyniki zostają na Twoim komputerze. Otwarty kod, licencja AGPL-3.0-only, niepodpisana wersja rozwojowa."
+	/>
+	<meta property="og:type" content="website" />
+	<link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+	<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+	<a class="skip-link" href="#main">Przejdź do treści</a>
+
+	<header class="site-header">
+		<div class="wrap">
+			<a class="wordmark" href="../">
+				<img src="../assets/icon-512.png" alt="" width="30" height="30" />
+				<span>OpenDemand</span>
+			</a>
+			<nav class="site-nav" aria-label="Linki projektu">
+				<a href="#download">Pobierz</a>
+				<a href="https://github.com/filki/opendemand">GitHub</a>
+				<a href="../" hreflang="en" lang="en">English</a>
+			</nav>
+		</div>
+	</header>
+
+	<main id="main">
+		<div class="wrap">
+			<section class="hero">
+				<h1>Prognozowanie popytu, które zostaje na Twoim komputerze.</h1>
+				<p class="lede">
+					OpenDemand to aplikacja na komputer do prognozowania popytu. Wczytaj tygodniowe
+					liczby z jednego pliku CSV. Aplikacja policzy prognozę i pokaże ją na wykresie.
+					Dane zostają na Twoim komputerze. Konto nie jest potrzebne. Aplikacja nie wysyła
+					danych do internetu.
+				</p>
+				<div class="hero-actions">
+					<a class="button button-primary" href="#download">Pobierz v0.0.2</a>
+					<a class="button button-secondary" href="https://github.com/filki/opendemand">Zobacz kod</a>
+				</div>
+				<p class="fine-print">
+					Niepodpisana wersja rozwojowa. Licencja: AGPL-3.0-only. Wersje dla Windows x64,
+					macOS z Apple Silicon i Linux x64.
+				</p>
+			</section>
+
+			<figure class="chart-figure">
+				<div
+					class="chart-panel"
+					tabindex="0"
+					aria-label="Wykres tygodniowego popytu; przewiń w poziomie, aby zobaczyć całą oś czasu"
+				>
+					<svg viewBox="0 0 1200 380" role="img" aria-labelledby="chart-title chart-desc">
+						<title id="chart-title">Przykładowy wykres tygodniowego popytu z prognozą bazową</title>
+						<desc id="chart-desc">
+							Niebieska linia pokazuje tygodniowy popyt w osiemnastu tygodniach.
+							Fioletowa linia przerywana biegnie dalej od ostatniego tygodnia przez
+							dziewięć tygodni. To jest prognoza bazowa. Powtarza ostatnią wartość.
+						</desc>
+						<defs>
+							<pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+								<path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(21,34,56,0.08)" stroke-width="1" />
+							</pattern>
+						</defs>
+						<rect x="80" y="60" width="1040" height="240" fill="url(#grid)" />
+						<path
+							d="M80 250 L120 228 L160 246 L200 206 L240 224 L280 180 L320 198 L360 162 L400 174 L440 142 L480 160 L520 130 L560 148 L600 120 L640 138 L680 112 L720 126 L760 100 L760 300 L80 300 Z"
+							fill="rgba(76,125,255,0.10)"
+						/>
+						<line x1="80" y1="300" x2="1120" y2="300" stroke="rgba(21,34,56,0.35)" stroke-width="1.5" />
+						<line
+							x1="760"
+							y1="60"
+							x2="760"
+							y2="300"
+							stroke="rgba(143,123,255,0.55)"
+							stroke-width="1.5"
+							stroke-dasharray="4 6"
+						/>
+						<polyline
+							points="80,250 120,228 160,246 200,206 240,224 280,180 320,198 360,162 400,174 440,142 480,160 520,130 560,148 600,120 640,138 680,112 720,126 760,100"
+							fill="none"
+							stroke="#4C7DFF"
+							stroke-width="3.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						/>
+						<line
+							x1="760"
+							y1="100"
+							x2="1120"
+							y2="100"
+							stroke="#8F7BFF"
+							stroke-width="3.5"
+							stroke-linecap="round"
+							stroke-dasharray="10 10"
+						/>
+						<circle cx="760" cy="100" r="5" fill="#152238" />
+						<text x="80" y="40" class="chart-label">tygodniowy popyt</text>
+						<text x="760" y="40" class="chart-label" text-anchor="middle">ostatni znany tydzień</text>
+						<text x="400" y="342" class="chart-label">dane historyczne</text>
+						<text x="930" y="342" class="chart-label chart-label-forecast" text-anchor="middle">
+							prognoza bazowa
+						</text>
+					</svg>
+				</div>
+				<figcaption>
+					Prognoza powtarza ostatnią znaną wartość na kolejne tygodnie. To prosta wartość
+					bazowa, a nie obietnica. Modele sezonowe pojawią się później. Wykres pokazuje
+					przykładowe dane.
+				</figcaption>
+			</figure>
+
+			<section class="section" aria-labelledby="how-title">
+				<h2 id="how-title">Co aplikacja robi dzisiaj</h2>
+				<ol class="steps">
+					<li>
+						<h3>Wczytaj dane</h3>
+						<p>
+							Użyj jednego pliku CSV z trzema kolumnami: klucz produktu, tydzień i ilość.
+							Każde wczytanie zapisuje pełną kopię danych.
+						</p>
+					</li>
+					<li>
+						<h3>Otrzymaj prognozę</h3>
+						<p>
+							Aplikacja liczy prostą prognozę bazową dla każdego produktu. Wszystko działa
+							na Twoim komputerze. Nie potrzebujesz Pythona ani innych narzędzi.
+						</p>
+					</li>
+					<li>
+						<h3>Zachowaj wyniki</h3>
+						<p>
+							Aplikacja zapisuje każdy przebieg i jego wyniki na Twoim komputerze. Wykres
+							możesz otworzyć w każdej chwili.
+						</p>
+					</li>
+				</ol>
+			</section>
+
+			<section class="section" id="download" aria-labelledby="download-title">
+				<h2 id="download-title">Pobierz</h2>
+				<p class="section-lede">
+					To wersja rozwojowa do wczesnych testów. Wybierz paczkę dla swojego systemu.
+				</p>
+
+				<article class="product-band">
+					<div class="product-head">
+						<img src="../assets/icon-512.png" alt="" width="64" height="64" />
+						<div>
+							<h3 class="product-title">
+								OpenDemand <span class="version-chip">v0.0.2</span>
+							</h3>
+							<p class="product-line">
+								Prognozowanie popytu na Twój komputer. Licencja: AGPL-3.0-only.
+							</p>
+						</div>
+					</div>
+
+					<ul class="download-list">
+						<li class="os os-windows">
+							<div class="os-head">
+								<span class="os-name">Windows</span>
+								<span class="os-arch">x64</span>
+								<span class="badge">Zalecane dla Twojego systemu</span>
+							</div>
+							<div class="os-files">
+								<a
+									class="file"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.2/OpenDemand_0.0.2_x64-setup.exe"
+									>.exe <span class="file-note">instalator</span></a
+								>
+								<a
+									class="file"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.2/OpenDemand_0.0.2_x64_en-US.msi"
+									>.msi <span class="file-note">instalacje zarządzane</span></a
+								>
+							</div>
+						</li>
+						<li class="os os-macos">
+							<div class="os-head">
+								<span class="os-name">macOS</span>
+								<span class="os-arch">Apple Silicon</span>
+								<span class="badge">Zalecane dla Twojego systemu</span>
+							</div>
+							<div class="os-files">
+								<a
+									class="file"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.2/OpenDemand_0.0.2_aarch64.dmg"
+									>.dmg <span class="file-note">obraz dysku</span></a
+								>
+							</div>
+							<p class="os-note">Brak wersji dla Maców z procesorem Intel.</p>
+						</li>
+						<li class="os os-linux">
+							<div class="os-head">
+								<span class="os-name">Linux</span>
+								<span class="os-arch">x64</span>
+								<span class="badge">Zalecane dla Twojego systemu</span>
+							</div>
+							<div class="os-files">
+								<a
+									class="file"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.2/OpenDemand_0.0.2_amd64.AppImage"
+									>.AppImage <span class="file-note">przenośna</span></a
+								>
+								<a
+									class="file"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.2/OpenDemand_0.0.2_amd64.deb"
+									>.deb <span class="file-note">Debian, Ubuntu</span></a
+								>
+								<a
+									class="file"
+									href="https://github.com/filki/opendemand/releases/download/v0.0.2/OpenDemand-0.0.2-1.x86_64.rpm"
+									>.rpm <span class="file-note">Fedora, RHEL</span></a
+								>
+							</div>
+						</li>
+					</ul>
+
+					<p class="product-meta">
+						Paczki nie są podpisane. macOS pokaże ostrzeżenie Gatekeeper do czasu
+						notaryzacji. Windows SmartScreen może ostrzec o nieznanym wydawcy. Wszystkie
+						pliki i notatki o wydaniu są na
+						<a href="https://github.com/filki/opendemand/releases/tag/v0.0.2">GitHub Releases</a>.
+					</p>
+				</article>
+
+				<p class="catalog-note">
+					To statyczna strona. Bez kont, bez śledzenia i bez ciasteczek. Ładuje tylko
+					własne pliki. Więcej narzędzi z tej samej pracowni pojawi się tu później.
+				</p>
+			</section>
+
+			<section class="section" aria-labelledby="status-title">
+				<h2 id="status-title">Uczciwy status</h2>
+				<p class="section-lede">
+					Główne funkcje działają w wersji rozwojowej, a testy automatyczne je sprawdzają.
+					Instalator jest eksperymentalny. Aplikacja nie jest gotowa do użytku
+					produkcyjnego.
+				</p>
+				<div class="status-grid">
+					<div class="status-col">
+						<h3>Działa dzisiaj</h3>
+						<ul>
+							<li>Wczytywanie tygodniowych liczb z pliku CSV</li>
+							<li>Prognoza bazowa z wbudowanym silnikiem</li>
+							<li>Ręczne zmiany prognozy z porównaniem do wartości bazowej</li>
+							<li>Eksport pełnego przebiegu do CSV</li>
+							<li>Historia przebiegów i wykresy na Twoim komputerze</li>
+							<li>Testy automatyczne danych, silnika, aplikacji i paczek</li>
+						</ul>
+					</div>
+					<div class="status-col">
+						<h3>Jeszcze nie działa</h3>
+						<ul>
+							<li>Kopia zapasowa i przywracanie</li>
+							<li>Eksport XLSX</li>
+							<li>Modele sezonowe</li>
+							<li>Elastyczne wczytywanie surowych plików planistycznych</li>
+							<li>Opcjonalne połączenie MCP tylko do odczytu</li>
+						</ul>
+					</div>
+				</div>
+			</section>
+		</div>
+	</main>
+
+	<footer class="site-footer">
+		<div class="wrap">
+			<p>Otwarty kod na licencji AGPL-3.0-only. Bez telemetrii i bez kont. Aplikacja działa offline.</p>
+			<nav class="footer-links" aria-label="Materiały projektu">
+				<a href="https://github.com/filki/opendemand">Kod</a>
+				<a href="https://github.com/filki/opendemand/issues">Zgłoszenia</a>
+				<a href="https://github.com/filki/opendemand/blob/main/CONTRIBUTING.md">Współpraca</a>
+				<a href="https://github.com/filki/opendemand/blob/main/LICENSE">Licencja</a>
+			</nav>
+		</div>
+	</footer>
+
+	<script src="../assets/catalog.js" defer></script>
+</body>
+</html>

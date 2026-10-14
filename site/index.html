@@ -4,15 +4,15 @@
 	<meta charset="utf-8" />
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
 	<meta name="color-scheme" content="light" />
-	<title>OpenDemand — local-first demand forecasting</title>
+	<title>OpenDemand — demand forecasting on your computer</title>
 	<meta
 		name="description"
-		content="OpenDemand is a local-first desktop app for SKU-level demand forecasting: import weekly history, run a Naive baseline through a bundled Python engine, and keep every result in a workspace you own. Unsigned development preview, licensed under AGPL-3.0-only."
+		content="OpenDemand is a desktop app for demand forecasting. Add your weekly numbers from one CSV file. Get a forecast. Keep all data on your computer. Unsigned development preview, AGPL-3.0-only."
 	/>
-	<meta property="og:title" content="OpenDemand — local-first demand forecasting" />
+	<meta property="og:title" content="OpenDemand — demand forecasting on your computer" />
 	<meta
 		property="og:description"
-		content="Import weekly history, run a Naive forecast, keep every result — all on your machine. Open source, AGPL-3.0-only, unsigned development preview."
+		content="Plan the demand for your products from one CSV file. All results stay on your computer. Open source, AGPL-3.0-only, unsigned development preview."
 	/>
 	<meta property="og:type" content="website" />
 	<link rel="icon" href="favicon.svg" type="image/svg+xml" />
@@ -30,6 +30,7 @@
 			<nav class="site-nav" aria-label="Project links">
 				<a href="#download">Download</a>
 				<a href="https://github.com/filki/opendemand">GitHub</a>
+				<a href="pl/" hreflang="pl" lang="pl">Polski</a>
 			</nav>
 		</div>
 	</header>
@@ -37,20 +38,20 @@
 	<main id="main">
 		<div class="wrap">
 			<section class="hero">
-				<h1>Demand forecasting that never leaves your machine.</h1>
+				<h1>Demand forecasting that stays on your computer.</h1>
 				<p class="lede">
-					OpenDemand is a local-first desktop app for SKU-level demand forecasting. Import a
-					weekly history, run a forecast through a bundled Python engine, and keep every result
-					in a workspace you own — the SQLite database and the retained source CSVs live in a
-					folder you choose. No accounts, no telemetry, nothing listening on the network.
+					OpenDemand is a desktop app for demand forecasting. Add your weekly numbers from
+					one CSV file. The app calculates a forecast and shows a chart. All data stays on
+					your computer. You do not need an account. The app does not send data to the
+					internet.
 				</p>
 				<div class="hero-actions">
 					<a class="button button-primary" href="#download">Download v0.0.2</a>
-					<a class="button button-secondary" href="https://github.com/filki/opendemand">Read the source</a>
+					<a class="button button-secondary" href="https://github.com/filki/opendemand">See the code</a>
 				</div>
 				<p class="fine-print">
-					An unsigned development preview, licensed under AGPL-3.0-only, built for Windows x64, macOS on Apple
-					Silicon, and Linux x64.
+					Unsigned development preview. License: AGPL-3.0-only. Builds for Windows x64,
+					macOS on Apple Silicon, and Linux x64.
 				</p>
 			</section>
 
@@ -61,11 +62,11 @@
 					aria-label="Weekly demand chart; scroll horizontally to see the full timeline"
 				>
 					<svg viewBox="0 0 1200 380" role="img" aria-labelledby="chart-title chart-desc">
-						<title id="chart-title">Illustrative weekly demand chart with a Naive forecast</title>
+						<title id="chart-title">Example weekly demand chart with a baseline forecast</title>
 						<desc id="chart-desc">
-							A solid blue line shows observed weekly quantity rising and falling across
-							eighteen weeks. From the last observed week, a purple dashed line continues flat
-							for nine weeks ahead — the Naive forecast, which carries the last value forward.
+							A blue line shows weekly demand for eighteen weeks. A purple dashed line
+							continues from the last week for nine weeks. This is the baseline forecast.
+							It repeats the last value.
 						</desc>
 						<defs>
 							<pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
@@ -106,18 +107,17 @@
 							stroke-dasharray="10 10"
 						/>
 						<circle cx="760" cy="100" r="5" fill="#152238" />
-						<text x="80" y="40" class="chart-label">weekly quantity</text>
+						<text x="80" y="40" class="chart-label">weekly demand</text>
 						<text x="760" y="40" class="chart-label" text-anchor="middle">last observed week</text>
 						<text x="400" y="342" class="chart-label">observed</text>
 						<text x="930" y="342" class="chart-label chart-label-forecast" text-anchor="middle">
-							Naive forecast
+							baseline forecast
 						</text>
 					</svg>
 				</div>
 				<figcaption>
-					The Milestone 1 engine in one line: the Naive forecast carries the last observed week
-					forward. It is an honest baseline, not a promise — seasonal models come later. The
-					chart uses illustrative data.
+					The forecast repeats the last known value for each week ahead. This is a simple
+					baseline, not a promise. Seasonal models come later. The chart uses example data.
 				</figcaption>
 			</figure>
 
@@ -125,24 +125,24 @@
 				<h2 id="how-title">What it does today</h2>
 				<ol class="steps">
 					<li>
-						<h3>Import a weekly history</h3>
+						<h3>Add your data</h3>
 						<p>
-							One CSV with three columns: series key, ISO week (Monday), and weekly quantity.
-							Every import is stored as a full, immutable snapshot.
+							Use one CSV file with three columns: product key, week, and quantity. Each
+							import is saved as a complete copy.
 						</p>
 					</li>
 					<li>
-						<h3>Run the forecast</h3>
+						<h3>Get a forecast</h3>
 						<p>
-							A bundled Python engine computes the Naive baseline, one process per job, and
-							returns results as Arrow IPC. No Python installation is needed.
+							The app makes a simple baseline forecast for every product. Everything runs
+							on your computer. You do not need Python or other tools.
 						</p>
 					</li>
 					<li>
-						<h3>Keep every result</h3>
+						<h3>Keep your results</h3>
 						<p>
-							Runs persist to a local SQLite database owned by the Rust core and reopen as
-							charts. Typed IPC, no hidden state.
+							The app saves every run and its results on your computer. Open a chart again
+							at any time.
 						</p>
 					</li>
 				</ol>
@@ -151,8 +151,8 @@
 			<section class="section" id="download" aria-labelledby="download-title">
 				<h2 id="download-title">Download</h2>
 				<p class="section-lede">
-					OpenDemand v0.0.2 is a development preview for early testing. Pick the package for
-					your system.
+					This is a development preview for early testing. Choose the package for your
+					system.
 				</p>
 
 				<article class="product-band">
@@ -163,7 +163,7 @@
 								OpenDemand <span class="version-chip">v0.0.2</span>
 							</h3>
 							<p class="product-line">
-								Local-first SKU-level demand forecasting for the desktop. Licensed under AGPL-3.0-only.
+								Demand forecasting for your computer. License: AGPL-3.0-only.
 							</p>
 						</div>
 					</div>
@@ -201,7 +201,7 @@
 									>.dmg <span class="file-note">disk image</span></a
 								>
 							</div>
-							<p class="os-note">Intel Macs are not built yet.</p>
+							<p class="os-note">No build for Intel Macs yet.</p>
 						</li>
 						<li class="os os-linux">
 							<div class="os-head">
@@ -230,46 +230,45 @@
 					</ul>
 
 					<p class="product-meta">
-						Builds are unsigned. macOS shows a Gatekeeper warning until notarization lands, and
-						Windows SmartScreen may warn about an unknown publisher. All files and release
+						The builds are unsigned. macOS shows a Gatekeeper warning until notarization.
+						Windows SmartScreen can warn about an unknown publisher. All files and release
 						notes are on
 						<a href="https://github.com/filki/opendemand/releases/tag/v0.0.2">GitHub Releases</a>.
 					</p>
 				</article>
 
 				<p class="catalog-note">
-					This catalog is a static page. No accounts, no tracking, no cookies — the only
-					requests it makes are for its own files. More tools from the same workshop will land
-					here.
+					This is a static page. It has no accounts, no tracking, and no cookies. It loads
+					only its own files. More tools from the same workshop will come here later.
 				</p>
 			</section>
 
 			<section class="section" aria-labelledby="status-title">
 				<h2 id="status-title">Honest status</h2>
 				<p class="section-lede">
-					Milestone 2 planner features are implemented in development, verified by automated tests against
-					a real workspace. Packaging is experimental and nothing here is ready for production use.
+					The main features work in development and automated tests check them. The
+					installer is experimental. The app is not ready for production use.
 				</p>
 				<div class="status-grid">
 					<div class="status-col">
 						<h3>Works today</h3>
 						<ul>
-							<li>Canonical CSV import (the <code>canonical/1</code> contract)</li>
-							<li>Naive forecasting through the bundled Python sidecar</li>
-							<li>Persisted run history and forecast charts</li>
-							<li>Run-scoped manual overrides with baseline vs. effective comparison</li>
+							<li>Weekly history import from a CSV file</li>
+							<li>Baseline forecast with the built-in engine</li>
+							<li>Manual forecast changes with a baseline comparison</li>
 							<li>Full-run CSV export</li>
-							<li>Automated tests: schema and recovery, engine, frontend, and per-platform packaging checks</li>
+							<li>Run history and charts on your computer</li>
+							<li>Automated tests for data, engine, app, and packages</li>
 						</ul>
 					</div>
 					<div class="status-col">
 						<h3>Not built yet</h3>
 						<ul>
-							<li>Backups and restores</li>
+							<li>Backup and restore</li>
 							<li>XLSX export</li>
-							<li>Seasonal and other forecasting models</li>
-							<li>Flexible parsing of raw planner files</li>
-							<li>The optional read-only MCP adapter</li>
+							<li>Seasonal models</li>
+							<li>Flexible import of raw planner files</li>
+							<li>The optional read-only MCP connection</li>
 						</ul>
 					</div>
 				</div>
@@ -279,7 +278,7 @@
 
 	<footer class="site-footer">
 		<div class="wrap">
-			<p>Open source under AGPL-3.0-only. No telemetry, no accounts — it runs offline.</p>
+			<p>Open source under AGPL-3.0-only. No telemetry and no accounts. The app runs offline.</p>
 			<nav class="footer-links" aria-label="Project resources">
 				<a href="https://github.com/filki/opendemand">Source</a>
 				<a href="https://github.com/filki/opendemand/issues">Issues</a>
