@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "OpenDemand",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "identifier": "app.opendemand.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -29,7 +29,7 @@
     "targets": "all",
     "category": "Business",
     "shortDescription": "Local-first SKU-level demand forecasting",
-    "longDescription": "OpenDemand is a local-first, SKU-level demand forecasting desktop application. Import a canonical CSV, run a Naive forecast through the bundled Python sidecar, and inspect history with persisted forecasts. All data stays on your machine.",
+    "longDescription": "OpenDemand is a local-first, SKU-level demand forecasting desktop application. Import a canonical CSV, forecast with three models (Naive, SeasonalNaive and AutoETS) and automatic selection of the best model for each series, then review and override the plan. All data stays on your machine.",
     "copyright": "© 2026 OpenDemand contributors",
     "licenseFile": "../LICENSE",
     "icon": [

@@ -2,7 +2,7 @@
   "protocol": "opendemand.sidecar/1",
   "type": "hello",
   "job_id": null,
-  "engine_version": "0.0.2",
+  "engine_version": "0.0.3",
   "contracts": ["opendemand.arrow/1"],
   "models": ["naive", "seasonal_naive_52", "auto_ets_52"]
 }

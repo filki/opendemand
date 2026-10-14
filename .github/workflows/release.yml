@@ -74,10 +74,15 @@ jobs:
           releaseBody: |
             Unsigned development preview of OpenDemand v__VERSION__.
 
-            What works: canonical CSV import, Naive forecast through the bundled
-            Python sidecar, run-scoped manual overrides, baseline/effective
-            forecast charts, and full-run CSV export. See the README for scope
-            and known limitations.
+            What works: canonical CSV import; Naive, SeasonalNaive(52) and AutoETS(52)
+            forecasts with automatic per-series model selection; run-scoped manual
+            overrides; baseline/effective forecast charts; and full-run CSV export.
+            Model fitting runs on all available CPU cores, so long forecast runs finish
+            several times faster than in the previous version.
+
+            The installers are not code-signed. macOS shows a Gatekeeper warning until
+            notarization, and Windows SmartScreen can warn about an unknown publisher.
+            See the README for scope and known limitations.
           releaseDraft: true
           prerelease: true
           args: --config src-tauri/tauri.bundle.conf.json ${{ matrix.args }} -- --locked
