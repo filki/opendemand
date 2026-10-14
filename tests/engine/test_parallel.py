@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import io
 import math
 import multiprocessing
 import os
@@ -87,24 +88,21 @@ class ParallelExecutionTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def _run(self, workers: int, threshold: int = 1, series: int = 8, **build_kwargs):
+        for name in OUTPUT_FILES:
+            (self.job_dir / f"{name}.arrow").unlink(missing_ok=True)
         observations, tasks = _build(series, **build_kwargs)
         h.write_inputs(self.job_dir, observations, tasks)
-        with mock.patch.dict(os.environ, {"OPENDEMAND_ENGINE_WORKERS": str(workers)}):
-            with mock.patch("opendemand_engine.engine.PARALLEL_MIN_EXPENSIVE_TASKS", threshold):
-                code, stdout, stderr = h.run_inproc(self.job_dir, [h.job_request()])
-        return code, stdout, stderr
-
-    def _fresh_job_dir(self) -> Path:
-        directory = Path(tempfile.mkdtemp(dir=self._tmp.name))
-        return directory
+        with (
+            mock.patch.dict(os.environ, {"OPENDEMAND_ENGINE_WORKERS": str(workers)}),
+            mock.patch("opendemand_engine.engine.PARALLEL_MIN_EXPENSIVE_TASKS", threshold),
+        ):
+            return h.run_inproc(self.job_dir, [h.job_request()])
 
     def test_pooled_output_matches_sequential_output_byte_for_byte(self):
         _, stdout_seq, _ = self._run(workers=1)
         sequential = _digests(self.job_dir)
         self.assertEqual(stdout_seq.terminal()["type"], "job.result")
 
-        for path in OUTPUT_FILES:
-            (self.job_dir / f"{path}.arrow").unlink()
         _, stdout_pool, stderr = self._run(workers=2)
         pooled = _digests(self.job_dir)
 
@@ -115,10 +113,6 @@ class ParallelExecutionTests(unittest.TestCase):
     def test_output_is_deterministic_across_worker_counts(self):
         digests = []
         for workers in (1, 2, 3):
-            for path in OUTPUT_FILES:
-                file = self.job_dir / f"{path}.arrow"
-                if file.exists():
-                    file.unlink()
             _, stdout, _ = self._run(workers=workers)
             self.assertEqual(stdout.terminal()["type"], "job.result")
             digests.append(_digests(self.job_dir))
@@ -132,8 +126,6 @@ class ParallelExecutionTests(unittest.TestCase):
         sequential = _digests(self.job_dir)
         self.assertEqual(stdout_seq.terminal()["type"], "job.result")
 
-        for path in OUTPUT_FILES:
-            (self.job_dir / f"{path}.arrow").unlink()
         _, stdout_pool, _ = self._run(workers=2, duplicate_series=3)
         pooled = _digests(self.job_dir)
 
@@ -163,15 +155,15 @@ class ParallelExecutionTests(unittest.TestCase):
         watcher = threading.Thread(target=cancel_once_started, args=(stdout, started))
         watcher.start()
         try:
-            with mock.patch.dict(os.environ, {"OPENDEMAND_ENGINE_WORKERS": "2"}):
-                with mock.patch("opendemand_engine.engine.PARALLEL_MIN_EXPENSIVE_TASKS", 1):
-                    import io
+            from opendemand_engine import engine
 
-                    from opendemand_engine import engine
-
-                    code = engine.run_job(
-                        self.job_dir, stdin, stdout, io.StringIO(), heartbeat_interval=15.0
-                    )
+            with (
+                mock.patch.dict(os.environ, {"OPENDEMAND_ENGINE_WORKERS": "2"}),
+                mock.patch("opendemand_engine.engine.PARALLEL_MIN_EXPENSIVE_TASKS", 1),
+            ):
+                code = engine.run_job(
+                    self.job_dir, stdin, stdout, io.StringIO(), heartbeat_interval=15.0
+                )
         finally:
             watcher.join(timeout=5.0)
 
@@ -187,6 +179,19 @@ class ParallelExecutionTests(unittest.TestCase):
         # The pool is shut down inside run_job; no spawn worker may outlive it.
         self.assertEqual(multiprocessing.active_children(), [])
 
+    def test_worker_failure_fails_the_job_without_outputs(self):
+        with mock.patch("opendemand_engine.engine.ProcessPoolExecutor") as executor:
+            pool = executor.return_value
+            pool.submit.return_value.result.side_effect = RuntimeError("worker failed")
+            code, stdout, _ = self._run(workers=2)
+
+        self.assertEqual(code, 1)
+        terminal = stdout.terminal()
+        self.assertEqual(terminal["type"], "job.error")
+        self.assertEqual(terminal["code"], "internal_error")
+        self.assertEqual(h.output_files_present(self.job_dir), [])
+        pool.shutdown.assert_called_once_with(wait=True, cancel_futures=True)
+
     def test_small_job_stays_in_process_when_workers_are_disabled(self):
         _, stdout, stderr = self._run(workers=1)
         self.assertEqual(stdout.terminal()["type"], "job.result")
@@ -196,15 +201,18 @@ class ParallelExecutionTests(unittest.TestCase):
     def test_worker_count_is_bounded_and_overridable(self):
         from opendemand_engine import engine
 
-        with mock.patch.dict(os.environ, {"OPENDEMAND_ENGINE_WORKERS": "2"}):
-            self.assertEqual(engine.worker_count(), 2)
-        with mock.patch.dict(os.environ, {"OPENDEMAND_ENGINE_WORKERS": "0"}):
-            self.assertEqual(engine.worker_count(), 1)
-        with mock.patch.dict(os.environ, {"OPENDEMAND_ENGINE_WORKERS": "nonsense"}):
-            self.assertEqual(engine.worker_count(), 1)
+        overrides = (("2", 2), ("32", 32), ("0", 1), ("-1", 1), ("", 1), ("nonsense", 1))
+        for value, expected in overrides:
+            with self.subTest(value=value), mock.patch.dict(
+                os.environ, {"OPENDEMAND_ENGINE_WORKERS": value}
+            ):
+                self.assertEqual(engine.worker_count(), expected)
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertLessEqual(engine.worker_count(), engine.MAX_WORKERS)
-            self.assertGreaterEqual(engine.worker_count(), 1)
+            for cpus, expected in ((None, 1), (0, 1), (1, 1), (2, 2), (8, engine.MAX_WORKERS)):
+                with self.subTest(cpus=cpus), mock.patch(
+                    "opendemand_engine.engine.os.cpu_count", return_value=cpus
+                ):
+                    self.assertEqual(engine.worker_count(), expected)
 
 
 if __name__ == "__main__":

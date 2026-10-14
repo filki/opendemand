@@ -750,14 +750,13 @@ pub async fn execute(
     unreachable!("bounded retry always returns")
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
     /// A job timeout must cancel the sidecar cooperatively first, then kill and
     /// reap it, so no worker process is left behind. `sleep` ignores the cancel
     /// flag, so this exercises the kill fallback after the grace period.
-    #[cfg(unix)]
     #[tokio::test]
     async fn stop_child_sets_the_cancel_flag_and_reaps_a_stubborn_process() {
         let directory = tempfile::tempdir().unwrap();
@@ -775,7 +774,6 @@ mod tests {
     }
 
     /// A sidecar that exits during the grace period is reaped without a kill.
-    #[cfg(unix)]
     #[tokio::test]
     async fn stop_child_reaps_a_process_that_exits_during_the_grace_period() {
         let directory = tempfile::tempdir().unwrap();

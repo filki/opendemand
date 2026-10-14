@@ -317,7 +317,7 @@ _worker_index: "ObservationIndex | None" = None
 def init_worker(job_dir: str) -> None:
     """ProcessPoolExecutor initializer: build this worker's observation index."""
     global _worker_index
-    _worker_index = load_observation_index(Path(job_dir))
+    _worker_index = load_observation_index(job_dir)
 
 
 def run_task_in_worker(task: TaskRow) -> TaskOutcome:
