@@ -17,6 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let forecast = run_forecast(
         &workspace,
         imported.revision_id,
+        None,
         "desktop-smoke",
         Arc::new(AtomicBool::new(false)),
         Arc::new(|_, _| {}),

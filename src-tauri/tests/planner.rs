@@ -21,6 +21,7 @@ async fn planner_workspace() -> (tempfile::TempDir, Workspace, String, Vec<Serie
     let forecast = run_forecast(
         &workspace,
         imported.revision_id,
+        None,
         "planner-test",
         Arc::new(AtomicBool::new(false)),
         Arc::new(|_, _| {}),
@@ -336,6 +337,7 @@ async fn overrides_are_isolated_between_runs_and_accept_the_last_horizon_week() 
     let next = run_forecast(
         &workspace,
         1,
+        None,
         "second-planner-run",
         Arc::new(AtomicBool::new(false)),
         Arc::new(|_, _| {}),
@@ -745,6 +747,7 @@ async fn planner_can_select_runs_pinned_to_older_import_revisions() {
     let next = run_forecast(
         &workspace,
         2,
+        None,
         "new-revision-run",
         Arc::new(AtomicBool::new(false)),
         Arc::new(|_, _| {}),

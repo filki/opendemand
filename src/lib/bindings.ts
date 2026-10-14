@@ -54,7 +54,7 @@ export const commands = {
 	weeklyComparisonContext: () => typedError<WeeklyComparisonContext, AppError>(__TAURI_INVOKE("weekly_comparison_context")),
 	weeklyComparisonSeriesList: (currentRunId: string, previousRunId: string, search: string, offset: number, limit: number) => typedError<SeriesChangeSummary[], AppError>(__TAURI_INVOKE("weekly_comparison_series_list", { currentRunId, previousRunId, search, offset, limit })),
 	weeklyComparisonSeriesDetail: (currentRunId: string, previousRunId: string, productId: string, locationId: string) => typedError<SeriesComparisonDetail, AppError>(__TAURI_INVOKE("weekly_comparison_series_detail", { currentRunId, previousRunId, productId, locationId })),
-	forecastStart: (revisionId: number) => typedError<JobInfo, AppError>(__TAURI_INVOKE("forecast_start", { revisionId })),
+	forecastStart: (revisionId: number, imputation: string | null) => typedError<JobInfo, AppError>(__TAURI_INVOKE("forecast_start", { revisionId, imputation })),
 	jobStatus: (jobId: string) => typedError<JobInfo, AppError>(__TAURI_INVOKE("job_status", { jobId })),
 	jobCancel: (jobId: string) => typedError<JobInfo, AppError>(__TAURI_INVOKE("job_cancel", { jobId })),
 	jobsList: () => typedError<JobInfo[], AppError>(__TAURI_INVOKE("jobs_list")),
@@ -301,6 +301,13 @@ export type SeriesDetail = {
 	horizon_start_week: string | null,
 	selected_model_id: string | null,
 	selection_score: number | null,
+	/**
+	 *  The imputation method the selected run planned with (ADR-0023), or NULL
+	 *  when the run used no imputation.
+	 */
+	imputation_method: string | null,
+	/**  Missing weeks the run filled for this series; zero without imputation. */
+	imputed_weeks: number | null,
 };
 
 /**

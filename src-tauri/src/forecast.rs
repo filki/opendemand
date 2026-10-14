@@ -9,6 +9,7 @@
 use crate::{
     engine::{self, EngineOutput, Progress, Task},
     error::{AppError, AppResult},
+    imputation::{self, ImputationMethod},
     selection::{self, ModelEvidence},
     types::{ForecastInput, ForecastResult},
     workspace::Workspace,
@@ -91,20 +92,32 @@ fn plan_tasks(input: &ForecastInput) -> AppResult<Vec<Task>> {
             add_task("production", None, h);
             let origins = ((h - floor) / HORIZON_WEEKS).clamp(0, MAX_ORIGINS);
             for index in 1..=origins {
-                add_task(
-                    "backtest",
-                    Some(index),
-                    h - HORIZON_WEEKS * (origins - index + 1),
-                );
+                let train_size = h - HORIZON_WEEKS * (origins - index + 1);
+                if target_window_imputed(&series.imputed_indices, train_size) {
+                    continue;
+                }
+                add_task("backtest", Some(index), train_size);
             }
         }
     }
     Ok(tasks)
 }
 
+/// True when an origin's 12-week target window (zero-based positions
+/// `train_size..train_size + HORIZON_WEEKS` of the effective series) contains
+/// an imputed week. Such origins are neither planned nor scored, so champion
+/// selection never grades models against invented values (ADR-0023).
+fn target_window_imputed(imputed: &[u32], train_size: i32) -> bool {
+    imputed.iter().any(|&position| {
+        let position = position as i32;
+        (train_size..train_size + HORIZON_WEEKS).contains(&position)
+    })
+}
+
 pub async fn run_forecast(
     workspace: &Workspace,
     revision_id: i32,
+    imputation: Option<ImputationMethod>,
     job_id: &str,
     cancel: Arc<AtomicBool>,
     progress: Progress,
@@ -113,7 +126,12 @@ pub async fn run_forecast(
     cancelled(&cancel)?;
     progress("preparing", 0.0);
     let started_at = Utc::now().to_rfc3339();
-    let input = workspace.forecast_input(revision_id).await?;
+    let mut input = workspace.forecast_input(revision_id).await?;
+    if let Some(method) = imputation {
+        for series in &mut input.series {
+            imputation::impute_series(series, method);
+        }
+    }
     let tasks = plan_tasks(&input)?;
     let jobs_directory = workspace.path.join("jobs");
     std::fs::create_dir_all(&jobs_directory)?;
@@ -139,6 +157,7 @@ pub async fn run_forecast(
         &output,
         &started_at,
         job_id,
+        imputation,
         &cancel,
     )
     .await
@@ -274,6 +293,7 @@ fn outcome_for(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn persist(
     workspace: &Workspace,
     input: &ForecastInput,
@@ -281,6 +301,7 @@ async fn persist(
     output: &EngineOutput,
     started_at: &str,
     job_id: &str,
+    imputation: Option<ImputationMethod>,
     cancel: &AtomicBool,
 ) -> AppResult<ForecastResult> {
     let _writer = workspace.writer.lock().await;
@@ -302,12 +323,14 @@ async fn persist(
         "floors": floors,
         "selection": "comparable_pooled_wape",
         "contract": "opendemand.arrow/1",
+        "imputation": imputation.map(ImputationMethod::id),
     })
     .to_string();
-    sqlx::query("INSERT INTO forecast_run (id, revision_id, created_at, finished_at, status, horizon_weeks, horizon_start_week, timezone, config_json, app_version, engine_version) VALUES (?, ?, ?, ?, 'completed', 12, ?, ?, ?, ?, ?)")
+    sqlx::query("INSERT INTO forecast_run (id, revision_id, created_at, finished_at, status, horizon_weeks, horizon_start_week, timezone, config_json, app_version, engine_version, imputation_method) VALUES (?, ?, ?, ?, 'completed', 12, ?, ?, ?, ?, ?, ?)")
         .bind(run_id.as_bytes().as_slice()).bind(input.revision_id).bind(started_at).bind(&finished_at)
         .bind((input.cutoff + Duration::weeks(1)).to_string()).bind(&input.timezone).bind(config)
-        .bind(env!("CARGO_PKG_VERSION")).bind(&output.engine_version).execute(&mut *transaction).await?;
+        .bind(env!("CARGO_PKG_VERSION")).bind(&output.engine_version)
+        .bind(imputation.map(ImputationMethod::id)).execute(&mut *transaction).await?;
 
     for (model_id, _) in MODELS {
         let model_tasks = tasks
@@ -400,9 +423,10 @@ async fn persist(
             selected.champion.as_ref(),
             selected.used.as_ref(),
         );
-        sqlx::query("INSERT INTO forecast_series_status (run_id, product_id, location_id, status, selected_model_id, reason) VALUES (?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO forecast_series_status (run_id, product_id, location_id, status, selected_model_id, reason, imputed_weeks) VALUES (?, ?, ?, ?, ?, ?, ?)")
             .bind(run_id.as_bytes().as_slice()).bind(series.product_id.as_bytes().as_slice()).bind(series.location_id.as_bytes().as_slice())
-            .bind(outcome).bind(selected.used.as_deref()).bind(reason).execute(&mut *transaction).await?;
+            .bind(outcome).bind(selected.used.as_deref()).bind(reason)
+            .bind(series.imputed_indices.len() as i64).execute(&mut *transaction).await?;
         if let Some(used) = selected.used.as_deref() {
             covered_series += 1;
             let production = models
@@ -459,6 +483,7 @@ mod tests {
             .into(),
             reason: None,
             observations: vec![],
+            imputed_indices: Vec::new(),
         }
     }
 
@@ -552,6 +577,43 @@ mod tests {
         assert_eq!(origin_sizes(36, "naive"), vec![12, 24]);
         assert_eq!(origin_sizes(24, "naive"), vec![12]);
         assert!(origin_sizes(23, "naive").is_empty());
+    }
+
+    #[test]
+    fn origins_with_imputed_targets_are_not_planned() {
+        // Position 130 (zero-based) is imputed: backtest origins whose 12-week
+        // target window covers it are skipped for every model (ADR-0023).
+        let mut affected = series(152);
+        affected.imputed_indices = vec![130];
+        let tasks = plan_tasks(&input(vec![affected])).unwrap();
+        for model in ["naive", "seasonal_naive_52", "auto_ets_52"] {
+            let mut sizes = tasks
+                .iter()
+                .filter(|task| task.kind == "backtest" && task.model_id == model)
+                .map(|task| task.train_size)
+                .collect::<Vec<_>>();
+            sizes.sort();
+            assert_eq!(sizes, vec![104, 116, 140], "{model}");
+        }
+        assert!(tasks.iter().any(|task| task.kind == "production"));
+        assert!(target_window_imputed(&[104, 115], 104));
+        assert!(!target_window_imputed(&[103, 116], 104));
+    }
+
+    #[test]
+    fn origins_keep_imputed_training_weeks() {
+        // Position 50 is inside every origin's training window, never inside a
+        // target window: all four origins stay planned.
+        let mut series = series(152);
+        series.imputed_indices = vec![50];
+        let tasks = plan_tasks(&input(vec![series])).unwrap();
+        let mut sizes = tasks
+            .iter()
+            .filter(|task| task.kind == "backtest" && task.model_id == "naive")
+            .map(|task| task.train_size)
+            .collect::<Vec<_>>();
+        sizes.sort();
+        assert_eq!(sizes, vec![104, 116, 128, 140]);
     }
 
     #[test]

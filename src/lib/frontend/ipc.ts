@@ -144,8 +144,11 @@ export async function fetchWeeklyComparisonDetail(
 	);
 }
 
-export async function startForecast(revisionId: number): Promise<JobInfo> {
-	return unwrap(await commands.forecastStart(revisionId));
+export async function startForecast(
+	revisionId: number,
+	imputation: string | null = null
+): Promise<JobInfo> {
+	return unwrap(await commands.forecastStart(revisionId, imputation));
 }
 
 export async function fetchJobStatus(jobId: string): Promise<JobInfo> {

@@ -45,8 +45,8 @@ use uuid::Uuid;
 /// SQLx is what `open` verifies against.
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../docs/architecture/schema");
 
-const SCHEMA_VERSION: i64 = 2;
-const SCHEMA_VERSION_TEXT: &str = "2";
+const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION_TEXT: &str = "3";
 const CONTRACT_VERSION: &str = "canonical/1";
 /// Contract version of revisions produced by the preprocessing layer.
 const PREPROCESS_CONTRACT: &str = "preprocess/1";
@@ -942,13 +942,15 @@ impl Workspace {
             horizon_start_week: None,
             selected_model_id: None,
             selection_score: None,
+            imputation_method: None,
+            imputed_weeks: None,
         };
 
         if let Some(run) = run_id {
             let run_uuid = parse_uuid(run, "run_id")?;
             let run_bytes = run_uuid.as_bytes().to_vec();
             let run_row = sqlx::query(
-                "SELECT revision_id, horizon_start_week, status FROM forecast_run WHERE id = ?",
+                "SELECT revision_id, horizon_start_week, status, imputation_method FROM forecast_run WHERE id = ?",
             )
             .bind(run_bytes.as_slice())
             .fetch_optional(&self.pool)
@@ -968,9 +970,10 @@ impl Workspace {
             }
             detail.run_id = Some(run_uuid.to_string());
             detail.horizon_start_week = Some(run_row.get("horizon_start_week"));
+            detail.imputation_method = run_row.get::<Option<String>, _>("imputation_method");
 
             let status_row = sqlx::query(
-                "SELECT status, selected_model_id, reason FROM forecast_series_status WHERE run_id = ? AND product_id = ? AND location_id = ?",
+                "SELECT status, selected_model_id, reason, imputed_weeks FROM forecast_series_status WHERE run_id = ? AND product_id = ? AND location_id = ?",
             )
             .bind(run_bytes.as_slice())
             .bind(product_bytes.as_slice())
@@ -982,6 +985,7 @@ impl Workspace {
                 detail.outcome = Some(row.get("status"));
                 detail.reason = row.get::<Option<String>, _>("reason");
                 detail.selected_model_id = row.get::<Option<String>, _>("selected_model_id");
+                detail.imputed_weeks = Some(row.get::<i64, _>("imputed_weeks") as u32);
             }
 
             let points = sqlx::query(
@@ -1999,6 +2003,7 @@ impl Workspace {
                 qualification_status: row.get("status"),
                 reason: row.get::<Option<String>, _>("reason"),
                 observations: dense,
+                imputed_indices: Vec::new(),
             });
         }
         Ok(ForecastInput {

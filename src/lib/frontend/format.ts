@@ -42,6 +42,19 @@ export function outcomeLabel(outcome: string | null | undefined): string {
 	}
 }
 
+export function imputationLabel(method: string | null | undefined): string | null {
+	switch (method) {
+		case 'last':
+			return 'Last known value';
+		case 'last_seasonal_52':
+			return 'Same week last year';
+		case 'mean_4':
+			return 'Mean of the last 4 known weeks';
+		default:
+			return method ?? null;
+	}
+}
+
 export function observationStatusLabel(status: string | null | undefined): string {
 	if (!status) return '—';
 	switch (status) {

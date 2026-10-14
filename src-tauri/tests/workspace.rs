@@ -5,10 +5,10 @@
 //! mapping changes, validation rollbacks, duplicate handling, trailing-history
 //! gaps, retained-file recovery, and run/revision scoping.
 
-use opendemand_core::workspace::Workspace;
+use opendemand_core::{forecast::run_forecast, imputation::ImputationMethod, workspace::Workspace};
 use std::{
     path::{Path, PathBuf},
-    sync::atomic::AtomicBool,
+    sync::{atomic::AtomicBool, Arc},
 };
 use uuid::Uuid;
 
@@ -37,7 +37,7 @@ async fn create_open_info_roundtrip_and_refuses_overwrite() {
     let root = directory.path().join("workspace");
     let workspace = Workspace::create(root.clone()).await.unwrap();
     let info = workspace.info().await.unwrap();
-    assert_eq!(info.schema_version, "2");
+    assert_eq!(info.schema_version, "3");
     assert_eq!(info.latest_revision_id, None);
     assert_eq!(info.locale, "en");
     assert!(info.recovery_issues.is_empty());
@@ -49,7 +49,7 @@ async fn create_open_info_roundtrip_and_refuses_overwrite() {
     workspace.pool.close().await;
 
     let reopened = Workspace::open(root.clone()).await.unwrap();
-    assert_eq!(reopened.info().await.unwrap().schema_version, "2");
+    assert_eq!(reopened.info().await.unwrap().schema_version, "3");
     reopened.pool.close().await;
 
     // Opening a path with no database is rejected.
@@ -480,4 +480,93 @@ async fn forecast_run_scoping_rejects_mismatches_and_unknown_revisions() {
         "unknown_revision"
     );
     workspace.pool.close().await;
+}
+
+#[tokio::test]
+async fn imputation_fills_gaps_for_the_run_only_and_records_the_method() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = Workspace::create(directory.path().join("workspace"))
+        .await
+        .unwrap();
+
+    // 130 consecutive weeks; weeks 60..=63 never appear in the source.
+    let start = chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+    let mut csv = String::from("series_key,week_start,quantity\n");
+    for index in 0..130 {
+        if (60..=63).contains(&index) {
+            continue;
+        }
+        let week = start + chrono::Duration::weeks(index);
+        csv.push_str(&format!("GAPPY-1,{week},{}\n", 10 + index % 7));
+    }
+    let path = write_csv(directory.path(), "gappy.csv", &csv);
+    let imported = import(&workspace, &path).await;
+    assert_eq!(imported.series_count, 1);
+
+    // Stored semantics before the run: H is the trailing gap-free run.
+    let series = workspace
+        .list_series(imported.revision_id, "", 0, 10)
+        .await
+        .unwrap();
+    assert_eq!(series.len(), 1);
+    let stored_h = series[0].h_length;
+    assert_eq!(stored_h, 66);
+
+    let result = run_forecast(
+        &workspace,
+        imported.revision_id,
+        Some(ImputationMethod::Last),
+        "imputation-job",
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(|_, _| {}),
+        std::env::var_os("OPENDEMAND_ENGINE").map(PathBuf::from),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.forecast_count, 12);
+    assert_eq!(result.coverage, 1.0);
+
+    // The run records the method and the filled-week count for the series.
+    let detail = workspace
+        .series_detail(
+            imported.revision_id,
+            &series[0].product_id,
+            &series[0].location_id,
+            Some(&result.run_id),
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail.imputation_method.as_deref(), Some("last"));
+    assert_eq!(detail.imputed_weeks, Some(4));
+    assert_eq!(detail.outcome.as_deref(), Some("ok"));
+
+    // Filled weeks unlocked the seasonal models: the four missing weeks sit
+    // outside every origin's target window, so both origins are scored.
+    let models = workspace
+        .series_models(
+            &result.run_id,
+            &series[0].product_id,
+            &series[0].location_id,
+        )
+        .await
+        .unwrap();
+    let seasonal = models
+        .iter()
+        .find(|model| model.model_id == "seasonal_naive_52")
+        .unwrap();
+    assert_eq!(seasonal.origins_planned, 2);
+    assert_eq!(seasonal.origins_completed, 2);
+
+    // Stored evidence is untouched: H, the history gap, and the observations.
+    let after = workspace
+        .list_series(imported.revision_id, "", 0, 10)
+        .await
+        .unwrap();
+    assert_eq!(after[0].h_length, stored_h);
+    let gaps = detail
+        .history
+        .iter()
+        .filter(|point| point.quantity.is_none())
+        .count();
+    assert_eq!(gaps, 4);
 }

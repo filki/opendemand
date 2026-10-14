@@ -28,8 +28,9 @@ This directory records the accepted architecture decisions for OpenDemand. Each 
 | [0020](0020-parsing-descriptor-in-the-mapping-fingerprint.md) | Parsing configuration in the mapping fingerprint | Accepted | 2026-10-14 |
 | [0021](0021-import-config-persistence-and-migration-gate-mechanism.md) | Import configuration persistence and the pre-migration backup mechanism | Accepted | 2026-10-14 |
 | [0022](0022-weekly-planning-workflow-and-run-comparison.md) | Weekly planning workflow and run comparison | Accepted | 2026-10-14 |
+| [0023](0023-model-input-imputation.md) | Model-input imputation of missing weeks | Accepted | 2026-10-14 |
 
-Schema status: migration 001 is frozen (2026-10-13; SHA-256 recorded in `../schema/001_init.sha256`); migration 002 adds `import_config` and `import_revision.descriptor_json` and is applied only behind the verified pre-migration backup (ADR-0021). All schema changes use new numbered migrations.
+Schema status: migration 001 is frozen (2026-10-13; SHA-256 recorded in `../schema/001_init.sha256`); migration 002 adds `import_config` and `import_revision.descriptor_json`; migration 003 adds the run-level imputation method and per-series filled-week counts (ADR-0023). Migrations are applied only behind the verified pre-migration backup (ADR-0021). All schema changes use new numbered migrations.
 
 ## Rules
 

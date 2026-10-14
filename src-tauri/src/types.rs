@@ -98,6 +98,11 @@ pub struct SeriesDetail {
     pub horizon_start_week: Option<String>,
     pub selected_model_id: Option<String>,
     pub selection_score: Option<f64>,
+    /// The imputation method the selected run planned with (ADR-0023), or NULL
+    /// when the run used no imputation.
+    pub imputation_method: Option<String>,
+    /// Missing weeks the run filled for this series; zero without imputation.
+    pub imputed_weeks: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -249,6 +254,10 @@ pub struct InputSeries {
     pub qualification_status: String,
     pub reason: Option<String>,
     pub observations: Vec<ObservationRecord>,
+    /// Zero-based positions of weeks filled by model-input imputation
+    /// (ADR-0023); empty when the run uses no imputation. The planner excludes
+    /// backtest origins whose target window contains one of these weeks.
+    pub imputed_indices: Vec<u32>,
 }
 
 #[derive(Debug, Clone)]

@@ -35,7 +35,7 @@ Run these tests before calling work done:
 - Domain vocabulary: `GLOSSARY.md` — use its terms in issues, tests, and docs.
 - Data semantics: `docs/architecture/DATA_ARCHITECTURE.md`. System structure: `docs/architecture/SYSTEM_ARCHITECTURE.md`.
 - Implemented IPC commands and planner/export semantics: `docs/architecture/contracts/TAURI_IPC.md`; generated `src/lib/bindings.ts` is the type source of truth.
-- Schema: `docs/architecture/schema/001_init.sql` (frozen) and `docs/architecture/schema/002_import_config.sql` (current version).
+- Schema: `docs/architecture/schema/001_init.sql` (frozen) and `docs/architecture/schema/003_forecast_imputation.sql` (current version).
 - Local Kilo commands: `/tdd`, `/review`, `/to-tickets`, `/caveman`, `/find-skills` — thin wrappers in `.kilo/command/` that load the matching skills.
 
 ## Agent skills

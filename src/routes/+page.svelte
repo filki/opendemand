@@ -66,6 +66,8 @@
 	let seriesScope = '';
 	let wizardOpen = $state(false);
 	let weeklyFlowActive = $state(false);
+	/** Run-scoped imputation method for forecast runs (ADR-0023). */
+	let imputationMethod = $state<string | null>(null);
 	let comparisonOpen = $state(false);
 
 	// Debounce the series search; a new search always restarts at page one.
@@ -303,7 +305,7 @@
 				comparisonOpen = true;
 				notice = `${notice ?? ''} Reused an existing completed run for the comparison.`;
 			} else {
-				beginJob(await startForecast(revisionId));
+				beginJob(await startForecast(revisionId, imputationMethod));
 			}
 		} catch (error) {
 			weeklyFlowActive = false;
@@ -401,7 +403,7 @@
 		actionError = null;
 		if (latestRevisionId === null) return;
 		try {
-			beginJob(await startForecast(latestRevisionId));
+			beginJob(await startForecast(latestRevisionId, imputationMethod));
 		} catch (error) {
 			actionError = describeError(error);
 		}
@@ -502,10 +504,12 @@
 					{workspace}
 					revisionId={latestRevisionId}
 					jobBusy={jobBusy || plannerDirty || plannerSaving || exporting}
+					imputation={imputationMethod}
 					onCreate={handleCreateWorkspace}
 					onOpen={handleOpenWorkspace}
 					onImport={handleImport}
 					onForecast={handleForecast}
+					onImputationChange={(value) => (imputationMethod = value)}
 					onWeekly={handleWeeklyUpdate}
 				/>
 				<JobMonitor

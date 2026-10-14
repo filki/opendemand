@@ -6,19 +6,23 @@
 		workspace,
 		revisionId,
 		jobBusy,
+		imputation,
 		onCreate,
 		onOpen,
 		onImport,
 		onForecast,
+		onImputationChange,
 		onWeekly
 	}: {
 		workspace: WorkspaceInfo | null;
 		revisionId: number | null;
 		jobBusy: boolean;
+		imputation: string | null;
 		onCreate: () => void;
 		onOpen: () => void;
 		onImport: () => void;
 		onForecast: () => void;
+		onImputationChange: (value: string | null) => void;
 		onWeekly: () => void;
 	} = $props();
 </script>
@@ -65,15 +69,29 @@
 				onclick={onForecast}
 				disabled={jobBusy || revisionId === null}
 			>
-				Generate Naive forecast
+				Generate forecast
 			</button>
+			<label class="fill-field">
+				<span>Fill missing weeks for this forecast</span>
+				<select
+					value={imputation ?? ''}
+					disabled={jobBusy || revisionId === null}
+					onchange={(event) =>
+						onImputationChange((event.currentTarget as HTMLSelectElement).value || null)}
+				>
+					<option value="">Do not fill</option>
+					<option value="last">Last known value</option>
+					<option value="last_seasonal_52">Same week last year</option>
+					<option value="mean_4">Mean of the last 4 known weeks</option>
+				</select>
+			</label>
 			<button class="btn btn-secondary btn-block" onclick={onOpen} disabled={jobBusy}>
 				Open workspace…
 			</button>
 			<button class="btn btn-secondary btn-block" onclick={onCreate} disabled={jobBusy}>
 				Create workspace
 			</button>
-			<p class="hint muted">Weekly update reuses your saved import configuration, imports new sales, forecasts, and opens the run comparison. Create uses the application data directory. Switching workspaces is refused while a job runs.</p>
+			<p class="hint muted">Weekly update reuses your saved import configuration, imports new sales, forecasts, and opens the run comparison. Filling missing weeks affects the forecast input only — stored history stays unchanged. Create uses the application data directory. Switching workspaces is refused while a job runs.</p>
 		</div>
 	{:else}
 		<p class="muted">No workspace is open. Create or open one from the main panel.</p>
@@ -138,6 +156,18 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.45rem;
+	}
+
+	.fill-field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		font-size: 0.78rem;
+		color: var(--ink-muted);
+	}
+
+	.fill-field select {
+		font-size: 0.85rem;
 	}
 
 	.hint {

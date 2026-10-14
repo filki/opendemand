@@ -1,6 +1,7 @@
 use crate::{
     error::{AppError, AppResult},
     forecast::run_forecast,
+    imputation::ImputationMethod,
     preprocess::ParsingDescriptor,
     types::*,
     workspace::Workspace,
@@ -256,6 +257,7 @@ async fn queue_job(
     source: Option<PathBuf>,
     descriptor: Option<ParsingDescriptor>,
     revision: Option<i32>,
+    imputation: Option<ImputationMethod>,
 ) -> AppResult<JobInfo> {
     let workspace_guard = state.workspace.lock().await;
     let workspace = workspace_guard
@@ -339,6 +341,7 @@ async fn queue_job(
                     run_forecast(
                         &job_workspace,
                         revision.unwrap(),
+                        imputation,
                         &job_id,
                         cancel,
                         progress,
@@ -408,7 +411,16 @@ async fn import_start(
     app: AppHandle,
     state: State<'_, Service>,
 ) -> AppResult<JobInfo> {
-    queue_job(&state, app, "import", Some(path.into()), descriptor, None).await
+    queue_job(
+        &state,
+        app,
+        "import",
+        Some(path.into()),
+        descriptor,
+        None,
+        None,
+    )
+    .await
 }
 
 /// Detect the shape of a raw export and preview sampled parsed cells. The
@@ -509,6 +521,7 @@ async fn weekly_comparison_series_detail(
 #[specta::specta]
 async fn forecast_start(
     revision_id: i32,
+    imputation: Option<String>,
     app: AppHandle,
     state: State<'_, Service>,
 ) -> AppResult<JobInfo> {
@@ -518,7 +531,25 @@ async fn forecast_start(
             "Select a committed import revision.",
         ));
     }
-    queue_job(&state, app, "forecast", None, None, Some(revision_id)).await
+    let imputation = match imputation.as_deref() {
+        None => None,
+        Some(id) => Some(ImputationMethod::from_id(id).ok_or_else(|| {
+            AppError::new(
+                "invalid_input",
+                format!("Unknown imputation method '{id}'."),
+            )
+        })?),
+    };
+    queue_job(
+        &state,
+        app,
+        "forecast",
+        None,
+        None,
+        Some(revision_id),
+        imputation,
+    )
+    .await
 }
 
 fn saved_job(row: sqlx::sqlite::SqliteRow) -> JobInfo {

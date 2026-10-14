@@ -18,7 +18,7 @@ The UI never opens SQLite or runs the Python engine directly. This document cove
 - `weekly_comparison_context()`: return the default comparison pair (newest completed run of the latest revision and of the immediately preceding revision). Null members mark an unavailable comparison.
 - `weekly_comparison_series_list(current_run_id: string, previous_run_id: string, search: string, offset: number, limit: number)`: return only changed series of the validated pair, in stable SKU/location order. Rust rejects runs that are not completed or not adjacent revisions of one profile.
 - `weekly_comparison_series_detail(current_run_id: string, previous_run_id: string, product_id: string, location_id: string)`: return the weekly demand and baseline forecast comparison plus the current run's effective plan for one series.
-- `forecast_start(revision_id: number)`: queue a Naive run pinned to an immutable revision and return its initial `JobInfo`.
+- `forecast_start(revision_id: number, imputation: string | null)`: queue a run pinned to an immutable revision and return its initial `JobInfo`. `imputation` is `last`, `last_seasonal_52`, `mean_4`, or `null`; it fills missing weeks in the run's model input only (ADR-0023) and neither the stored history nor the exports change.
 - `job_status(job_id: string)`: return progress, terminal error, and import/forecast result.
 - `job_cancel(job_id: string)`: request cancellation; never cancel a committed transaction retroactively.
 - `jobs_list()`: return recent jobs, including terminal jobs recovered from SQLite.

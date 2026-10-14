@@ -81,6 +81,7 @@ async fn forecast(workspace: &Workspace, revision_id: i32) -> String {
     run_forecast(
         workspace,
         revision_id,
+        None,
         "weekly-test",
         Arc::new(AtomicBool::new(false)),
         Arc::new(|_, _| {}),

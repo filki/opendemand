@@ -28,6 +28,7 @@ async fn canonical_csv_reaches_real_python_engine_and_persisted_chart_payload() 
     let result = run_forecast(
         &workspace,
         imported.revision_id,
+        None,
         "integration-job",
         Arc::new(AtomicBool::new(false)),
         Arc::new(|_, _| {}),
@@ -115,6 +116,7 @@ async fn multimodel_forecast_selects_comparable_champions_and_keeps_evidence() {
     let result = run_forecast(
         &workspace,
         imported.revision_id,
+        None,
         "multimodel-job",
         Arc::new(AtomicBool::new(false)),
         Arc::new(|_, _| {}),
@@ -336,6 +338,7 @@ async fn multimodel_forecast_selects_comparable_champions_and_keeps_evidence() {
     let second = run_forecast(
         &workspace,
         imported.revision_id,
+        None,
         "multimodel-job-2",
         Arc::new(AtomicBool::new(false)),
         Arc::new(|_, _| {}),
@@ -408,6 +411,7 @@ async fn cancelling_before_engine_start_does_not_persist_a_partial_run() {
     let error = run_forecast(
         &workspace,
         imported.revision_id,
+        None,
         "cancelled-job",
         Arc::new(AtomicBool::new(true)),
         Arc::new(|_, _| {}),
@@ -440,6 +444,7 @@ async fn cancelling_a_running_engine_does_not_persist_a_partial_run() {
     let error = run_forecast(
         &workspace,
         imported.revision_id,
+        None,
         "running-cancel-job",
         cancel,
         // Cancel on the first progress callback, before the engine finishes:

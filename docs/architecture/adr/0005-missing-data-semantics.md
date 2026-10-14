@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-10-13
-**Extended by:** [ADR-0013](0013-canonical-import-and-mapping-idempotency.md) — `canonical/1` derives `known`/`zero`/`return` from numeric quantities; [ADR-0014](0014-manual-only-overrides.md) — a cleared override without a baseline yields `missing`.
+**Extended by:** [ADR-0013](0013-canonical-import-and-mapping-idempotency.md) — `canonical/1` derives `known`/`zero`/`return` from numeric quantities; [ADR-0014](0014-manual-only-overrides.md) — a cleared override without a baseline yields `missing`; [ADR-0023](0023-model-input-imputation.md) — run-scoped, non-persisted imputation of model input leaves stored missing-data semantics unchanged.
 
 ## Context
 
