@@ -20,6 +20,7 @@
 		fetchRunsList,
 		fetchSeriesDetail,
 		fetchSeriesList,
+		fetchSeriesModels,
 		fetchWorkspaceInfo,
 		isTauriRuntime,
 		openWorkspace,
@@ -130,6 +131,23 @@
 		retry: 0
 	}));
 
+	const modelsQuery = createQuery(() => ({
+		queryKey: [
+			'series-models',
+			workspace?.path,
+			displayRunId,
+			selectedSeries?.productId ?? null,
+			selectedSeries?.locationId ?? null
+		],
+		queryFn: () => {
+			const selection = selectedSeries;
+			if (selection === null || displayRunId === null) throw new Error('No series selected');
+			return fetchSeriesModels(displayRunId, selection.productId, selection.locationId);
+		},
+		enabled: desktop && displayRunId !== null && selectedSeries !== null,
+		retry: 0
+	}));
+
 	const jobQuery = createQuery(() => ({
 		queryKey: ['job', workspace?.path, activeJobId],
 		queryFn: () => fetchJobStatus(activeJobId as string),
@@ -237,6 +255,7 @@
 			queryClient.invalidateQueries({ queryKey: ['workspace'] }),
 			queryClient.invalidateQueries({ queryKey: ['runs'] }),
 			queryClient.invalidateQueries({ queryKey: ['series'] }),
+			queryClient.invalidateQueries({ queryKey: ['series-models'] }),
 			queryClient.invalidateQueries({ queryKey: ['jobs'] })
 		]);
 	}
@@ -542,7 +561,13 @@
 						error={detailQuery.isError
 							? { code: queryErrorCode(detailQuery.error), message: detailQuery.error.message }
 							: null}
+						models={modelsQuery.data ?? null}
+						modelsLoading={modelsQuery.isFetching}
+						modelsError={modelsQuery.isError
+							? { code: queryErrorCode(modelsQuery.error), message: modelsQuery.error.message }
+							: null}
 						onRetry={() => void detailQuery.refetch()}
+						onRetryModels={() => void modelsQuery.refetch()}
 						onSave={handleSaveOverride}
 						onRefresh={refreshDetail}
 						onDirtyChange={(dirty) => {

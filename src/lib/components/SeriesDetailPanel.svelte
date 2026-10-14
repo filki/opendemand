@@ -1,6 +1,14 @@
 <script lang="ts">
-	import type { OverrideEdit, OverrideRevision, RunSummary, SeriesDetail, SeriesSummary } from '#lib/bindings.ts';
+	import type {
+		OverrideEdit,
+		OverrideRevision,
+		RunSummary,
+		SeriesDetail,
+		SeriesModelComparison,
+		SeriesSummary
+	} from '#lib/bindings.ts';
 	import ForecastEditor from '#lib/components/ForecastEditor.svelte';
+	import ModelComparison from '#lib/components/ModelComparison.svelte';
 	import SeriesChart from '#lib/components/SeriesChart.svelte';
 	import StatusChip from '#lib/components/StatusChip.svelte';
 	import {
@@ -18,7 +26,11 @@
 		run,
 		loading,
 		error,
+		models,
+		modelsLoading,
+		modelsError,
 		onRetry,
+		onRetryModels,
 		onSave,
 		onRefresh,
 		onDirtyChange
@@ -28,7 +40,11 @@
 		run: RunSummary | null;
 		loading: boolean;
 		error: { code: string; message: string } | null;
+		models: SeriesModelComparison[] | null;
+		modelsLoading: boolean;
+		modelsError: { code: string; message: string } | null;
 		onRetry: () => void;
+		onRetryModels: () => void;
 		onSave: (edit: OverrideEdit) => Promise<OverrideRevision>;
 		onRefresh: () => Promise<SeriesDetail>;
 		onDirtyChange: (dirty: boolean) => void;
@@ -163,6 +179,15 @@
 
 		{#if detail.reason}
 			<p class="banner banner-warn reason">Reason: {detail.reason}</p>
+		{/if}
+
+		{#if detail.run_id}
+			<ModelComparison
+				{models}
+				loading={modelsLoading}
+				error={modelsError}
+				onRetry={onRetryModels}
+			/>
 		{/if}
 
 		<SeriesChart seriesKey={seriesKey} history={detail.history} forecast={detail.forecast} planning={detail.planning} />

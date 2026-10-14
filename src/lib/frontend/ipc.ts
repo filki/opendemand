@@ -14,6 +14,7 @@ import type {
 	OverrideRevision,
 	RunSummary,
 	SeriesDetail,
+	SeriesModelComparison,
 	SeriesSummary,
 	WorkspaceInfo
 } from '#lib/bindings.ts';
@@ -108,6 +109,14 @@ export async function fetchSeriesDetail(
 	runId: string | null
 ): Promise<SeriesDetail> {
 	return unwrap(await commands.seriesDetail(revisionId, productId, locationId, runId));
+}
+
+export async function fetchSeriesModels(
+	runId: string,
+	productId: string,
+	locationId: string
+): Promise<SeriesModelComparison[]> {
+	return unwrap(await commands.seriesModels(runId, productId, locationId));
 }
 
 export async function fetchRunsList(revisionId: number | null): Promise<RunSummary[]> {
