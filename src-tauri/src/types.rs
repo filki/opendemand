@@ -8,6 +8,9 @@ pub struct WorkspaceInfo {
     pub path: String,
     pub schema_version: String,
     pub latest_revision_id: Option<i32>,
+    /// Workspace locale from `workspace_settings`; the guided import copy
+    /// follows it (en, pl, es).
+    pub locale: String,
     pub recovery_issues: Vec<String>,
 }
 

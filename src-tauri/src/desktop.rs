@@ -1,6 +1,7 @@
 use crate::{
     error::{AppError, AppResult},
     forecast::run_forecast,
+    preprocess::ParsingDescriptor,
     types::*,
     workspace::Workspace,
 };
@@ -10,7 +11,7 @@ use specta::Type;
 use sqlx::Row;
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -253,6 +254,7 @@ async fn queue_job(
     app: AppHandle,
     kind: &str,
     source: Option<PathBuf>,
+    descriptor: Option<ParsingDescriptor>,
     revision: Option<i32>,
 ) -> AppResult<JobInfo> {
     let workspace_guard = state.workspace.lock().await;
@@ -321,10 +323,14 @@ async fn queue_job(
             tokio::spawn(async move {
                 if kind == "import" {
                     publish(&progress_app, &progress_jobs, &job_id, "importing", 0.1);
-                    job_workspace
-                        .import_csv(&source.unwrap(), &cancel)
-                        .await
-                        .map(JobResult::Import)
+                    let path = source.unwrap();
+                    let result = match descriptor {
+                        Some(descriptor) => {
+                            job_workspace.import_raw(&path, &descriptor, &cancel).await
+                        }
+                        None => job_workspace.import_csv(&path, &cancel).await,
+                    };
+                    result.map(JobResult::Import)
                 } else {
                     let progress_id = job_id.clone();
                     let progress = Arc::new(move |phase: &str, value| {
@@ -398,10 +404,53 @@ async fn queue_job(
 #[specta::specta]
 async fn import_start(
     path: String,
+    descriptor: Option<ParsingDescriptor>,
     app: AppHandle,
     state: State<'_, Service>,
 ) -> AppResult<JobInfo> {
-    queue_job(&state, app, "import", Some(path.into()), None).await
+    queue_job(&state, app, "import", Some(path.into()), descriptor, None).await
+}
+
+/// Detect the shape of a raw export and preview sampled parsed cells. The
+/// wizard runs inside an open workspace, but this read-only pass never opens
+/// the database.
+#[tauri::command]
+#[specta::specta]
+async fn import_preview(
+    path: String,
+    descriptor: Option<crate::preprocess::ParsingDescriptor>,
+    state: State<'_, Service>,
+) -> AppResult<crate::preprocess::ImportPreview> {
+    state.current().await?;
+    crate::preprocess::preview(Path::new(&path), descriptor.as_ref())
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn import_configs_list(
+    state: State<'_, Service>,
+) -> AppResult<Vec<crate::preprocess::ImportConfig>> {
+    state.current().await?.list_import_configs().await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn import_config_save(
+    name: String,
+    descriptor: crate::preprocess::ParsingDescriptor,
+    state: State<'_, Service>,
+) -> AppResult<crate::preprocess::ImportConfig> {
+    state
+        .current()
+        .await?
+        .save_import_config(&name, &descriptor)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn import_config_delete(id: i32, state: State<'_, Service>) -> AppResult<()> {
+    state.current().await?.delete_import_config(id).await
 }
 
 #[tauri::command]
@@ -417,7 +466,7 @@ async fn forecast_start(
             "Select a committed import revision.",
         ));
     }
-    queue_job(&state, app, "forecast", None, Some(revision_id)).await
+    queue_job(&state, app, "forecast", None, None, Some(revision_id)).await
 }
 
 fn saved_job(row: sqlx::sqlite::SqliteRow) -> JobInfo {
@@ -507,6 +556,10 @@ fn command_builder() -> Builder<tauri::Wry> {
             workspace_open,
             workspace_info,
             import_start,
+            import_preview,
+            import_configs_list,
+            import_config_save,
+            import_config_delete,
             forecast_start,
             job_status,
             job_cancel,

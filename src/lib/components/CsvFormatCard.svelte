@@ -1,5 +1,9 @@
 <script lang="ts">
-	let { onImport }: { onImport?: () => void } = $props();
+	let {
+		onImport,
+		onGuidedImport,
+		guidedLabel
+	}: { onImport?: () => void; onGuidedImport?: () => void; guidedLabel?: string } = $props();
 </script>
 
 <section class="panel card" aria-labelledby="csv-format-heading">
@@ -27,13 +31,33 @@
 		imported week, not today's date.
 	</p>
 	{#if onImport}
-		<button class="btn btn-primary" onclick={onImport}>Import CSV…</button>
+		<div class="row">
+			<button class="btn btn-primary" onclick={onImport}>Import CSV…</button>
+			{#if onGuidedImport}
+				<button class="btn btn-secondary" onclick={onGuidedImport}>
+					{guidedLabel ?? 'Guided import…'}
+				</button>
+			{/if}
+		</div>
+	{/if}
+	{#if onGuidedImport}
+		<p class="muted">
+			The guided import converts a raw SAP, Subiekt, Comarch, or Excel export: pick the file, map
+			the columns, check the preview, and import. Nothing is written until you confirm.
+		</p>
 	{/if}
 </section>
 
 <style>
 	.card {
 		padding: 1.2rem 1.4rem;
+	}
+
+	.row {
+		display: flex;
+		align-items: center;
+		gap: 0.8rem;
+		flex-wrap: wrap;
 	}
 
 	pre {

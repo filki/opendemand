@@ -92,9 +92,9 @@ Modeling input is the net weekly quantity from numeric statuses; NaN values are 
 
 ## 6. Import Protocol (file-before-row, idempotent)
 
-Input contract is `canonical/1`: `series_key`, `week_start` (ISO Monday), `quantity` (finite, non-null). The importer never guesses: `content_hash` is the SHA-256 of the raw retained bytes, and `contract_version` qualifies the parsing semantics of those bytes. A future preprocessing layer may convert arbitrary planner files into `canonical/1` without changing the engine contract (ADR-0013; canonical CSV details in `contracts/TAURI_IPC.md`).
+Input contract is `canonical/1`: `series_key`, `week_start` (ISO Monday), `quantity` (finite, non-null). The importer never guesses: `content_hash` is the SHA-256 of the raw retained bytes, and `contract_version` qualifies the parsing semantics of those bytes — `canonical/1` for a direct canonical CSV, `preprocess/1` for a revision produced by the preprocessing layer (ADR-0019). The preprocessing layer converts arbitrary planner files into the `canonical/1` observation shape without changing the engine contract, and its parsing descriptor joins the effective mapping plan in the fingerprint (ADR-0020; canonical CSV details in `contracts/TAURI_IPC.md`).
 
-1. Validate encoding (UTF-8) and header; compute the raw-bytes SHA-256; parse rows and build the complete mapping plan (exact identity mappings for new `series_key`s; fixed technical default location). Identical duplicate rows are collapsed (info issue); conflicting duplicates are excluded (error issue).
+1. Validate the input: a canonical CSV checks UTF-8 and the exact header; a raw export is decoded per its descriptor, its header row and column bindings are resolved, document rows are summed into Monday weeks, and a blocking problem fails the job. Compute the raw-bytes SHA-256 and build the complete mapping plan (exact identity mappings for new `series_key`s; fixed technical default location; descriptor digest for preprocessed imports). Identical duplicate rows are collapsed (info issue); conflicting duplicates are excluded (error issue).
 2. Check idempotency before retaining another file: same `(profile_id, content_hash, mapping_fingerprint, contract_version)` is a no-op returning the existing committed revision.
 3. Copy to a workspace staging file while computing SHA-256; flush and fsync the staged file.
 4. Begin the serialized SQLite transaction, allocate the revision id, and insert the proposed rows.
@@ -104,7 +104,7 @@ Input contract is `canonical/1`: `series_key`, `week_start` (ISO Monday), `quant
 
 Crash safety: a crash before commit may leave an orphan file but can never leave a committed revision referencing a file that was not made durable. Startup reconciliation detects stale staging files, orphan final files, missing committed files, and hash mismatches; recoverable artifacts move to a recovery/quarantine area and are reported, never silently deleted (ADR-0015).
 
-Failed attempts live in `job`; `import_revision` represents committed snapshots only and never blocks a retry. Same content plus a changed mapping fingerprint creates a new immutable revision.
+Failed attempts live in `job`; `import_revision` represents committed snapshots only and never blocks a retry. Same content plus a changed mapping fingerprint creates a new immutable revision. A preprocessed revision also stores the frozen parsing descriptor (`descriptor_json`, migration 002), so editing or deleting a saved configuration cannot change how a committed revision is explained (ADR-0021).
 
 Retention: revisions and their CSV copies are never auto-deleted; storage is managed through visibility and explicit user action only.
 

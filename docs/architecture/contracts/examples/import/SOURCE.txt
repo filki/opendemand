@@ -1,0 +1,23 @@
+Example import files for the raw-source import preprocessing feature.
+Derived from the UCI "Online Retail" dataset: real transactions of a
+UK-based online retailer, 2010-12-01 to 2011-12-09.
+
+Source: Chen, D. (2015). Online Retail [Dataset]. UCI Machine Learning
+Repository. https://doi.org/10.24432/C5BW33 (CC BY 4.0)
+Downloaded: 2026-10-14
+
+All three files carry the same 101 real transaction lines
+(2011-11-21 to 2011-12-09, 8 stock codes, 11 return lines with negative
+quantities), exported in three system-shaped variants:
+
+- subiekt-sprzedaz.csv: Windows-1250, semicolon-delimited, Polish headers,
+  DD.MM.YYYY dates, decimal comma in the value column (Subiekt GT-like).
+- excel-raport-sprzedazy.xlsx: title row and one blank row above the
+  header, real Excel date cells (Excel report-like).
+- sap-materialbewegungen.csv: BUDAT (YYYYMMDD), WERKS, MATNR, MAKTX,
+  MENGE, MEINS (SAP material movement-like).
+
+Derivations (not present in the source data):
+- WERKS is synthetic: 1000 for United Kingdom rows, 2000 for all other
+  countries.
+- "Wartosc netto" is Quantity x UnitPrice.

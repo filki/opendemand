@@ -10,6 +10,7 @@
 
 use crate::{
     error::{AppError, AppResult},
+    preprocess::{self, descriptor_json, ImportConfig, ParsingDescriptor},
     selection,
     types::{
         ExportResult, ForecastInput, ForecastPoint, HistoryPoint, ImportResult, InputSeries,
@@ -43,15 +44,23 @@ use uuid::Uuid;
 /// SQLx is what `open` verifies against.
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../docs/architecture/schema");
 
-const SCHEMA_VERSION: i64 = 1;
-const SCHEMA_VERSION_TEXT: &str = "1";
+const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION_TEXT: &str = "2";
 const CONTRACT_VERSION: &str = "canonical/1";
+/// Contract version of revisions produced by the preprocessing layer.
+const PREPROCESS_CONTRACT: &str = "preprocess/1";
 const DEFAULT_PROFILE_NAME: &str = "canonical/1";
 const DEFAULT_LOCATION_CODE: &str = "__default__";
 const DEFAULT_TIMEZONE: &str = "UTC";
 const DEFAULT_LOCALE: &str = "en";
 const DB_FILENAME: &str = "workspace.sqlite3";
 const SOURCE_FILENAME: &str = "source.csv";
+/// Directory holding verified pre-migration backups inside the workspace.
+const BACKUP_DIRECTORY: &str = "backups";
+/// How many pre-migration backup pairs (database + manifest) to keep.
+const PRE_MIGRATION_BACKUPS_KEPT: usize = 3;
+/// Upper bound on the length of a saved configuration name.
+const MAX_CONFIG_NAME_CHARS: usize = 200;
 const LIST_LIMIT_MAX: u32 = 200;
 /// Upper bound on the number of dense weekly points materialised for a single
 /// series, protecting memory against a corrupted or absurd date span.
@@ -136,7 +145,9 @@ impl Workspace {
         } else {
             std::fs::create_dir_all(&path)?;
         }
-        for directory in ["staging", "sources", "recovery", "jobs", "exports"] {
+        for directory in [
+            "staging", "sources", "recovery", "jobs", "exports", "backups",
+        ] {
             std::fs::create_dir_all(path.join(directory))?;
         }
 
@@ -199,8 +210,9 @@ impl Workspace {
     }
 
     /// Open an existing workspace, verifying the schema and reconciling retained
-    /// files. A non-empty, newer, or unversioned database is rejected instead of
-    /// being migrated in place.
+    /// files. A workspace from an older build is migrated only after a verified
+    /// pre-migration backup (ADR-0008); a non-empty, newer, or unversioned
+    /// database is rejected instead of being migrated in place.
     pub async fn open(path: PathBuf) -> AppResult<Self> {
         let database = path.join(DB_FILENAME);
         if !database.exists() {
@@ -210,6 +222,11 @@ impl Workspace {
             ));
         }
         let pool = connect(&database, false).await?;
+        if let Some(version) = schema_version(&pool).await? {
+            if version < SCHEMA_VERSION {
+                upgrade_schema(&path, &pool, version).await?;
+            }
+        }
         verify_schema(&pool).await?;
         mark_interrupted_jobs(&pool).await?;
         let issues = reconcile(&pool, &path).await?;
@@ -221,13 +238,15 @@ impl Workspace {
         })
     }
 
-    /// Return the workspace path, schema version, latest revision, and recovery
-    /// findings detected when the workspace was opened.
+    /// Return the workspace path, schema version, latest revision, locale, and
+    /// recovery findings detected when the workspace was opened.
     pub async fn info(&self) -> AppResult<WorkspaceInfo> {
-        let schema_version: String =
-            sqlx::query_scalar("SELECT schema_version FROM workspace_settings WHERE id = 1")
+        let settings =
+            sqlx::query("SELECT schema_version, locale FROM workspace_settings WHERE id = 1")
                 .fetch_one(&self.pool)
                 .await?;
+        let schema_version: String = settings.get("schema_version");
+        let locale: String = settings.get("locale");
         let latest_revision_id: Option<i32> =
             sqlx::query_scalar("SELECT MAX(id) FROM import_revision")
                 .fetch_one(&self.pool)
@@ -241,6 +260,7 @@ impl Workspace {
             path: self.path.display().to_string(),
             schema_version,
             latest_revision_id,
+            locale,
             recovery_issues,
         })
     }
@@ -264,12 +284,156 @@ impl Workspace {
         }
         let parsed = parse_canonical(&bytes, cancel)?;
         let content_hash = hex(&Sha256::digest(&bytes));
-        let source_filename = source
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| SOURCE_FILENAME.to_string());
+        let source_filename = source_filename(source);
+        self.commit_parsed(
+            &bytes,
+            &content_hash,
+            &source_filename,
+            CommitSpec {
+                contract_version: CONTRACT_VERSION,
+                descriptor: None,
+                retained_name: SOURCE_FILENAME,
+            },
+            parsed,
+            cancel,
+        )
+        .await
+    }
 
+    /// Import a raw planner export through the preprocessing layer.
+    ///
+    /// The retained bytes stay untouched; the parsing descriptor is part of the
+    /// effective mapping plan, so the same bytes under a different descriptor
+    /// create a new immutable revision.
+    pub async fn import_raw(
+        &self,
+        source: &Path,
+        descriptor: &ParsingDescriptor,
+        cancel: &AtomicBool,
+    ) -> AppResult<ImportResult> {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(cancelled_import());
+        }
+        let extension = preprocess::retained_extension(source)?;
+        let bytes = std::fs::read(source)?;
+        if bytes.is_empty() {
+            return Err(err(
+                "empty_file",
+                "The import file is empty; expected a header row.",
+            ));
+        }
+        let parsed = preprocess::parse_raw(&bytes, &extension, descriptor, cancel)?;
+        let content_hash = hex(&Sha256::digest(&bytes));
+        let source_filename = source_filename(source);
+        let retained_name = format!("source.{extension}");
+        self.commit_parsed(
+            &bytes,
+            &content_hash,
+            &source_filename,
+            CommitSpec {
+                contract_version: PREPROCESS_CONTRACT,
+                descriptor: Some(descriptor),
+                retained_name: &retained_name,
+            },
+            parsed,
+            cancel,
+        )
+        .await
+    }
+
+    /// List the saved import configurations of the active profile by name.
+    pub async fn list_import_configs(&self) -> AppResult<Vec<ImportConfig>> {
+        let profile_id = active_profile_id(&self.pool).await?;
+        let rows = sqlx::query(
+            "SELECT id, name, descriptor_json, updated_at FROM import_config
+             WHERE profile_id = ? ORDER BY name",
+        )
+        .bind(profile_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut configs = Vec::new();
+        for row in &rows {
+            configs.push(import_config_from_row(row)?);
+        }
+        Ok(configs)
+    }
+
+    /// Save a named descriptor. Saving an existing name updates that row in
+    /// place; revisions already committed keep their frozen snapshot.
+    pub async fn save_import_config(
+        &self,
+        name: &str,
+        descriptor: &ParsingDescriptor,
+    ) -> AppResult<ImportConfig> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > MAX_CONFIG_NAME_CHARS {
+            return Err(err(
+                "invalid_config",
+                format!("The configuration name must be 1 to {MAX_CONFIG_NAME_CHARS} characters."),
+            ));
+        }
+        let serialized = descriptor_json(descriptor).map_err(|_| {
+            err(
+                "contract_violation",
+                "The parsing descriptor could not be serialized.",
+            )
+        })?;
+        let _guard = self.writer.lock().await;
+        let profile_id = active_profile_id(&self.pool).await?;
+        let timestamp = now_iso();
+        sqlx::query(
+            "INSERT INTO import_config (profile_id, name, descriptor_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (profile_id, name) DO UPDATE SET
+                 descriptor_json = excluded.descriptor_json,
+                 updated_at = excluded.updated_at",
+        )
+        .bind(profile_id)
+        .bind(name)
+        .bind(serialized.as_str())
+        .bind(timestamp.as_str())
+        .bind(timestamp.as_str())
+        .execute(&self.pool)
+        .await?;
+        let row = sqlx::query(
+            "SELECT id, name, descriptor_json, updated_at FROM import_config
+             WHERE profile_id = ? AND name = ?",
+        )
+        .bind(profile_id)
+        .bind(name)
+        .fetch_one(&self.pool)
+        .await?;
+        import_config_from_row(&row)
+    }
+
+    /// Delete a saved configuration. Revisions keep their own snapshot.
+    pub async fn delete_import_config(&self, id: i32) -> AppResult<()> {
+        let _guard = self.writer.lock().await;
+        let deleted = sqlx::query("DELETE FROM import_config WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(err(
+                "config_not_found",
+                "No saved import configuration has this id.",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Commit a parsed import: map identities, compute the fingerprint, check
+    /// idempotency, stage the retained file, and persist one revision in a
+    /// single serialized transaction.
+    async fn commit_parsed(
+        &self,
+        bytes: &[u8],
+        content_hash: &str,
+        source_filename: &str,
+        spec: CommitSpec<'_>,
+        parsed: ParsedImport,
+        cancel: &AtomicBool,
+    ) -> AppResult<ImportResult> {
         let _guard = self.writer.lock().await;
         if cancel.load(Ordering::SeqCst) {
             return Err(cancelled_import());
@@ -339,15 +503,20 @@ impl Workspace {
             new_products.push((key.clone(), id, create_row));
         }
 
-        let fingerprint = mapping_fingerprint(CONTRACT_VERSION, &mapped, &location_rows);
+        let fingerprint = mapping_fingerprint(
+            spec.contract_version,
+            &mapped,
+            &location_rows,
+            spec.descriptor,
+        )?;
 
         let existing_revision: Option<i32> = sqlx::query_scalar(
             "SELECT id FROM import_revision WHERE profile_id = ? AND content_hash = ? AND mapping_fingerprint = ? AND contract_version = ?",
         )
         .bind(profile_id)
-        .bind(content_hash.as_str())
+        .bind(content_hash)
         .bind(fingerprint.as_str())
-        .bind(CONTRACT_VERSION)
+        .bind(spec.contract_version)
         .fetch_optional(&self.pool)
         .await?;
         if let Some(revision_id) = existing_revision {
@@ -365,7 +534,7 @@ impl Workspace {
         let issue_count = parsed.issues.len() as i64;
         let row_count = parsed.row_count as i64;
 
-        let staged = stage_file(&self.path, &bytes)?;
+        let staged = stage_file(&self.path, bytes)?;
         if cancel.load(Ordering::SeqCst) {
             let _ = std::fs::remove_file(&staged);
             return Err(cancelled_import());
@@ -375,20 +544,30 @@ impl Workspace {
         }
 
         let timestamp = now_iso();
+        let descriptor_snapshot = match spec.descriptor {
+            Some(descriptor) => Some(descriptor_json(descriptor).map_err(|_| {
+                err(
+                    "contract_violation",
+                    "The parsing descriptor could not be serialized.",
+                )
+            })?),
+            None => None,
+        };
         let mut transaction = self.pool.begin().await?;
         let inserted = sqlx::query(
-            "INSERT INTO import_revision (profile_id, content_hash, mapping_fingerprint, contract_version, source_filename, imported_at, row_count, observation_count, issue_count)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO import_revision (profile_id, content_hash, mapping_fingerprint, contract_version, source_filename, imported_at, row_count, observation_count, issue_count, descriptor_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(profile_id)
-        .bind(content_hash.as_str())
+        .bind(content_hash)
         .bind(fingerprint.as_str())
-        .bind(CONTRACT_VERSION)
-        .bind(source_filename.as_str())
+        .bind(spec.contract_version)
+        .bind(source_filename)
         .bind(timestamp.as_str())
         .bind(row_count)
         .bind(observation_count)
         .bind(issue_count)
+        .bind(descriptor_snapshot)
         .execute(&mut *transaction)
         .await?;
         let revision_id = inserted.last_insert_rowid();
@@ -485,7 +664,7 @@ impl Workspace {
         let sources = self.path.join("sources");
         let revision_directory = sources.join(revision_id.to_string());
         std::fs::create_dir_all(&revision_directory)?;
-        let target = revision_directory.join(SOURCE_FILENAME);
+        let target = revision_directory.join(spec.retained_name);
         if target.exists() {
             return Err(err(
                 "source_conflict",
@@ -496,11 +675,11 @@ impl Workspace {
         fsync_dir(&revision_directory);
         fsync_dir(&sources);
 
-        let relative_path = format!("sources/{revision_id}/{SOURCE_FILENAME}");
+        let relative_path = format!("sources/{revision_id}/{}", spec.retained_name);
         sqlx::query("INSERT INTO source_file (revision_id, relative_path, sha256, byte_size) VALUES (?, ?, ?, ?)")
             .bind(revision_id)
             .bind(relative_path.as_str())
-            .bind(content_hash.as_str())
+            .bind(content_hash)
             .bind(bytes.len() as i64)
             .execute(&mut *transaction)
             .await?;
@@ -1344,6 +1523,173 @@ async fn connect(database: &Path, create: bool) -> AppResult<SqlitePool> {
     Ok(pool)
 }
 
+/// The stored schema version, or `None` when the database is not a versioned
+/// workspace (no settings table or no settings row).
+async fn schema_version(pool: &SqlitePool) -> AppResult<Option<i64>> {
+    let version: Option<String> =
+        match sqlx::query_scalar("SELECT schema_version FROM workspace_settings WHERE id = 1")
+            .fetch_optional(pool)
+            .await
+        {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+    Ok(version.and_then(|value| value.parse().ok()))
+}
+
+/// Migrate an older workspace to this build: verified pre-migration backup
+/// first, then the pending migrations, then the settings version bump. A
+/// workspace is never migrated without the backup (ADR-0008).
+async fn upgrade_schema(root: &Path, pool: &SqlitePool, from: i64) -> AppResult<()> {
+    let backup = backup_before_migration(root, pool, from, SCHEMA_VERSION).await?;
+    MIGRATOR.run(pool).await.map_err(|error| {
+        err(
+            "migration_failed",
+            format!(
+                "The workspace schema upgrade from version {from} failed: {error}. The verified backup is kept at {}.",
+                backup.display()
+            ),
+        )
+    })?;
+    sqlx::query("UPDATE workspace_settings SET schema_version = ?, updated_at = ? WHERE id = 1")
+        .bind(SCHEMA_VERSION_TEXT)
+        .bind(now_iso())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Create and verify the pre-migration backup pair (database plus manifest).
+///
+/// The snapshot uses `VACUUM INTO` under the single-writer invariant: no job
+/// runs while a workspace is being opened. Verification opens the copy
+/// read-only, runs `integrity_check`, and confirms the schema version, so a
+/// backup that cannot be validated aborts the migration.
+async fn backup_before_migration(
+    root: &Path,
+    pool: &SqlitePool,
+    from: i64,
+    to: i64,
+) -> AppResult<PathBuf> {
+    let directory = root.join(BACKUP_DIRECTORY);
+    std::fs::create_dir_all(&directory).map_err(|error| {
+        err(
+            "backup_failed",
+            format!(
+                "The pre-migration backup directory could not be prepared ({error}). The workspace was not migrated."
+            ),
+        )
+    })?;
+    let stamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let file_name = format!("pre-migration-v{from}-to-v{to}-{stamp}.sqlite3");
+    let target = directory.join(&file_name);
+    // The destination is a bound expression, so the statement stays static.
+    sqlx::query("VACUUM INTO ?")
+        .bind(target.display().to_string())
+        .execute(pool)
+        .await
+        .map_err(|error| {
+            err(
+                "backup_failed",
+                format!("The pre-migration backup could not be created ({error}). The workspace was not migrated."),
+            )
+        })?;
+
+    verify_backup_file(&target, from).await?;
+
+    let bytes = std::fs::read(&target)?;
+    let sha256 = hex(&Sha256::digest(&bytes));
+    let manifest = serde_json::json!({
+        "scope": "database",
+        "file": file_name,
+        "sha256": sha256,
+        "byte_size": bytes.len(),
+        "schema_version_before": from.to_string(),
+        "schema_version_after": to.to_string(),
+        "app_version": env!("CARGO_PKG_VERSION"),
+        "created_at": now_iso(),
+    });
+    std::fs::write(
+        directory.join(format!("{file_name}.manifest.json")),
+        serde_json::to_string_pretty(&manifest)?,
+    )?;
+    fsync_dir(&directory);
+    prune_pre_migration_backups(&directory);
+    Ok(target)
+}
+
+/// Open a backup read-only and prove it is intact and at the expected version.
+async fn verify_backup_file(target: &Path, expected_version: i64) -> AppResult<()> {
+    let options = SqliteConnectOptions::new()
+        .filename(target)
+        .read_only(true)
+        .busy_timeout(Duration::from_millis(5_000));
+    let copy = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .map_err(|error| {
+            err(
+                "backup_failed",
+                format!("The pre-migration backup could not be opened for verification ({error}). The workspace was not migrated."),
+            )
+        })?;
+    let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
+        .fetch_one(&copy)
+        .await
+        .map_err(|error| {
+            err(
+                "backup_failed",
+                format!("The pre-migration backup failed its integrity check ({error}). The workspace was not migrated."),
+            )
+        })?;
+    let version: Option<String> =
+        sqlx::query_scalar("SELECT schema_version FROM workspace_settings WHERE id = 1")
+            .fetch_optional(&copy)
+            .await
+            .map_err(|error| {
+                err(
+                    "backup_failed",
+                    format!("The pre-migration backup could not be read back ({error}). The workspace was not migrated."),
+                )
+            })?;
+    copy.close().await;
+    if integrity != "ok" {
+        return Err(err(
+            "backup_failed",
+            "The pre-migration backup failed its integrity check. The workspace was not migrated.",
+        ));
+    }
+    if version.as_deref() != Some(expected_version.to_string().as_str()) {
+        return Err(err(
+            "backup_failed",
+            format!("The pre-migration backup is not at schema version {expected_version}. The workspace was not migrated."),
+        ));
+    }
+    Ok(())
+}
+
+/// Keep only the newest pre-migration backup pairs; pruning covers backup
+/// files only and never touches workspace data (ADR-0009).
+fn prune_pre_migration_backups(directory: &Path) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with("pre-migration-") && name.ends_with(".sqlite3"))
+        .collect();
+    names.sort();
+    if names.len() <= PRE_MIGRATION_BACKUPS_KEPT {
+        return;
+    }
+    for name in &names[..names.len() - PRE_MIGRATION_BACKUPS_KEPT] {
+        let _ = std::fs::remove_file(directory.join(name));
+        let _ = std::fs::remove_file(directory.join(format!("{name}.manifest.json")));
+    }
+}
+
 async fn verify_schema(pool: &SqlitePool) -> AppResult<()> {
     let version: Option<String> =
         sqlx::query_scalar("SELECT schema_version FROM workspace_settings WHERE id = 1")
@@ -1376,32 +1722,33 @@ async fn verify_schema(pool: &SqlitePool) -> AppResult<()> {
         ));
     }
 
-    let stored: Option<Vec<u8>> =
-        sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = 1")
-            .fetch_optional(pool)
-            .await
-            .map_err(|_| {
-                err(
-                    "needs_verified_backup",
-                    "The workspace migration record is missing or unreadable. Restore from a verified backup before opening.",
-                )
-            })?;
-    let stored = stored.ok_or_else(|| {
-        err(
-            "needs_verified_backup",
-            "The workspace is missing its migration 001 record. Restore from a verified backup before opening.",
-        )
-    })?;
-    let expected = MIGRATOR
-        .iter()
-        .find(|migration| migration.version == 1)
-        .map(|migration| migration.checksum.to_vec())
-        .ok_or_else(|| err("unsupported_schema", "This build embeds no migration 001."))?;
-    if stored != expected {
-        return Err(err(
-            "needs_verified_backup",
-            "The workspace schema fingerprint does not match this application build. Restore from a verified backup before opening.",
-        ));
+    for migration in MIGRATOR.iter() {
+        let stored: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = ?")
+                .bind(migration.version)
+                .fetch_optional(pool)
+                .await
+                .map_err(|_| {
+                    err(
+                        "needs_verified_backup",
+                        "The workspace migration record is missing or unreadable. Restore from a verified backup before opening.",
+                    )
+                })?;
+        let stored = stored.ok_or_else(|| {
+            err(
+                "needs_verified_backup",
+                format!(
+                    "The workspace is missing its migration {:03} record. Restore from a verified backup before opening.",
+                    migration.version
+                ),
+            )
+        })?;
+        if stored != migration.checksum.to_vec() {
+            return Err(err(
+                "needs_verified_backup",
+                "The workspace schema fingerprint does not match this application build. Restore from a verified backup before opening.",
+            ));
+        }
     }
     Ok(())
 }
@@ -1529,20 +1876,73 @@ fn move_to_recovery(source: &Path, recovery: &Path) -> std::io::Result<()> {
 // Canonical CSV parsing
 // ---------------------------------------------------------------------------
 
-struct ParsedImport {
-    row_count: usize,
-    cutoff: NaiveDate,
-    series_keys: BTreeSet<String>,
-    /// Included, deduplicated numeric cells keyed by series then week.
-    series: BTreeMap<String, BTreeMap<NaiveDate, (f64, &'static str)>>,
-    issues: Vec<ParsedIssue>,
+pub(crate) struct ParsedImport {
+    pub(crate) row_count: usize,
+    pub(crate) cutoff: NaiveDate,
+    pub(crate) series_keys: BTreeSet<String>,
+    /// Included, aggregated numeric cells keyed by series then week.
+    pub(crate) series: BTreeMap<String, BTreeMap<NaiveDate, (f64, &'static str)>>,
+    pub(crate) issues: Vec<ParsedIssue>,
 }
 
-struct ParsedIssue {
-    severity: &'static str,
-    code: &'static str,
-    detail: String,
-    row_ref: Option<String>,
+pub(crate) struct ParsedIssue {
+    pub(crate) severity: &'static str,
+    pub(crate) code: &'static str,
+    pub(crate) detail: String,
+    pub(crate) row_ref: Option<String>,
+}
+
+/// How one parsed import is committed: the contract version that labels it, the
+/// descriptor that participates in the fingerprint (if any), and the retained
+/// file name.
+struct CommitSpec<'a> {
+    contract_version: &'a str,
+    descriptor: Option<&'a ParsingDescriptor>,
+    retained_name: &'a str,
+}
+
+fn source_filename(source: &Path) -> String {
+    source
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| SOURCE_FILENAME.to_string())
+}
+
+async fn active_profile_id(pool: &SqlitePool) -> AppResult<i64> {
+    sqlx::query_scalar("SELECT id FROM source_profile WHERE is_active = 1")
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| {
+            err(
+                "no_active_profile",
+                "The workspace has no active source profile.",
+            )
+        })
+}
+
+fn import_config_from_row(row: &SqliteRow) -> AppResult<ImportConfig> {
+    let id: i64 = row.get("id");
+    if !(1..=i32::MAX as i64).contains(&id) {
+        return Err(err(
+            "contract_violation",
+            "A saved configuration has an unsupported id.",
+        ));
+    }
+    let name: String = row.get("name");
+    let json: String = row.get("descriptor_json");
+    let descriptor: ParsingDescriptor = serde_json::from_str(&json).map_err(|_| {
+        err(
+            "contract_violation",
+            format!("Saved configuration '{name}' is unreadable."),
+        )
+    })?;
+    Ok(ImportConfig {
+        id: id as i32,
+        name,
+        descriptor,
+        updated_at: row.get("updated_at"),
+    })
 }
 
 fn parse_canonical(bytes: &[u8], cancel: &AtomicBool) -> AppResult<ParsedImport> {
@@ -1695,7 +2095,7 @@ fn parse_canonical(bytes: &[u8], cancel: &AtomicBool) -> AppResult<ParsedImport>
     })
 }
 
-fn classify(quantity: f64) -> &'static str {
+pub(crate) fn classify(quantity: f64) -> &'static str {
     if quantity == 0.0 {
         "zero"
     } else if quantity < 0.0 {
@@ -1719,9 +2119,22 @@ fn mapping_fingerprint(
     contract: &str,
     products: &BTreeMap<String, Uuid>,
     locations: &[sqlx::sqlite::SqliteRow],
-) -> String {
+    descriptor: Option<&ParsingDescriptor>,
+) -> AppResult<String> {
     let mut lines: BTreeSet<String> = BTreeSet::new();
     lines.insert(format!("contract={contract}"));
+    if let Some(descriptor) = descriptor {
+        let json = descriptor_json(descriptor).map_err(|_| {
+            err(
+                "contract_violation",
+                "The parsing descriptor could not be serialized.",
+            )
+        })?;
+        lines.insert(format!(
+            "descriptor_sha256={}",
+            hex(&Sha256::digest(json.as_bytes()))
+        ));
+    }
     for row in locations {
         let code: String = row.get("source_code");
         let location: Vec<u8> = row.get("location_id");
@@ -1733,7 +2146,7 @@ fn mapping_fingerprint(
         lines.insert(format!("product\t{code}\t{id}"));
     }
     let joined = lines.into_iter().collect::<Vec<_>>().join("\n");
-    hex(&Sha256::digest(joined.as_bytes()))
+    Ok(hex(&Sha256::digest(joined.as_bytes())))
 }
 
 // ---------------------------------------------------------------------------
@@ -1918,7 +2331,7 @@ fn err(code: impl Into<String>, message: impl Into<String>) -> AppError {
     AppError::new(code, message)
 }
 
-fn cancelled_import() -> AppError {
+pub(crate) fn cancelled_import() -> AppError {
     err(
         "import_cancelled",
         "The import was cancelled before any revision was committed.",

@@ -24,8 +24,11 @@ This directory records the accepted architecture decisions for OpenDemand. Each 
 | [0016](0016-sidecar-cancellation-flag-file.md) | Sidecar cancellation through a job-directory flag file | Accepted | 2026-10-13 |
 | [0017](0017-comparable-origin-selection-scores.md) | Comparable-origin selection scores | Accepted | 2026-10-14 |
 | [0018](0018-bounded-sidecar-worker-pool.md) | Bounded in-sidecar worker pool for model fitting | Accepted | 2026-10-14 |
+| [0019](0019-raw-source-preprocessing-layer.md) | Raw-source preprocessing layer | Accepted | 2026-10-14 |
+| [0020](0020-parsing-descriptor-in-the-mapping-fingerprint.md) | Parsing configuration in the mapping fingerprint | Accepted | 2026-10-14 |
+| [0021](0021-import-config-persistence-and-migration-gate-mechanism.md) | Import configuration persistence and the pre-migration backup mechanism | Accepted | 2026-10-14 |
 
-Schema status: migration 001 is frozen (2026-10-13; SHA-256 recorded in `../schema/001_init.sha256`). All schema changes now use new numbered migrations.
+Schema status: migration 001 is frozen (2026-10-13; SHA-256 recorded in `../schema/001_init.sha256`); migration 002 adds `import_config` and `import_revision.descriptor_json` and is applied only behind the verified pre-migration backup (ADR-0021). All schema changes use new numbered migrations.
 
 ## Rules
 
