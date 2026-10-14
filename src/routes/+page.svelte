@@ -1,6 +1,5 @@
 <script lang="ts">
-	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
-	import type { JobInfo, OverrideEdit, ParsingDescriptor, SeriesSummary } from '#lib/bindings.ts';
+	import { createQuery, useQueryClient } from '@tanstack/svelte-query';	import type { JobInfo, OverrideEdit, ParsingDescriptor, SeriesSummary } from '#lib/bindings.ts';
 	import BrowserFallback from '#lib/components/BrowserFallback.svelte';
 	import CsvFormatCard from '#lib/components/CsvFormatCard.svelte';
 	import HomeScreen from '#lib/components/HomeScreen.svelte';
@@ -355,8 +354,11 @@
 	}
 
 	async function invalidateWorkspaceQueries() {
+		// The workspace query must reset, not just invalidate: after close the
+		// refetch fails with no_workspace, and an invalidated query keeps its
+		// stale data while erroring, which would leave the workspace view up.
 		await Promise.all([
-			queryClient.invalidateQueries({ queryKey: ['workspace'] }),
+			queryClient.resetQueries({ queryKey: ['workspace'] }),
 			queryClient.invalidateQueries({ queryKey: ['workspaces'] })
 		]);
 	}

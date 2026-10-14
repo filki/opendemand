@@ -22,6 +22,7 @@ pub struct WorkspaceRef {
     pub name: String,
     pub last_opened_at: String,
     pub exists: bool,
+    pub is_default: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

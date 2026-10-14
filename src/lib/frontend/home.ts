@@ -22,3 +22,11 @@ export function createWorkspaceHint(code: string): string | null {
 export function isWorkspaceOpenable(entry: WorkspaceRef): boolean {
 	return entry.exists;
 }
+
+/**
+ * The default application-data workspace is always re-listed by the backend,
+ * so removing its entry never sticks; only recent entries are removable.
+ */
+export function isWorkspaceRemovable(entry: WorkspaceRef): boolean {
+	return !entry.is_default;
+}

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createWorkspaceHint, isWorkspaceOpenable } from '../../src/lib/frontend/home.ts';
+import {
+	createWorkspaceHint,
+	isWorkspaceOpenable,
+	isWorkspaceRemovable
+} from '../../src/lib/frontend/home.ts';
 
 test('create failures get a targeted hint', () => {
 	assert.match(String(createWorkspaceHint('workspace_exists')), /already lives/);
@@ -14,8 +18,21 @@ test('only entries whose database exists are openable', () => {
 		path: '/data/one',
 		name: 'one',
 		last_opened_at: '2026-01-01T00:00:00Z',
-		exists: true
+		exists: true,
+		is_default: false
 	};
 	assert.equal(isWorkspaceOpenable(entry), true);
 	assert.equal(isWorkspaceOpenable({ ...entry, exists: false }), false);
+});
+
+test('the default workspace entry is never removable', () => {
+	const entry = {
+		path: '/data/one',
+		name: 'one',
+		last_opened_at: '2026-01-01T00:00:00Z',
+		exists: true,
+		is_default: false
+	};
+	assert.equal(isWorkspaceRemovable(entry), true);
+	assert.equal(isWorkspaceRemovable({ ...entry, is_default: true }), false);
 });

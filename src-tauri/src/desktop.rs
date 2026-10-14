@@ -90,13 +90,17 @@ fn record_recent(app: &AppHandle, workspace_path: &Path) {
     }
 }
 
-fn workspace_ref(entry: recent::RecentWorkspace) -> WorkspaceRef {
+fn workspace_ref(entry: recent::RecentWorkspace, default_path: Option<&Path>) -> WorkspaceRef {
     let exists = Path::new(&entry.path).join(DB_FILENAME).exists();
+    let is_default = default_path
+        .map(|default| Path::new(&entry.path) == default)
+        .unwrap_or(false);
     WorkspaceRef {
         path: entry.path,
         name: entry.name,
         last_opened_at: entry.last_opened_at,
         exists,
+        is_default,
     }
 }
 
@@ -166,10 +170,14 @@ async fn workspace_info(state: State<'_, Service>) -> AppResult<WorkspaceInfo> {
 async fn workspaces_list(app: AppHandle) -> AppResult<Vec<WorkspaceRef>> {
     let file = registry_file(&app)?;
     let mut entries = recent::load(&file);
-    if let Ok(default) = default_workspace_path(&app) {
-        recent::seed_default(&mut entries, &default);
+    let default = default_workspace_path(&app).ok();
+    if let Some(default) = default.as_deref() {
+        recent::seed_default(&mut entries, default);
     }
-    Ok(entries.into_iter().map(workspace_ref).collect())
+    Ok(entries
+        .into_iter()
+        .map(|entry| workspace_ref(entry, default.as_deref()))
+        .collect())
 }
 
 /// Drop one row from the workspace list. The default application-data

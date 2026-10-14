@@ -389,6 +389,7 @@ export type WorkspaceRef = {
 	name: string,
 	last_opened_at: string,
 	exists: boolean,
+	is_default: boolean,
 };
 
 /* Tauri Specta runtime */

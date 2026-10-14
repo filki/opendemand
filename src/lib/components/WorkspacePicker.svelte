@@ -2,7 +2,7 @@
 	import type { WorkspaceRef } from '#lib/bindings.ts';
 	import StatusChip from '#lib/components/StatusChip.svelte';
 	import { formatTimestamp } from '#lib/frontend/format.ts';
-	import { isWorkspaceOpenable } from '#lib/frontend/home.ts';
+	import { isWorkspaceOpenable, isWorkspaceRemovable } from '#lib/frontend/home.ts';
 
 	let {
 		entries,
@@ -61,6 +61,8 @@
 					<div class="row entry-actions">
 						{#if !isWorkspaceOpenable(entry)}
 							<StatusChip label="Not found" tone="warn" />
+						{:else if entry.is_default}
+							<StatusChip label="Default location" tone="neutral" />
 						{/if}
 						<button
 							class="btn btn-primary"
@@ -69,9 +71,11 @@
 						>
 							Open
 						</button>
-						<button class="btn btn-secondary" disabled={busy} onclick={() => onForget(entry.path)}>
-							Remove
-						</button>
+						{#if isWorkspaceRemovable(entry)}
+							<button class="btn btn-secondary" disabled={busy} onclick={() => onForget(entry.path)}>
+								Remove
+							</button>
+						{/if}
 					</div>
 				</li>
 			{/each}
