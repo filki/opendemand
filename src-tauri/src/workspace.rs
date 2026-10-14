@@ -11,15 +11,18 @@
 use crate::{
     error::{AppError, AppResult},
     types::{
-        ForecastInput, ForecastPoint, HistoryPoint, ImportResult, InputSeries, ObservationRecord,
-        RunSummary, SeriesDetail, SeriesSummary, WorkspaceInfo,
+        ExportResult, ForecastInput, ForecastPoint, HistoryPoint, ImportResult, InputSeries,
+        ObservationRecord, OverrideEdit, OverrideRevision, PlanningPoint, RunSummary, SeriesDetail,
+        SeriesSummary, WorkspaceInfo,
     },
 };
 use chrono::{Datelike, Duration as ChronoDuration, NaiveDate, Utc, Weekday};
 use sha2::{Digest, Sha256};
 use sqlx::{
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
-    Row, SqlitePool,
+    sqlite::{
+        SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
+    },
+    Connection, Row, SqliteConnection, SqlitePool,
 };
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -53,6 +56,42 @@ const LIST_LIMIT_MAX: u32 = 200;
 /// series, protecting memory against a corrupted or absurd date span.
 const MAX_HISTORY_WEEKS: i64 = 5_200;
 const MIN_ELIGIBLE_HISTORY: u32 = 12;
+
+// One definition of the effective plan for both the weekly editor and export.
+// The latest revision is joined even when NULL: a clear must not revive an
+// older non-null override. Scope comes from outcomes, not baseline rows.
+const PLANNING_ROWS_SQL: &str = "
+    WITH RECURSIVE run AS (
+        SELECT id, horizon_start_week, horizon_weeks FROM forecast_run WHERE id = ?
+    ), weeks(horizon, week_start) AS (
+        SELECT 1, horizon_start_week FROM run
+        UNION ALL
+        SELECT horizon + 1, date(week_start, '+7 days') FROM weeks, run
+        WHERE horizon < run.horizon_weeks
+    ), scope AS (
+        SELECT s.* FROM forecast_series_status s JOIN run r ON s.run_id = r.id
+        WHERE (? IS NULL OR s.product_id = ?) AND (? IS NULL OR s.location_id = ?)
+            AND (s.product_id, s.location_id) > (?, ?)
+        ORDER BY s.product_id, s.location_id LIMIT ?
+    )
+    SELECT s.product_id, s.location_id, p.sku AS product_sku, p.name AS product_name,
+           l.code AS location_code, w.week_start, w.horizon, f.value AS baseline,
+           o.value AS override_value, COALESCE(o.value, f.value) AS effective,
+           COALESCE(o.revision, 0) AS override_revision,
+           CASE WHEN o.value IS NOT NULL THEN 'override'
+                WHEN f.value IS NOT NULL THEN 'model' ELSE 'missing' END AS value_source,
+           s.status AS series_status, s.selected_model_id AS model_id
+    FROM scope s
+    JOIN product p ON p.id = s.product_id JOIN location l ON l.id = s.location_id
+    CROSS JOIN weeks w
+    LEFT JOIN forecast f ON f.run_id = s.run_id AND f.product_id = s.product_id
+        AND f.location_id = s.location_id AND f.week_start = w.week_start
+    LEFT JOIN forecast_override o ON o.run_id = s.run_id AND o.product_id = s.product_id
+        AND o.location_id = s.location_id AND o.week_start = w.week_start
+        AND o.revision = (SELECT MAX(revision) FROM forecast_override
+            WHERE run_id = s.run_id AND product_id = s.product_id
+                AND location_id = s.location_id AND week_start = w.week_start)
+    ORDER BY s.product_id, s.location_id, w.horizon";
 
 /// A workspace directory plus the exclusive database connection it owns.
 ///
@@ -96,7 +135,7 @@ impl Workspace {
         } else {
             std::fs::create_dir_all(&path)?;
         }
-        for directory in ["staging", "sources", "recovery", "jobs"] {
+        for directory in ["staging", "sources", "recovery", "jobs", "exports"] {
             std::fs::create_dir_all(path.join(directory))?;
         }
 
@@ -523,8 +562,9 @@ impl Workspace {
         let offset = offset as i64;
         let pattern = format!("%{search}%");
         let rows = sqlx::query(
-            "SELECT q.product_id AS product_id, q.location_id AS location_id, p.sku AS sku, q.h_length AS h_length, q.status AS status
+            "SELECT q.product_id AS product_id, q.location_id AS location_id, l.code AS location_code, p.sku AS sku, q.h_length AS h_length, q.status AS status
              FROM series_qualification q JOIN product p ON p.id = q.product_id
+             JOIN location l ON l.id = q.location_id
              WHERE q.revision_id = ? AND p.sku LIKE ?
              ORDER BY p.sku, q.location_id
              LIMIT ? OFFSET ?",
@@ -543,6 +583,7 @@ impl Workspace {
             series.push(SeriesSummary {
                 product_id: uuid_from_bytes(&product)?.to_string(),
                 location_id: uuid_from_bytes(&location)?.to_string(),
+                location_code: row.get("location_code"),
                 series_key: row.get("sku"),
                 h_length: row.get::<i64, _>("h_length") as u32,
                 qualification_status: row.get("status"),
@@ -566,8 +607,9 @@ impl Workspace {
         let product_bytes = product.as_bytes().to_vec();
         let location_bytes = location.as_bytes().to_vec();
 
-        let series_key: Option<String> = sqlx::query_scalar(
-            "SELECT p.sku FROM series_qualification q JOIN product p ON p.id = q.product_id
+        let series = sqlx::query(
+            "SELECT p.sku, l.code AS location_code FROM series_qualification q
+             JOIN product p ON p.id = q.product_id JOIN location l ON l.id = q.location_id
              WHERE q.revision_id = ? AND q.product_id = ? AND q.location_id = ?",
         )
         .bind(revision_id)
@@ -575,7 +617,7 @@ impl Workspace {
         .bind(location_bytes.as_slice())
         .fetch_optional(&self.pool)
         .await?;
-        let series_key = series_key.ok_or_else(|| {
+        let series = series.ok_or_else(|| {
             err(
                 "unknown_series",
                 "The selected series is not part of this import revision.",
@@ -590,9 +632,12 @@ impl Workspace {
         let mut detail = SeriesDetail {
             product_id: product.to_string(),
             location_id: location.to_string(),
-            series_key,
+            location_code: series.get("location_code"),
+            series_key: series.get("sku"),
             history,
             forecast: Vec::new(),
+            planning: Vec::new(),
+            can_override: false,
             run_id: None,
             outcome: None,
             reason: None,
@@ -605,7 +650,7 @@ impl Workspace {
             let run_uuid = parse_uuid(run, "run_id")?;
             let run_bytes = run_uuid.as_bytes().to_vec();
             let run_row = sqlx::query(
-                "SELECT revision_id, horizon_start_week FROM forecast_run WHERE id = ?",
+                "SELECT revision_id, horizon_start_week, status FROM forecast_run WHERE id = ?",
             )
             .bind(run_bytes.as_slice())
             .fetch_optional(&self.pool)
@@ -635,6 +680,7 @@ impl Workspace {
             .fetch_optional(&self.pool)
             .await?;
             if let Some(row) = status_row {
+                detail.can_override = run_row.get::<String, _>("status") == "completed";
                 detail.outcome = Some(row.get("status"));
                 detail.reason = row.get::<Option<String>, _>("reason");
                 detail.selected_model_id = row.get::<Option<String>, _>("selected_model_id");
@@ -656,6 +702,22 @@ impl Workspace {
                 })
                 .collect();
 
+            detail.planning = {
+                let mut connection = self.pool.acquire().await?;
+                load_planning_rows(
+                    &mut connection,
+                    &run_bytes,
+                    Some(&product_bytes),
+                    Some(&location_bytes),
+                    (&[], &[]),
+                    1,
+                )
+                .await?
+                .iter()
+                .map(planning_point)
+                .collect()
+            };
+
             if let Some(model) = detail.selected_model_id.clone() {
                 let score = sqlx::query_scalar::<_, Option<f64>>(
                     "SELECT selection_score FROM series_model_evaluation WHERE run_id = ? AND product_id = ? AND location_id = ? AND model_id = ?",
@@ -673,13 +735,280 @@ impl Workspace {
         Ok(detail)
     }
 
+    /// Append one cell revision, including a NULL clearing revision, after
+    /// validating the run scope and the revision the planner actually edited.
+    pub async fn append_override(&self, edit: OverrideEdit) -> AppResult<OverrideRevision> {
+        let run = parse_uuid(&edit.run_id, "run_id")?;
+        let product = parse_uuid(&edit.product_id, "product_id")?;
+        let location = parse_uuid(&edit.location_id, "location_id")?;
+        let week = NaiveDate::parse_from_str(&edit.week_start, "%Y-%m-%d")
+            .ok()
+            .filter(|week| week.weekday() == Weekday::Mon && week.to_string() == edit.week_start)
+            .ok_or_else(|| err("invalid_week", "Choose a Monday in YYYY-MM-DD format."))?;
+        let value = edit
+            .value
+            .as_deref()
+            .map(|text| {
+                text.trim()
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|value| value.is_finite())
+                    .ok_or_else(|| err("invalid_value", "Enter a finite numeric forecast value."))
+            })
+            .transpose()?;
+
+        let _writer = self.writer.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let row = sqlx::query(
+            "SELECT status, horizon_start_week, horizon_weeks FROM forecast_run WHERE id = ?",
+        )
+        .bind(run.as_bytes().as_slice())
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or_else(|| {
+            err(
+                "unknown_run",
+                "The forecast run does not exist in this workspace.",
+            )
+        })?;
+        if row.get::<String, _>("status") != "completed" {
+            return Err(err(
+                "run_not_completed",
+                "Only completed forecast runs can be adjusted.",
+            ));
+        }
+        let start =
+            NaiveDate::parse_from_str(&row.get::<String, _>("horizon_start_week"), "%Y-%m-%d")
+                .map_err(|_| {
+                    err(
+                        "invalid_horizon",
+                        "The run has an invalid planning horizon.",
+                    )
+                })?;
+        let weeks: i64 = row.get("horizon_weeks");
+        if week < start || week >= start + ChronoDuration::weeks(weeks) {
+            return Err(err(
+                "outside_horizon",
+                "Choose a week inside this run's planning horizon.",
+            ));
+        }
+        let scoped: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM forecast_series_status
+             WHERE run_id = ? AND product_id = ? AND location_id = ?)",
+        )
+        .bind(run.as_bytes().as_slice())
+        .bind(product.as_bytes().as_slice())
+        .bind(location.as_bytes().as_slice())
+        .fetch_one(&mut *transaction)
+        .await?;
+        if !scoped {
+            return Err(err(
+                "unknown_series",
+                "The selected series is not part of this forecast run.",
+            ));
+        }
+        let current: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(revision), 0) FROM forecast_override
+             WHERE run_id = ? AND product_id = ? AND location_id = ? AND week_start = ?",
+        )
+        .bind(run.as_bytes().as_slice())
+        .bind(product.as_bytes().as_slice())
+        .bind(location.as_bytes().as_slice())
+        .bind(&edit.week_start)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if current != i64::from(edit.expected_revision) {
+            return Err(err(
+                "override_conflict",
+                "This week changed since it was loaded. Refresh the plan, review your input, and save again.",
+            ));
+        }
+        if current == 0 && value.is_none() {
+            return Err(err("no_override", "This week has no override to clear."));
+        }
+        let revision = edit.expected_revision.checked_add(1).ok_or_else(|| {
+            err(
+                "override_conflict",
+                "The cell revision limit has been reached.",
+            )
+        })?;
+        sqlx::query(
+            "INSERT INTO forecast_override
+             (run_id, product_id, location_id, week_start, revision, value, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(run.as_bytes().as_slice())
+        .bind(product.as_bytes().as_slice())
+        .bind(location.as_bytes().as_slice())
+        .bind(&edit.week_start)
+        .bind(i64::from(revision))
+        .bind(value)
+        .bind(now_iso())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(OverrideRevision { revision })
+    }
+
+    /// Export a consistent full-run plan in bounded batches. The workspace copy
+    /// gives export_record a durable relative path; the selected file is a copy.
+    /// Neither publication may overwrite existing data.
+    pub async fn export_csv(&self, run_id: &str, target: &Path) -> AppResult<ExportResult> {
+        let run = parse_uuid(run_id, "run_id")?;
+        if !target.is_absolute()
+            || !target
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("csv"))
+        {
+            return Err(err(
+                "invalid_export_path",
+                "Choose an absolute path ending in .csv.",
+            ));
+        }
+        let parent = target
+            .parent()
+            .ok_or_else(|| err("invalid_export_path", "Choose a CSV file destination."))?
+            .canonicalize()?;
+        let root = self.path.canonicalize()?;
+        if parent.starts_with(&root) && parent != root.join("exports") {
+            return Err(err(
+                "invalid_export_path",
+                "Save outside the workspace data folders, or in its exports folder.",
+            ));
+        }
+        if target.symlink_metadata().is_ok() {
+            return Err(err("export_exists", "A file already exists here. Choose a new filename; exports never overwrite existing files."));
+        }
+
+        let job_id = {
+            let _writer = self.writer.lock().await;
+            sqlx::query("INSERT INTO job (kind, status, created_at, started_at) VALUES ('export', 'running', ?, ?)")
+                .bind(now_iso()).bind(now_iso()).execute(&self.pool).await?.last_insert_rowid()
+        };
+        let result = async {
+            // A read-only WAL snapshot keeps every batch consistent without
+            // occupying the sole writer connection while a large CSV is built.
+            let mut reader = SqliteConnection::connect_with(
+                &SqliteConnectOptions::new().filename(self.path.join(DB_FILENAME))
+                    .read_only(true).foreign_keys(true).journal_mode(SqliteJournalMode::Wal)
+                    .synchronous(SqliteSynchronous::Full).busy_timeout(Duration::from_millis(5_000)),
+            ).await?;
+            let mut snapshot = reader.begin().await?;
+            let status: Option<String> = sqlx::query_scalar("SELECT status FROM forecast_run WHERE id = ?")
+                .bind(run.as_bytes().as_slice()).fetch_optional(&mut *snapshot).await?;
+            match status.as_deref() {
+                None => return Err(err("unknown_run", "The forecast run does not exist in this workspace.")),
+                Some("completed") => {},
+                _ => return Err(err("run_not_completed", "Only completed forecast runs can be exported.")),
+            }
+            let outcomes: BTreeMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
+                "SELECT status, COUNT(*) FROM forecast_series_status WHERE run_id = ? GROUP BY status",
+            ).bind(run.as_bytes().as_slice()).fetch_all(&mut *snapshot).await?.into_iter().collect();
+            let series_count: i64 = outcomes.values().sum();
+            let covered_series = outcomes.get("ok").copied().unwrap_or(0)
+                + outcomes.get("fallback_naive").copied().unwrap_or(0);
+            let coverage = serde_json::json!({
+                "series_count": series_count, "covered_series": covered_series,
+                "coverage": covered_series as f64 / series_count.max(1) as f64, "outcomes": outcomes,
+            }).to_string();
+
+            let mut temporary = tempfile::Builder::new().prefix(".opendemand-export-").tempfile_in(&parent)?;
+            // UTF-8 BOM and CRLF make names and records portable to desktop Excel.
+            temporary.write_all(b"\xef\xbb\xbf")?;
+            let mut row_count = 0i64;
+            {
+                let mut writer = csv::WriterBuilder::new()
+                    .terminator(csv::Terminator::CRLF).from_writer(&mut temporary);
+                writer.write_record([
+                    "run_id", "product_sku", "product_name", "location_code", "week_start", "horizon",
+                    "baseline", "override", "effective", "value_source", "series_status", "model_id",
+                ]).map_err(|_| err("export_failed", "Could not write the CSV header."))?;
+                let mut after = (Vec::<u8>::new(), Vec::<u8>::new());
+                loop {
+                    // Page the run inventory by its primary key before expanding
+                    // each series into weeks, never re-scan a growing OFFSET.
+                    let rows = load_planning_rows(&mut snapshot, run.as_bytes(), None, None, (&after.0, &after.1), 32).await?;
+                    let Some(last) = rows.last() else { break; };
+                    after = (last.get("product_id"), last.get("location_id"));
+                    for row in &rows {
+                        let point = planning_point(row);
+                        writer.write_record([
+                            run.to_string(), row.get::<String, _>("product_sku"), row.get("product_name"),
+                            row.get("location_code"), point.week_start, point.horizon.to_string(),
+                            point.baseline.map(|value| value.to_string()).unwrap_or_default(),
+                            point.override_value.map(|value| value.to_string()).unwrap_or_default(),
+                            point.effective.map(|value| value.to_string()).unwrap_or_default(),
+                            point.value_source, row.get("series_status"), row.get::<Option<String>, _>("model_id").unwrap_or_default(),
+                        ]).map_err(|_| err("export_failed", "Could not write the CSV rows. Check the destination and retry."))?;
+                    }
+                    row_count += rows.len() as i64;
+                }
+                writer.flush()?;
+            }
+            snapshot.commit().await?;
+            reader.close().await?;
+            temporary.as_file().sync_all()?;
+
+            let exports = self.path.join("exports");
+            std::fs::create_dir_all(&exports)?;
+            let relative_path = format!("exports/{}.csv", Uuid::now_v7());
+            let archive_path = self.path.join(&relative_path);
+            let archive = tempfile::Builder::new().prefix(".opendemand-export-").tempfile_in(&exports)?;
+            std::fs::copy(temporary.path(), archive.path())?;
+            archive.as_file().sync_all()?;
+            let _writer = self.writer.lock().await;
+            let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+            let export_id = sqlx::query(
+                "INSERT INTO export_record (run_id, format, relative_path, created_at, row_count, coverage_json)
+                 VALUES (?, 'csv', ?, ?, ?, ?)",
+            ).bind(run.as_bytes().as_slice()).bind(&relative_path).bind(now_iso()).bind(row_count).bind(coverage)
+                .execute(&mut *transaction).await?.last_insert_rowid();
+            sqlx::query("UPDATE job SET status = 'completed', finished_at = ? WHERE id = ?")
+                .bind(now_iso()).bind(job_id).execute(&mut *transaction).await?;
+
+            archive.persist_noclobber(&archive_path).map_err(|error| AppError::from(error.error))?;
+            if let Err(error) = temporary.persist_noclobber(target) {
+                let _ = std::fs::remove_file(&archive_path);
+                return Err(if error.error.kind() == std::io::ErrorKind::AlreadyExists {
+                    err("export_exists", "A file appeared at this destination. Choose a new filename.")
+                } else { AppError::from(error.error) });
+            }
+            fsync_dir(&exports);
+            fsync_dir(&parent);
+            if let Err(error) = transaction.commit().await {
+                let _ = std::fs::remove_file(target);
+                let _ = std::fs::remove_file(&archive_path);
+                return Err(AppError::from(error));
+            }
+            Ok(ExportResult { export_id: export_id.to_string(), path: target.display().to_string(), row_count: row_count as u32 })
+        }.await;
+        if let Err(error) = &result {
+            let _writer = self.writer.lock().await;
+            if let Err(database_error) = sqlx::query(
+                "UPDATE job SET status = 'failed', finished_at = ?, error_code = ?, error_detail = ? WHERE id = ?",
+            ).bind(now_iso()).bind(&error.code).bind(&error.message).bind(job_id).execute(&self.pool).await {
+                eprintln!("Could not record the failed export job: {database_error}");
+            }
+        }
+        result
+    }
+
     /// List recent persisted forecast runs for a revision.
     pub async fn runs_list(&self, revision_id: i32) -> AppResult<Vec<RunSummary>> {
         ensure_revision(&self.pool, revision_id).await?;
+        self.query_runs(Some(revision_id)).await
+    }
+
+    pub async fn runs_list_all(&self) -> AppResult<Vec<RunSummary>> {
+        self.query_runs(None).await
+    }
+
+    async fn query_runs(&self, revision_id: Option<i32>) -> AppResult<Vec<RunSummary>> {
         let rows = sqlx::query(
             "SELECT id, revision_id, status, created_at, horizon_start_week, engine_version
-             FROM forecast_run WHERE revision_id = ? ORDER BY created_at DESC, id DESC",
+             FROM forecast_run WHERE (? IS NULL OR revision_id = ?) ORDER BY created_at DESC, id DESC",
         )
+        .bind(revision_id)
         .bind(revision_id)
         .fetch_all(&self.pool)
         .await?;
@@ -747,6 +1076,39 @@ impl Workspace {
 // ---------------------------------------------------------------------------
 // Connection and schema verification
 // ---------------------------------------------------------------------------
+
+async fn load_planning_rows(
+    connection: &mut SqliteConnection,
+    run: &[u8],
+    product: Option<&[u8]>,
+    location: Option<&[u8]>,
+    after: (&[u8], &[u8]),
+    limit: i64,
+) -> AppResult<Vec<SqliteRow>> {
+    Ok(sqlx::query(PLANNING_ROWS_SQL)
+        .bind(run)
+        .bind(product)
+        .bind(product)
+        .bind(location)
+        .bind(location)
+        .bind(after.0)
+        .bind(after.1)
+        .bind(limit)
+        .fetch_all(connection)
+        .await?)
+}
+
+fn planning_point(row: &SqliteRow) -> PlanningPoint {
+    PlanningPoint {
+        week_start: row.get("week_start"),
+        horizon: row.get::<i64, _>("horizon") as u32,
+        baseline: row.get("baseline"),
+        override_value: row.get("override_value"),
+        effective: row.get("effective"),
+        value_source: row.get("value_source"),
+        override_revision: row.get::<i64, _>("override_revision") as u32,
+    }
+}
 
 async fn connect(database: &Path, create: bool) -> AppResult<SqlitePool> {
     let options = SqliteConnectOptions::new()
@@ -850,6 +1212,7 @@ async fn reconcile(pool: &SqlitePool, root: &Path) -> AppResult<Vec<String>> {
     std::fs::create_dir_all(&recovery)?;
     std::fs::create_dir_all(&staging)?;
     std::fs::create_dir_all(&sources)?;
+    std::fs::create_dir_all(root.join("exports"))?;
 
     let rows = sqlx::query("SELECT relative_path, sha256 FROM source_file")
         .fetch_all(pool)

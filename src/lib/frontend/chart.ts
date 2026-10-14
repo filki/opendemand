@@ -1,8 +1,9 @@
 /**
  * Pure geometry for the series chart: history drawn with gaps (no zero fill),
- * a persisted weekly forecast drawn dashed after a split zone, and scales that
- * stay readable for negative and constant series. No DOM, no framework imports,
- * so this module is unit-tested directly with the Node test runner.
+ * a persisted weekly forecast drawn dashed after a split zone, the effective
+ * plan drawn solid with override markers, and scales that stay readable for
+ * negative and constant series. No DOM, no framework imports, so this module
+ * is unit-tested directly with the Node test runner.
  */
 
 export interface HistoryPointInput {
@@ -14,6 +15,16 @@ export interface HistoryPointInput {
 export interface ForecastPointInput {
 	week_start: string;
 	value: number | null;
+}
+
+export interface PlanningPointInput {
+	week_start: string;
+	horizon: number;
+	baseline: number | null;
+	override_value: number | null;
+	effective: number | null;
+	value_source: string;
+	override_revision: number;
 }
 
 export interface ChartSize {
@@ -53,6 +64,12 @@ export interface ChartModel {
 	isolatedHistoryPoints: PointMark[];
 	forecastPath: string | null;
 	isolatedForecastPoints: PointMark[];
+	planningWeeks: number;
+	planningBaselinePaths: string[];
+	isolatedPlanningBaselinePoints: PointMark[];
+	effectivePaths: string[];
+	isolatedEffectivePoints: PointMark[];
+	overridePoints: PointMark[];
 	connector: string | null;
 	splitX: number | null;
 	forecastZone: { x: number; width: number } | null;
@@ -62,7 +79,7 @@ export interface ChartModel {
 
 export interface TableRow {
 	week_start: string;
-	kind: 'history' | 'forecast';
+	kind: 'history' | 'forecast' | 'plan';
 	value: number | null;
 	status: string | null;
 }
@@ -142,7 +159,8 @@ export function formatAxisNumber(value: number): string {
 export function buildChartModel(
 	history: HistoryPointInput[],
 	forecast: ForecastPointInput[],
-	size: ChartSize = { width: 760, height: 300 }
+	size: ChartSize = { width: 760, height: 300 },
+	planning: PlanningPointInput[] = []
 ): ChartModel {
 	const margin = { top: 18, right: 18, bottom: 32, left: 54 };
 	const plot = {
@@ -160,6 +178,18 @@ export function buildChartModel(
 		.map((point) => ({ idx: weekIndex(point.week_start), value: point.value }))
 		.filter((point): point is { idx: number; value: number } => point.idx !== null && point.value !== null && Number.isFinite(point.value))
 		.sort((a, b) => a.idx - b.idx);
+	const preparedPlanning = planning
+		.map((point) => ({
+			idx: weekIndex(point.week_start),
+			baseline: point.baseline,
+			effective: point.effective,
+			source: point.value_source
+		}))
+		.filter(
+			(point): point is { idx: number; baseline: number | null; effective: number | null; source: string } =>
+				point.idx !== null
+		)
+		.sort((a, b) => a.idx - b.idx);
 
 	const base: ChartModel = {
 		width: size.width,
@@ -170,12 +200,18 @@ export function buildChartModel(
 		historyWeeks: preparedHistory.length,
 		gapCount: 0,
 		forecastWeeks: preparedForecast.length,
+		planningWeeks: preparedPlanning.length,
 		weekTicks: [],
 		valueTicks: [],
 		historyPaths: [],
 		isolatedHistoryPoints: [],
 		forecastPath: null,
 		isolatedForecastPoints: [],
+		planningBaselinePaths: [],
+		isolatedPlanningBaselinePoints: [],
+		effectivePaths: [],
+		isolatedEffectivePoints: [],
+		overridePoints: [],
 		connector: null,
 		splitX: null,
 		forecastZone: null,
@@ -183,7 +219,11 @@ export function buildChartModel(
 		domain: { x0: 0, x1: 1, y0: 0, y1: 1 }
 	};
 
-	const allIndices = [...preparedHistory.map((point) => point.idx), ...preparedForecast.map((point) => point.idx)];
+	const allIndices = [
+		...preparedHistory.map((point) => point.idx),
+		...preparedForecast.map((point) => point.idx),
+		...preparedPlanning.map((point) => point.idx)
+	];
 	if (allIndices.length === 0) return base;
 
 	const x0 = Math.min(...allIndices);
@@ -196,6 +236,10 @@ export function buildChartModel(
 	}
 	for (const point of preparedForecast) {
 		if (Number.isFinite(point.value)) values.push(point.value);
+	}
+	for (const point of preparedPlanning) {
+		if (point.baseline !== null && Number.isFinite(point.baseline)) values.push(point.baseline);
+		if (point.effective !== null && Number.isFinite(point.effective)) values.push(point.effective);
 	}
 	if (values.length === 0) {
 		return { ...base, weekCount: x1 - x0 + 1, domain: { x0, x1, y0: 0, y1: 1 } };
@@ -236,6 +280,40 @@ export function buildChartModel(
 		segment.push({ x: xScale(point.idx), y: yScale(point.quantity) });
 	}
 	flush();
+
+	const planningBaselinePaths: string[] = [];
+	const isolatedPlanningBaselinePoints: PointMark[] = [];
+	const effectivePaths: string[] = [];
+	const isolatedEffectivePoints: PointMark[] = [];
+	const overridePoints: PointMark[] = [];
+	let baselineSegment: PointMark[] = [];
+	let effectiveSegment: PointMark[] = [];
+	const flushBaselineSegment = () => {
+		if (baselineSegment.length >= 2) planningBaselinePaths.push(toPath(baselineSegment));
+		else if (baselineSegment.length === 1) isolatedPlanningBaselinePoints.push(baselineSegment[0]);
+		baselineSegment = [];
+	};
+	const flushEffectiveSegment = () => {
+		if (effectiveSegment.length >= 2) effectivePaths.push(toPath(effectiveSegment));
+		else if (effectiveSegment.length === 1) isolatedEffectivePoints.push(effectiveSegment[0]);
+		effectiveSegment = [];
+	};
+	for (const point of preparedPlanning) {
+		if (point.baseline !== null && Number.isFinite(point.baseline)) {
+			baselineSegment.push({ x: xScale(point.idx), y: yScale(point.baseline) });
+		} else {
+			flushBaselineSegment();
+		}
+		if (point.effective !== null && Number.isFinite(point.effective)) {
+			const mark = { x: xScale(point.idx), y: yScale(point.effective) };
+			effectiveSegment.push(mark);
+			if (point.source === 'override') overridePoints.push(mark);
+		} else {
+			flushEffectiveSegment();
+		}
+	}
+	flushBaselineSegment();
+	flushEffectiveSegment();
 
 	const forecastMarks: PointMark[] = preparedForecast
 		.filter((point) => Number.isFinite(point.value))
@@ -283,6 +361,11 @@ export function buildChartModel(
 		isolatedHistoryPoints,
 		forecastPath,
 		isolatedForecastPoints,
+		planningBaselinePaths,
+		isolatedPlanningBaselinePoints,
+		effectivePaths,
+		isolatedEffectivePoints,
+		overridePoints,
 		connector,
 		splitX,
 		forecastZone,
@@ -335,7 +418,8 @@ export function describeChart(
 	seriesKey: string,
 	history: HistoryPointInput[],
 	forecast: ForecastPointInput[],
-	model: ChartModel
+	model: ChartModel,
+	planning: PlanningPointInput[] = []
 ): string {
 	const numericHistory = history.filter((point) => point.quantity !== null && Number.isFinite(point.quantity));
 	const parts: string[] = [];
@@ -348,19 +432,47 @@ export function describeChart(
 	} else {
 		parts.push(`No history recorded for ${seriesKey}.`);
 	}
-	if (forecast.length > 0) {
+	if (planning.length === 0 && forecast.length > 0) {
 		const weeks = forecast.map((point) => point.week_start).sort();
 		parts.push(
 			`Forecast: ${forecast.length} weekly points from ${weeks[0]} to ${weeks[weeks.length - 1]}, drawn dashed after the split.`
 		);
-	} else {
+	} else if (planning.length === 0) {
 		parts.push('No persisted forecast in the selected run.');
+	}
+	if (planning.length > 0) {
+		const weeks = planning.map((point) => point.week_start).sort();
+		const baselineCount = planning.filter(
+			(point) => point.baseline !== null && Number.isFinite(point.baseline)
+		).length;
+		parts.push(
+			baselineCount > 0
+				? `Baseline: ${baselineCount} weekly point${baselineCount === 1 ? '' : 's'}, drawn dashed.`
+				: 'No model baseline in the selected run.'
+		);
+		const overrides = planning.filter(
+			(point) => point.value_source === 'override' && point.effective !== null
+		).length;
+		const missing = planning.filter((point) => point.effective === null || !Number.isFinite(point.effective)).length;
+		parts.push(
+			`Plan: ${planning.length} horizon weeks from ${weeks[0]} to ${weeks[weeks.length - 1]}, ` +
+				`${overrides} manually overridden week${overrides === 1 ? '' : 's'} and ${missing} week${missing === 1 ? '' : 's'} without an effective value.`
+		);
+		if (missing < planning.length) {
+			parts.push('Effective values are drawn solid; manual overrides are marked.');
+		}
 	}
 	return parts.join(' ');
 }
 
+const TABLE_KIND_ORDER: Record<TableRow['kind'], number> = { history: 0, forecast: 1, plan: 2 };
+
 /** Chronological rows for the accessible data table under the chart. */
-export function mergeTableRows(history: HistoryPointInput[], forecast: ForecastPointInput[]): TableRow[] {
+export function mergeTableRows(
+	history: HistoryPointInput[],
+	forecast: ForecastPointInput[],
+	planning: PlanningPointInput[] = []
+): TableRow[] {
 	const rows: TableRow[] = [
 		...history.map((point) => ({
 			week_start: point.week_start,
@@ -373,13 +485,26 @@ export function mergeTableRows(history: HistoryPointInput[], forecast: ForecastP
 			kind: 'forecast' as const,
 			value: point.value,
 			status: null
+		})),
+		...planning.map((point) => ({
+			week_start: point.week_start,
+			kind: 'plan' as const,
+			value: point.effective,
+			status: point.value_source
 		}))
 	];
 	return rows.sort((a, b) => {
 		const ia = weekIndex(a.week_start) ?? 0;
 		const ib = weekIndex(b.week_start) ?? 0;
 		if (ia !== ib) return ia - ib;
-		if (a.kind === b.kind) return 0;
-		return a.kind === 'history' ? -1 : 1;
+		return TABLE_KIND_ORDER[a.kind] - TABLE_KIND_ORDER[b.kind];
 	});
+}
+
+/** Human-readable label for a planning row's value source. */
+export function planValueSourceLabel(source: string): string {
+	if (source === 'override') return 'Manual override';
+	if (source === 'model') return 'Model';
+	if (source === 'missing') return 'Missing';
+	return source;
 }

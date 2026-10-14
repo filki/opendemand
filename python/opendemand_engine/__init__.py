@@ -13,6 +13,7 @@ TASKS_FILE = "tasks.arrow"
 TASK_STATUS_FILE = "task_status.arrow"
 ORIGIN_METRICS_FILE = "origin_metrics.arrow"
 FORECAST_POINTS_FILE = "forecast_points.arrow"
+CANCEL_FILE = "cancel.flag"
 
 __all__ = [
     "__version__",
@@ -24,4 +25,5 @@ __all__ = [
     "TASK_STATUS_FILE",
     "ORIGIN_METRICS_FILE",
     "FORECAST_POINTS_FILE",
+    "CANCEL_FILE",
 ]

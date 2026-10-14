@@ -20,4 +20,4 @@ Vocabulary for issues, tests, ADRs, docs, and UI copy. Definitions here are conc
 - **Series qualification** — per-revision eligibility: `eligible`, `insufficient_history` (`H < 12`), or `invalid_data`.
 - **SKU** — the product's canonical display code; product identity is the UUIDv7 id, not the SKU (ADR-0004).
 - **week_start** — ISO date (`YYYY-MM-DD`) of the Monday that identifies a calendar week in the workspace timezone.
-- **Workspace** — the user-chosen directory holding the SQLite database, retained CSV copies, backups with manifests, and job temp files.
+- **Workspace** — the user-chosen directory holding the SQLite database, retained source CSV copies, exported CSV copies, backups with manifests, and job temp files.

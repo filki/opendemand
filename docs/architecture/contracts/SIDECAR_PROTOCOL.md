@@ -1,6 +1,7 @@
 # Milestone 1 Sidecar Protocol
 
 Protocol id: `opendemand.sidecar/1`. One UTF-8 JSON object per stdout/stdin line.
+Stdin carries exactly one message, `job.request` (ADR-0016).
 Every object includes `protocol`, `type`, and `job_id` (null only in the initial hello).
 Stdout is protocol-only. Logs go to stderr. No HTTP listener or database access.
 Launch `python -m opendemand_engine --job-dir <directory>` in development, or the
@@ -11,7 +12,8 @@ The desktop app resolves `OPENDEMAND_ENGINE` first, then the bundled
 ## Exchange
 
 1. Python sends `hello`: engine version, contract versions, supported models.
-2. Rust sends exactly one `job.request`: job id and fixed input filenames.
+2. Rust sends exactly one `job.request`: job id and fixed input filenames, then closes stdin.
+   Python reads it on the main thread and never reads stdin again.
 3. Python sends `job.progress`: phase, completed task count, total task count.
 4. Python sends one terminal `job.result`, `job.error`, or `job.cancelled`.
 5. Python exits. Rust validates output before the single result transaction.
@@ -39,7 +41,9 @@ Task-specific prediction failures are output rows, not a whole-job error.
 - Whole-job timeout: configurable, 30 minutes by default.
 - Progress heartbeat: no more than 30 seconds apart.
 - Progress phases: `validate_input`, `backtest`, `production`, `write_output`.
-- Rust sends `job.cancel` with the current job id; Python acknowledges with `job.cancelled`.
+- To cancel, Rust creates the empty file `cancel.flag` in the job directory. Python checks for it
+  before reading inputs, between tasks, and around output writing, removes partial outputs, and
+  answers `job.cancelled`. Any first stdin message other than `job.request` is `protocol_mismatch`.
 - Cancellation grace: 5 seconds, then Rust kills and reaps the process.
 - At most one whole-job retry for `engine_start_failed` or `unexpected_eof`, before accepting output.
 - No automatic retry for invalid input, contract violations, timeout, or cancellation.
