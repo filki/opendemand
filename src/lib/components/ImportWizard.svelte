@@ -211,7 +211,7 @@
 			<button class="btn btn-secondary" onclick={onClose}>{t(locale, 'wizard.cancel')}</button>
 		{/if}
 	</div>
-	<p class="muted">{t(locale, 'wizard.intro')}</p>
+	<p class="muted intro">{t(locale, 'wizard.intro')}</p>
 
 	<div class="row">
 		<button class="btn btn-primary" onclick={chooseFile}>
@@ -447,6 +447,10 @@
 		gap: 0.8rem;
 	}
 
+	.intro {
+		max-width: 90ch;
+	}
+
 	.row {
 		display: flex;
 		align-items: center;
@@ -493,6 +497,18 @@
 	input[type='number'],
 	input[type='text'] {
 		width: 100%;
+	}
+
+	fieldset select {
+		max-width: 26rem;
+	}
+
+	fieldset input[type='number'] {
+		max-width: 9rem;
+	}
+
+	#wizard-key-separator {
+		max-width: 6rem;
 	}
 
 	.keys {

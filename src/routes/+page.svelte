@@ -787,11 +787,14 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1rem;
-		max-width: 42rem;
 	}
 
 	.card {
 		padding: 1.2rem 1.4rem;
+	}
+
+	.card p {
+		max-width: 72ch;
 	}
 
 	.row {
