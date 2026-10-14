@@ -331,6 +331,14 @@ def cancel_message(job_id: str = "job-1", protocol: str = PROTOCOL_ID) -> str:
     )
 
 
+CANCEL_FILE = "cancel.flag"
+
+
+def request_cancel(job_dir: Path) -> None:
+    """Request cancellation the way the Rust core does: create the flag file."""
+    (Path(job_dir) / CANCEL_FILE).touch()
+
+
 TERMINAL_TYPES = ("job.result", "job.error", "job.cancelled")
 
 
@@ -349,6 +357,10 @@ class FakeStdin:
     def readline(self) -> str:
         item = self._queue.get()
         return "" if item is None else item
+
+    def unread(self) -> int:
+        """Lines (not EOF markers) still waiting to be read."""
+        return sum(1 for item in list(self._queue.queue) if item is not None)
 
 
 class FakeStdout:
@@ -386,11 +398,17 @@ def run_inproc(
     heartbeat_interval: float = 15.0,
 ) -> tuple[int, FakeStdout, str]:
     """Run the public engine entry point over fake text streams."""
-    from opendemand_engine import engine
-
     stdin = FakeStdin(send_lines)
     if eof:
         stdin.eof()
+    return run_inproc_streams(job_dir, stdin, heartbeat_interval=heartbeat_interval)
+
+
+def run_inproc_streams(
+    job_dir: Path, stdin: "FakeStdin", heartbeat_interval: float = 15.0
+) -> tuple[int, FakeStdout, str]:
+    from opendemand_engine import engine
+
     stdout = FakeStdout()
     import io
 

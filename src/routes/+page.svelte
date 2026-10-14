@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
-	import type { JobInfo, SeriesSummary } from '$lib/bindings';
+	import type { JobInfo, OverrideEdit, SeriesSummary } from '$lib/bindings';
 	import BrowserFallback from '$lib/components/BrowserFallback.svelte';
 	import CsvFormatCard from '$lib/components/CsvFormatCard.svelte';
 	import JobMonitor from '$lib/components/JobMonitor.svelte';
@@ -8,12 +8,13 @@
 	import SeriesList from '$lib/components/SeriesList.svelte';
 	import StatusChip from '$lib/components/StatusChip.svelte';
 	import WorkspacePanel from '$lib/components/WorkspacePanel.svelte';
-	import { formatPercent, humanizeToken, shortId } from '$lib/frontend/format';
+	import { formatPercent, formatTimestamp, humanizeToken, shortId } from '$lib/frontend/format';
 	import {
 		IpcError,
 		cancelJob,
 		createWorkspace,
 		describeError,
+		exportPlanCsv,
 		fetchJobStatus,
 		fetchJobs,
 		fetchRunsList,
@@ -23,7 +24,9 @@
 		isTauriRuntime,
 		openWorkspace,
 		pickCanonicalCsv,
+		pickCsvExport,
 		pickWorkspaceDirectory,
+		saveOverride,
 		startForecast,
 		startImport
 	} from '$lib/frontend/ipc';
@@ -49,6 +52,12 @@
 	let searchInput = $state('');
 	let debouncedSearch = $state('');
 	let offset = $state(0);
+	let selectedRunId = $state<string | null>(null);
+	let plannerDirty = $state(false);
+	let plannerSaving = $state(false);
+	let exporting = $state(false);
+	let exportNotice = $state<string | null>(null);
+	let seriesScope = '';
 
 	// Debounce the series search; a new search always restarts at page one.
 	$effect(() => {
@@ -66,7 +75,19 @@
 		retry: 0
 	}));
 	const workspace = $derived(workspaceQuery.data ?? null);
-	const revisionId = $derived(workspace?.latest_revision_id ?? null);
+	const latestRevisionId = $derived(workspace?.latest_revision_id ?? null);
+
+	const runsQuery = createQuery(() => ({
+		queryKey: ['runs', workspace?.path],
+		queryFn: () => fetchRunsList(null),
+		enabled: desktop && workspace !== null,
+		retry: 0
+	}));
+	const runs = $derived(runsQuery.data ?? []);
+	const newestRun = $derived(runs.length > 0 ? sortRunsNewestFirst(runs)[0] : null);
+	const displayRun = $derived(selectDisplayRun(runs, latestRevisionId, selectedRunId));
+	const displayRunId = $derived(displayRun?.id ?? null);
+	const revisionId = $derived(displayRun?.revision_id ?? latestRevisionId);
 
 	const seriesQuery = createQuery(() => ({
 		queryKey: ['series', workspace?.path, revisionId, debouncedSearch, offset],
@@ -75,16 +96,15 @@
 		retry: 0
 	}));
 
-	const runsQuery = createQuery(() => ({
-		queryKey: ['runs', workspace?.path, revisionId],
-		queryFn: () => fetchRunsList(revisionId as number),
-		enabled: desktop && revisionId !== null,
-		retry: 0
-	}));
-	const runs = $derived(runsQuery.data ?? []);
-	const newestRun = $derived(runs.length > 0 ? sortRunsNewestFirst(runs)[0] : null);
-	const displayRun = $derived(selectDisplayRun(runs));
-	const displayRunId = $derived(displayRun?.id ?? null);
+	$effect(() => {
+		const scope = `${workspace?.path ?? ''}:${revisionId ?? ''}`;
+		if (scope !== seriesScope) {
+			seriesScope = scope;
+			selectedSeries = null;
+			offset = 0;
+			plannerDirty = false;
+		}
+	});
 
 	const detailQuery = createQuery(() => ({
 		queryKey: [
@@ -202,9 +222,15 @@
 
 	async function handleJobTerminal(job: JobInfo) {
 		notice = summarizeJob(job);
-		if (job.kind === 'import' && job.status === 'completed' && job.import_result) {
+		const keepSelection = plannerDirty || plannerSaving;
+		if (job.kind === 'import' && job.status === 'completed' && job.import_result && !keepSelection) {
+			selectedRunId = null;
 			selectedSeries = null;
 			offset = 0;
+		}
+		if (job.kind === 'forecast' && job.status === 'completed' && job.forecast_result && !keepSelection) {
+			selectedRunId = job.forecast_result.run_id;
+			plannerDirty = false;
 		}
 		await Promise.all([
 			queryClient.invalidateQueries({ queryKey: ['workspace'] }),
@@ -229,6 +255,9 @@
 			activeJobId = null;
 			activeJobStatus = null;
 			selectedSeries = null;
+			selectedRunId = null;
+			plannerDirty = false;
+			exportNotice = null;
 			offset = 0;
 			await queryClient.invalidateQueries({ queryKey: ['workspace'] });
 		} catch (error) {
@@ -245,6 +274,9 @@
 			activeJobId = null;
 			activeJobStatus = null;
 			selectedSeries = null;
+			selectedRunId = null;
+			plannerDirty = false;
+			exportNotice = null;
 			offset = 0;
 			searchInput = '';
 			await queryClient.invalidateQueries({ queryKey: ['workspace'] });
@@ -266,9 +298,9 @@
 
 	async function handleForecast() {
 		actionError = null;
-		if (revisionId === null) return;
+		if (latestRevisionId === null) return;
 		try {
-			beginJob(await startForecast(revisionId));
+			beginJob(await startForecast(latestRevisionId));
 		} catch (error) {
 			actionError = describeError(error);
 		}
@@ -291,7 +323,58 @@
 	}
 
 	function handleSelectSeries(item: SeriesSummary) {
+		if (plannerDirty || plannerSaving || exporting) return;
+		if (selectedSeries?.productId === item.product_id && selectedSeries.locationId === item.location_id) return;
+		plannerDirty = false;
 		selectedSeries = { productId: item.product_id, locationId: item.location_id };
+	}
+
+	function handleSelectRun(runId: string) {
+		selectedRunId = runId;
+		selectedSeries = null;
+		plannerDirty = false;
+		exportNotice = null;
+		actionError = null;
+		offset = 0;
+		searchInput = '';
+	}
+
+	async function handleSaveOverride(edit: OverrideEdit) {
+		plannerSaving = true;
+		exportNotice = null;
+		try {
+			return await saveOverride(edit);
+		} finally {
+			plannerSaving = false;
+		}
+	}
+
+	async function refreshDetail() {
+		const result = await detailQuery.refetch();
+		if (result.error) throw describeError(result.error);
+		if (!result.data) throw new Error('The selected plan could not be loaded.');
+		return result.data;
+	}
+
+	async function handleExport() {
+		const run = displayRun;
+		if (!run || plannerDirty || plannerSaving || exporting) return;
+		const workspacePath = workspace?.path;
+		exporting = true;
+		actionError = null;
+		exportNotice = null;
+		try {
+			const path = await pickCsvExport(run.id);
+			if (!path) return;
+			if (workspace?.path !== workspacePath) throw new Error('The workspace changed. Select the run and export again.');
+			const result = await exportPlanCsv(run.id, path);
+			exportNotice = `Exported ${result.row_count} weekly rows from all series to ${result.path}.`;
+		} catch (error) {
+			actionError = describeError(error);
+		} finally {
+			exporting = false;
+			void queryClient.invalidateQueries({ queryKey: ['jobs'] });
+		}
 	}
 
 	function queryErrorCode(error: unknown): string {
@@ -320,8 +403,8 @@
 			<aside class="sidebar" aria-label="Workspace controls">
 				<WorkspacePanel
 					{workspace}
-					{revisionId}
-					{jobBusy}
+					revisionId={latestRevisionId}
+					jobBusy={jobBusy || plannerDirty || plannerSaving || exporting}
 					onCreate={handleCreateWorkspace}
 					onOpen={handleOpenWorkspace}
 					onImport={handleImport}
@@ -339,6 +422,7 @@
 					<SeriesList
 						series={seriesQuery.data ?? []}
 						loading={seriesQuery.isPending && seriesQuery.isFetching}
+						disabled={plannerDirty || plannerSaving || exporting}
 						error={seriesQuery.isError
 							? { code: queryErrorCode(seriesQuery.error), message: seriesQuery.error.message }
 							: null}
@@ -356,6 +440,36 @@
 			</aside>
 
 			<main id="main" class="content">
+				{#if workspace && latestRevisionId !== null}
+					<section class="panel run-controls" aria-label="Forecast run and export">
+						<div class="run-picker">
+							<label class="field-label" for="forecast-run">Forecast run</label>
+							<select id="forecast-run" value={displayRunId ?? ''} disabled={runsQuery.isPending || plannerDirty || plannerSaving || exporting} onchange={(event) => handleSelectRun(event.currentTarget.value)}>
+								<option value="">Latest import revision</option>
+								{#each sortRunsNewestFirst(runs) as run (run.id)}
+									<option value={run.id}>{formatTimestamp(run.created_at)} | Revision {run.revision_id} | {shortId(run.id, 18)} | {humanizeToken(run.status)}</option>
+								{/each}
+							</select>
+							{#if runsQuery.isPending && runsQuery.isFetching}
+								<p class="muted" role="status">Loading forecast runs...</p>
+							{:else if runsQuery.isError}
+								<div class="banner banner-error" role="alert">
+									<p>Could not load runs: {runsQuery.error.message}</p>
+									<button class="btn btn-secondary" onclick={() => void runsQuery.refetch()}>Retry</button>
+								</div>
+							{:else if runs.length === 0}
+								<p class="muted">Generate a forecast to start planning.</p>
+							{/if}
+						</div>
+						<div class="export-controls">
+							<button class="btn btn-secondary" disabled={!displayRun || displayRun.status !== 'completed' || plannerDirty || plannerSaving || exporting} onclick={handleExport}>{exporting ? 'Exporting CSV...' : 'Export CSV'}</button>
+							<p class="muted">{plannerDirty ? 'Save or discard edits before switching series, runs, or exporting.' : 'Exports every series in the selected run.'}</p>
+						</div>
+					</section>
+				{/if}
+				{#if exportNotice}
+					<p class="banner banner-success export-notice" role="status">{exportNotice}</p>
+				{/if}
 				{#if actionError}
 					<p class="banner banner-error" role="alert">
 						[{actionError.code}] {actionError.message}
@@ -423,12 +537,18 @@
 						summary={selectedSummary}
 						detail={detailQuery.data ?? null}
 						run={displayRun}
-						loading={detailQuery.isPending && detailQuery.isFetching}
+						loading={detailQuery.isFetching}
 						error={detailQuery.isError
 							? { code: queryErrorCode(detailQuery.error), message: detailQuery.error.message }
 							: null}
 						onRetry={() => void detailQuery.refetch()}
-						onClear={() => (selectedSeries = null)}
+						onSave={handleSaveOverride}
+						onRefresh={refreshDetail}
+						onDirtyChange={(dirty) => {
+							plannerDirty = dirty;
+							// Pin the run so a background job cannot replace an edited plan.
+							if (dirty) selectedRunId = displayRunId;
+						}}
 					/>
 				{/if}
 			</main>
@@ -505,6 +625,44 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1rem;
+	}
+
+	.run-controls {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: start;
+		gap: 0.8rem 1.2rem;
+		padding: 0.8rem 1rem;
+	}
+
+	.run-picker {
+		flex: 1;
+		min-width: 15rem;
+	}
+
+	.run-picker select {
+		width: 100%;
+		min-height: 36px;
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-sm);
+		padding: 0.35rem 0.5rem;
+		background: var(--surface);
+		color: var(--ink);
+		font: inherit;
+		font-size: 0.85rem;
+	}
+
+	.export-controls {
+		align-self: end;
+	}
+
+	.run-controls p {
+		margin: 0.35rem 0 0;
+		font-size: 0.78rem;
+	}
+
+	.export-notice {
+		overflow-wrap: anywhere;
 	}
 
 	.stack {

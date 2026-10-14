@@ -144,8 +144,38 @@ async fn series_detail(
 
 #[tauri::command]
 #[specta::specta]
-async fn runs_list(revision_id: i32, state: State<'_, Service>) -> AppResult<Vec<RunSummary>> {
-    state.current().await?.runs_list(revision_id).await
+async fn runs_list(
+    revision_id: Option<i32>,
+    state: State<'_, Service>,
+) -> AppResult<Vec<RunSummary>> {
+    let workspace = state.current().await?;
+    match revision_id {
+        Some(revision) => workspace.runs_list(revision).await,
+        None => workspace.runs_list_all().await,
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn override_append(
+    edit: OverrideEdit,
+    state: State<'_, Service>,
+) -> AppResult<OverrideRevision> {
+    state.current().await?.append_override(edit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn export_csv(
+    run_id: String,
+    path: String,
+    state: State<'_, Service>,
+) -> AppResult<ExportResult> {
+    state
+        .current()
+        .await?
+        .export_csv(&run_id, &PathBuf::from(path))
+        .await
 }
 
 fn publish(
@@ -468,7 +498,9 @@ fn command_builder() -> Builder<tauri::Wry> {
             jobs_list,
             series_list,
             series_detail,
-            runs_list
+            runs_list,
+            override_append,
+            export_csv
         ])
         .events(collect_events![JobProgress])
 }

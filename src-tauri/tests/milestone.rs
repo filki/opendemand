@@ -126,3 +126,38 @@ async fn cancelling_before_engine_start_does_not_persist_a_partial_run() {
     assert_eq!(count, 0);
     workspace.pool.close().await;
 }
+
+#[tokio::test]
+async fn cancelling_a_running_engine_does_not_persist_a_partial_run() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = Workspace::create(directory.path().join("workspace"))
+        .await
+        .unwrap();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/demo.csv");
+    let imported = workspace
+        .import_csv(&fixture, &AtomicBool::new(false))
+        .await
+        .unwrap();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let trigger = cancel.clone();
+    let error = run_forecast(
+        &workspace,
+        imported.revision_id,
+        "running-cancel-job",
+        cancel,
+        // Cancel on the first progress callback, before the engine finishes:
+        // the core creates cancel.flag in the job directory and the engine
+        // must answer job.cancelled within the grace period.
+        Arc::new(move |_, _| trigger.store(true, std::sync::atomic::Ordering::SeqCst)),
+        std::env::var_os("OPENDEMAND_ENGINE").map(PathBuf::from),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, "cancelled");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM forecast_run")
+        .fetch_one(&workspace.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+    workspace.pool.close().await;
+}

@@ -5,8 +5,10 @@ Design constraints honoured here:
 - Stdlib-only imports at module level; PyArrow and StatsForecast are imported
   only after ``hello`` has been flushed so the Rust orchestrator sees liveness
   well within its 5 second hello budget.
-- Strict protocol and job correlation; cancellation is honoured between tasks
-  and before any output is accepted.
+- Stdin is read once, on the main thread, for the single ``job.request``; no
+  thread ever blocks on stdin (ADR-0016). Cancellation is the ``cancel.flag``
+  file in the job directory, honoured between tasks and before any output is
+  accepted.
 - Outputs are written to temp names, closed and fsynced, then atomically
   renamed before ``job.result``; the manifest carries fixed paths, row counts
   and lowercase SHA-256 digests.
@@ -20,6 +22,7 @@ from pathlib import Path
 
 from . import (
     ARROW_CONTRACT_ID,
+    CANCEL_FILE,
     OBSERVATIONS_FILE,
     PROTOCOL_ID,
     SUPPORTED_MODELS,
@@ -36,7 +39,7 @@ from .errors import (
     JobCancelled,
     TaskFailure,
 )
-from .protocol import EnvelopeWriter, InboxReader
+from .protocol import EnvelopeWriter, read_request
 
 EXIT_OK = 0
 EXIT_JOB_ERROR = 1
@@ -67,10 +70,7 @@ def run_job(
     writer.send(_hello_envelope())
     _log(stderr, "hello sent")
 
-    reader = InboxReader(stdin)
-    reader.start()
-    kind, payload = reader.wait_initial()
-    _log(stderr, f"initial {kind}")
+    kind, payload = read_request(stdin)
 
     if kind == "eof":
         _log(stderr, "stdin closed before job.request")
@@ -102,35 +102,31 @@ def run_job(
     written: list[Path] = []
     try:
         from . import arrowio  # PyArrow only after hello is on the wire
-        from .tasks import ObservationIndex, execute_task, failed_outcome, parse_tasks
-        _log(stderr, "imports ready")
+        from .tasks import ObservationIndex, parse_tasks
 
-        _raise_on_interrupt(reader)
-        _log(stderr, "interrupt check done")
+        _raise_on_interrupt(job_dir)
         tasks_table = arrowio.read_input_table(
             job_dir, arrowio.TASKS_FILE, arrowio.TASKS_SCHEMA, "tasks"
         )
-        _log(stderr, "tasks table read")
         task_rows = parse_tasks(tasks_table)
-        _log(stderr, "tasks parsed")
         total = len(task_rows)
         tracker.update("validate_input", 0, total)
         _log(stderr, f"phase validate_input tasks={total}")
 
-        _raise_on_interrupt(reader)
+        _raise_on_interrupt(job_dir)
         observations_table = arrowio.read_input_table(
             job_dir, arrowio.OBSERVATIONS_FILE, arrowio.OBSERVATIONS_SCHEMA, "observations"
         )
         index = ObservationIndex.from_table(observations_table)
-        _raise_on_interrupt(reader)
+        _raise_on_interrupt(job_dir)
 
-        outcomes = _execute_all(task_rows, index, reader, tracker, stderr)
+        outcomes = _execute_all(task_rows, index, job_dir, tracker, stderr)
         tracker.update("write_output", total, total)
         _log(stderr, f"phase write_output completed={total}")
 
-        _raise_on_interrupt(reader)
+        _raise_on_interrupt(job_dir)
         manifest, written = arrowio.write_output_tables(job_dir, _collect_rows(outcomes))
-        _raise_on_interrupt(reader)
+        _raise_on_interrupt(job_dir)
 
         writer.send(_result_envelope(job_id, manifest))
         _log(stderr, "terminal type=job.result")
@@ -159,7 +155,7 @@ def run_job(
 # ---------------------------------------------------------------------------
 
 
-def _execute_all(task_rows, index, reader, tracker, stderr):
+def _execute_all(task_rows, index, job_dir, tracker, stderr):
     from .tasks import execute_task, failed_outcome
 
     total = len(task_rows)
@@ -176,7 +172,7 @@ def _execute_all(task_rows, index, reader, tracker, stderr):
         _log(stderr, f"phase {phase} tasks={len(group)}")
         tracker.update(phase, done, total)
         for position, task in group:
-            _raise_on_interrupt(reader)
+            _raise_on_interrupt(job_dir)
             try:
                 outcome = execute_task(task, index)
             except TaskFailure as failure:
@@ -186,7 +182,7 @@ def _execute_all(task_rows, index, reader, tracker, stderr):
             outcomes[position] = outcome
             done += 1
             tracker.update(phase, done, total)
-            _raise_on_interrupt(reader)
+            _raise_on_interrupt(job_dir)
     return [outcome for outcome in outcomes]
 
 
@@ -207,14 +203,10 @@ def _collect_rows(outcomes) -> dict[str, list[dict]]:
 # ---------------------------------------------------------------------------
 
 
-def _raise_on_interrupt(reader: InboxReader) -> None:
-    if reader.cancel_event.is_set():
+def _raise_on_interrupt(job_dir: Path) -> None:
+    """Raise ``JobCancelled`` once the core has created ``cancel.flag``."""
+    if (job_dir / CANCEL_FILE).is_file():
         raise JobCancelled()
-    if reader.protocol_error is not None:
-        raise EngineError(
-            PROTOCOL_MISMATCH,
-            "sidecar protocol correlation was violated after job.request",
-        )
 
 
 def _usable_job_id(obj) -> str | None:

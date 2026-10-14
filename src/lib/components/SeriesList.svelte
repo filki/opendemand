@@ -6,6 +6,7 @@
 	let {
 		series,
 		loading,
+		disabled = false,
 		error,
 		selected,
 		search,
@@ -19,6 +20,7 @@
 	}: {
 		series: SeriesSummary[];
 		loading: boolean;
+		disabled?: boolean;
 		error: { code: string; message: string } | null;
 		selected: { productId: string; locationId: string } | null;
 		search: string;
@@ -80,17 +82,19 @@
 		</p>
 	{:else}
 		<ul class="list" aria-label="Series in this revision">
-			{#each series as item (item.series_key)}
+			{#each series as item (item.product_id + ':' + item.location_id)}
 				<li>
 					<button
 						type="button"
 						class="row"
 						class:selected={isSelected(item)}
 						aria-current={isSelected(item) ? 'true' : undefined}
+						{disabled}
 						onclick={() => onSelect(item)}
 					>
 						<span class="key" title={item.series_key}>{item.series_key}</span>
 						<span class="row-meta">
+							<span class="muted" title={item.location_id}>{item.location_code}</span>
 							<span class="muted">{item.h_length} w history</span>
 							<StatusChip
 								label={qualificationLabel(item.qualification_status)}

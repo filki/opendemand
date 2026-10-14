@@ -111,15 +111,24 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(terminal["job_id"], "job-9")
         self.assert_no_outputs()
 
-    def test_duplicate_request_fails_closed(self):
+    def test_stdin_is_not_read_after_the_request(self):
+        # The engine never reads stdin again once job.request is classified:
+        # on Windows a thread blocked on stdin starves the process (ADR-0016).
         self.tiny_job()
-        code, stdout, _ = h.run_inproc(
-            self.job_dir, [h.job_request(), h.job_request()]
-        )
+        stdin = h.FakeStdin([h.job_request(), h.job_request(), "not json"])
+        code, stdout, _ = h.run_inproc_streams(self.job_dir, stdin)
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.terminal()["type"], "job.result")
+        self.assertEqual(stdin.unread(), 2)
+
+    def test_cancel_message_before_request_is_protocol_mismatch(self):
+        self.tiny_job()
+        code, stdout, _ = h.run_inproc(self.job_dir, [h.cancel_message("job-3")])
         self.assertEqual(code, 1)
         terminal = stdout.terminal()
         self.assertEqual(terminal["type"], "job.error")
         self.assertEqual(terminal["code"], "protocol_mismatch")
+        self.assertEqual(terminal["job_id"], "job-3")
         self.assert_no_outputs()
 
     def test_unsupported_contract_is_contract_violation(self):
@@ -208,35 +217,55 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(terminal["code"], "invalid_input")
         self.assert_no_outputs()
 
-    def test_cancel_with_wrong_job_id_is_protocol_mismatch(self):
-        self.tiny_job()
-        code, stdout, _ = h.run_inproc(
-            self.job_dir, [h.job_request("job-1"), h.cancel_message("job-other")]
-        )
-        self.assertEqual(code, 1)
-        terminal = stdout.terminal()
-        self.assertEqual(terminal["type"], "job.error")
-        self.assertEqual(terminal["code"], "protocol_mismatch")
-        self.assertEqual(terminal["job_id"], "job-1")
-        self.assert_no_outputs()
-
     def test_stdin_eof_after_request_still_completes(self):
         self.tiny_job()
         code, stdout, _ = h.run_inproc(self.job_dir, [h.job_request()], eof=True)
         self.assertEqual(code, 0)
         self.assertEqual(stdout.terminal()["type"], "job.result")
 
-    def test_cancel_before_any_task_yields_job_cancelled_without_outputs(self):
+    def test_cancel_flag_before_any_task_yields_job_cancelled_without_outputs(self):
         self.tiny_job()
-        code, stdout, _ = h.run_inproc(
-            self.job_dir, [h.job_request("job-7"), h.cancel_message("job-7")]
-        )
+        h.request_cancel(self.job_dir)
+        code, stdout, _ = h.run_inproc(self.job_dir, [h.job_request("job-7")])
         self.assertEqual(code, 0)
         terminal = stdout.terminal()
         self.assertEqual(terminal["type"], "job.cancelled")
         self.assertEqual(terminal["job_id"], "job-7")
         self.assert_no_outputs()
         self.assertNotIn("job.result", [e["type"] for e in stdout.envelopes()])
+
+    def test_cancel_flag_during_tasks_stops_before_output(self):
+        tasks = [
+            h.production_task(h.series_uuid(f"prot/prod/{n}"), self.pid, self.lid, self.weeks)
+            for n in range(3)
+        ]
+        self.tiny_job(task_rows=tasks)
+        from opendemand_engine import tasks as engine_tasks
+
+        original = engine_tasks.execute_task
+        calls = []
+
+        def execute_then_cancel(task, index):
+            calls.append(task)
+            h.request_cancel(self.job_dir)
+            return original(task, index)
+
+        engine_tasks.execute_task = execute_then_cancel
+        try:
+            code, stdout, _ = h.run_inproc(self.job_dir, [h.job_request("job-8")])
+        finally:
+            engine_tasks.execute_task = original
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.terminal()["type"], "job.cancelled")
+        self.assertEqual(len(calls), 1)
+        self.assert_no_outputs()
+
+    def test_cancel_flag_directory_is_not_a_cancel(self):
+        self.tiny_job()
+        (self.job_dir / "cancel.flag").mkdir()
+        code, stdout, _ = h.run_inproc(self.job_dir, [h.job_request()])
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.terminal()["type"], "job.result")
 
 
 class HeartbeatTests(unittest.TestCase):

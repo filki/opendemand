@@ -1,5 +1,6 @@
 <script lang="ts">
-	import type { RunSummary, SeriesDetail, SeriesSummary } from '$lib/bindings';
+	import type { OverrideEdit, OverrideRevision, RunSummary, SeriesDetail, SeriesSummary } from '$lib/bindings';
+	import ForecastEditor from '$lib/components/ForecastEditor.svelte';
 	import SeriesChart from '$lib/components/SeriesChart.svelte';
 	import StatusChip from '$lib/components/StatusChip.svelte';
 	import {
@@ -18,7 +19,9 @@
 		loading,
 		error,
 		onRetry,
-		onClear
+		onSave,
+		onRefresh,
+		onDirtyChange
 	}: {
 		summary: SeriesSummary | null;
 		detail: SeriesDetail | null;
@@ -26,7 +29,9 @@
 		loading: boolean;
 		error: { code: string; message: string } | null;
 		onRetry: () => void;
-		onClear: () => void;
+		onSave: (edit: OverrideEdit) => Promise<OverrideRevision>;
+		onRefresh: () => Promise<SeriesDetail>;
+		onDirtyChange: (dirty: boolean) => void;
 	} = $props();
 
 	const seriesKey = $derived(summary?.series_key ?? detail?.series_key ?? 'Series');
@@ -75,10 +80,9 @@
 			<h2 id="series-detail-heading" class="key" title={seriesKey}>{seriesKey}</h2>
 			<p class="ids muted mono">
 				<span title={productId}>product {shortId(productId, 13)}</span>
-				<span title={locationId}>location {shortId(locationId, 13)}</span>
+				<span title={locationId}>location {summary?.location_code ?? detail?.location_code ?? shortId(locationId, 13)}</span>
 			</p>
 		</div>
-		<button class="btn btn-secondary btn-small" onclick={onClear}>Clear selection</button>
 	</header>
 
 	{#if error}
@@ -86,9 +90,13 @@
 			<p>[{error.code}] {error.message}</p>
 			<button class="btn btn-secondary btn-small" onclick={onRetry}>Retry</button>
 		</div>
-	{:else if loading && !detail}
+	{/if}
+	{#if loading && !detail}
 		<p class="muted" role="status">Loading series…</p>
 	{:else if detail}
+		{#if loading}
+			<p class="muted" role="status">Refreshing plan...</p>
+		{/if}
 		<dl class="meta">
 			{#if summary}
 				<div>
@@ -157,7 +165,8 @@
 			<p class="banner banner-warn reason">Reason: {detail.reason}</p>
 		{/if}
 
-		<SeriesChart seriesKey={seriesKey} history={detail.history} forecast={detail.forecast} />
+		<SeriesChart seriesKey={seriesKey} history={detail.history} forecast={detail.forecast} planning={detail.planning} />
+		<ForecastEditor {detail} {onSave} {onRefresh} {onDirtyChange} />
 	{:else}
 		<p class="muted">Select a series to inspect its history and forecast.</p>
 	{/if}

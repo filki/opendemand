@@ -30,6 +30,7 @@ use uuid::Uuid;
 
 const CONTRACT: &str = "opendemand.arrow/1";
 const PROTOCOL: &str = "opendemand.sidecar/1";
+const CANCEL_FILE: &str = "cancel.flag";
 pub type Progress = Arc<dyn Fn(&str, f64) + Send + Sync>;
 
 #[derive(Debug, Clone)]
@@ -623,6 +624,9 @@ async fn run_process(
     let request = json!({"protocol": PROTOCOL, "type": "job.request", "job_id": job_id, "contract": CONTRACT, "input_files": {"observations": "observations.arrow", "tasks": "tasks.arrow"}});
     stdin.write_all(format!("{request}\n").as_bytes()).await?;
     stdin.flush().await?;
+    // The request is the only stdin message; closing the pipe lets the engine
+    // run with no reader blocked on stdin (ADR-0016). Cancellation uses CANCEL_FILE.
+    drop(stdin);
     let seconds = std::env::var("OPENDEMAND_JOB_TIMEOUT_SECONDS").ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(1800).clamp(1, 7200);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(seconds);
     let mut heartbeat = tokio::time::interval(Duration::from_millis(100));
@@ -635,9 +639,7 @@ async fn run_process(
             }
             _ = heartbeat.tick() => {
                 if cancel.load(Ordering::SeqCst) {
-                    let request = json!({"protocol": PROTOCOL, "type": "job.cancel", "job_id": job_id});
-                    let _ = stdin.write_all(format!("{request}\n").as_bytes()).await;
-                    let _ = stdin.flush().await;
+                    let _ = std::fs::File::create(directory.join(CANCEL_FILE));
                     if tokio::time::timeout(Duration::from_secs(5), child.wait()).await.is_err() {
                         child.kill().await?;
                         child.wait().await?;
