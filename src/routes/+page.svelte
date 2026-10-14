@@ -1,14 +1,16 @@
 <script lang="ts">
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
-	import type { JobInfo, OverrideEdit, SeriesSummary } from '#lib/bindings.ts';
+	import type { JobInfo, OverrideEdit, ParsingDescriptor, SeriesSummary } from '#lib/bindings.ts';
 	import BrowserFallback from '#lib/components/BrowserFallback.svelte';
 	import CsvFormatCard from '#lib/components/CsvFormatCard.svelte';
+	import ImportWizard from '#lib/components/ImportWizard.svelte';
 	import JobMonitor from '#lib/components/JobMonitor.svelte';
 	import SeriesDetailPanel from '#lib/components/SeriesDetailPanel.svelte';
 	import SeriesList from '#lib/components/SeriesList.svelte';
 	import StatusChip from '#lib/components/StatusChip.svelte';
 	import WorkspacePanel from '#lib/components/WorkspacePanel.svelte';
 	import { formatPercent, formatTimestamp, humanizeToken, shortId } from '#lib/frontend/format.ts';
+	import { resolveLocale, t } from '#lib/frontend/i18n.ts';
 	import {
 		IpcError,
 		cancelJob,
@@ -60,6 +62,7 @@
 	let exporting = $state(false);
 	let exportNotice = $state<string | null>(null);
 	let seriesScope = '';
+	let wizardOpen = $state(false);
 
 	// Debounce the series search; a new search always restarts at page one.
 	$effect(() => {
@@ -78,6 +81,7 @@
 	}));
 	const workspace = $derived(workspaceQuery.data ?? null);
 	const latestRevisionId = $derived(workspace?.latest_revision_id ?? null);
+	const locale = $derived(resolveLocale(workspace?.locale));
 
 	const runsQuery = createQuery(() => ({
 		queryKey: ['runs', workspace?.path],
@@ -316,6 +320,12 @@
 		}
 	}
 
+	async function handleWizardImport(path: string, descriptor: ParsingDescriptor) {
+		actionError = null;
+		beginJob(await startImport(path, descriptor));
+		wizardOpen = false;
+	}
+
 	async function handleForecast() {
 		actionError = null;
 		if (latestRevisionId === null) return;
@@ -527,7 +537,18 @@
 					</div>
 				{:else if revisionId === null}
 					<div class="stack">
-						<CsvFormatCard onImport={handleImport} />
+						<CsvFormatCard
+							onImport={handleImport}
+							onGuidedImport={() => (wizardOpen = true)}
+							guidedLabel={t(locale, 'wizard.title')}
+						/>
+						{#if wizardOpen}
+							<ImportWizard
+								{locale}
+								onImport={handleWizardImport}
+								onClose={() => (wizardOpen = false)}
+							/>
+						{/if}
 					</div>
 				{:else if selectedSeries === null}
 					<section class="panel card">
