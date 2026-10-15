@@ -20,6 +20,19 @@ export const commands = {
 	 *  workspace stays listed while it exists, even after it is forgotten.
 	 */
 	workspacesForget: (path: string) => typedError<null, AppError>(__TAURI_INVOKE("workspaces_forget", { path })),
+	/**
+	 *  Rename a workspace by moving its directory and re-pointing the registry
+	 *  entry. Refused for the default workspace, for the currently open workspace,
+	 *  and while a job runs.
+	 */
+	workspaceRename: (path: string, name: string) => typedError<WorkspaceRef, AppError>(__TAURI_INVOKE("workspace_rename", { path, name })),
+	/**
+	 *  Delete a workspace by removing its entire directory. The caller must pass
+	 *  the current workspace name exactly; the expected name is derived from the
+	 *  path, never taken from the caller. Refused for the default workspace, for
+	 *  the currently open workspace, and while a job runs.
+	 */
+	workspaceDelete: (path: string, confirmName: string) => typedError<null, AppError>(__TAURI_INVOKE("workspace_delete", { path, confirmName })),
 	importStart: (path: string, descriptor: {
 	descriptor_version: number,
 	format: string | null,

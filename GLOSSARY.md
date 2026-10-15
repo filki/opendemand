@@ -35,4 +35,4 @@ Vocabulary for issues, tests, ADRs, docs, and UI copy. Definitions here are conc
 - **WAPE** — weighted absolute percentage error: `sum(|actual − forecast|) / sum(|actual|)`; unavailable when the actual total is zero (MAE fallback).
 - **Weekly comparison** — derived, read-time comparison of two adjacent import revisions and their completed forecast runs; never stored, never zero-filled (ADR-0022).
 - **week_start** — ISO date (`YYYY-MM-DD`) of the Monday that identifies a calendar week in the workspace timezone.
-- **Workspace** — the user-chosen directory holding the SQLite database, retained source CSV copies, exported CSV copies, backups with manifests, and job temp files.
+- **Workspace** — the user-chosen directory holding the SQLite database, retained source CSV copies, exported CSV copies, backups with manifests, and job temp files. The workspace name is its folder name; renaming a workspace moves the folder and deletion removes the whole directory (ADR-0024).

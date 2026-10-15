@@ -196,6 +196,146 @@ async fn workspaces_forget(path: String, app: AppHandle) -> AppResult<()> {
     })
 }
 
+/// A workspace name must be a single, usable directory name.
+fn workspace_name(value: &str) -> AppResult<String> {
+    let name = value.trim();
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.chars().count() > 128
+        || name.contains(['/', '\\', '\0'])
+    {
+        return Err(AppError::new(
+            "invalid_workspace_name",
+            "Use a single folder name without path separators.",
+        ));
+    }
+    Ok(name.to_string())
+}
+
+/// The default application-data workspace cannot be renamed or deleted: its
+/// path is derived by `default_workspace_path`.
+fn refuse_default_workspace(app: &AppHandle, path: &Path) -> AppResult<()> {
+    if let Ok(default) = default_workspace_path(app) {
+        if path == default {
+            return Err(AppError::new(
+                "workspace_default",
+                "The default workspace cannot be renamed or deleted.",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Rename a workspace by moving its directory and re-pointing the registry
+/// entry. Refused for the default workspace, for the currently open workspace,
+/// and while a job runs.
+#[tauri::command]
+#[specta::specta]
+async fn workspace_rename(
+    path: String,
+    name: String,
+    app: AppHandle,
+    state: State<'_, Service>,
+) -> AppResult<WorkspaceRef> {
+    state.ensure_idle()?;
+    let name = workspace_name(&name)?;
+    let source = PathBuf::from(&path);
+    refuse_default_workspace(&app, &source)?;
+    if !source.join(DB_FILENAME).exists() {
+        return Err(AppError::new(
+            "workspace_not_found",
+            "No workspace database was found at this path; create it first.",
+        ));
+    }
+    {
+        let current = state.workspace.lock().await;
+        if let Some(open) = current.as_ref() {
+            if open.path == source {
+                return Err(AppError::new(
+                    "workspace_busy",
+                    "Close the open workspace before renaming it.",
+                ));
+            }
+        }
+    }
+    let parent = source.parent().ok_or_else(|| {
+        AppError::new(
+            "invalid_workspace_path",
+            "The workspace path has no parent folder.",
+        )
+    })?;
+    let target = parent.join(&name);
+    if target != source {
+        if target.exists() {
+            return Err(AppError::new(
+                "workspace_name_taken",
+                "A folder with that name already exists next to this workspace.",
+            ));
+        }
+        std::fs::rename(&source, &target)?;
+    }
+    let file = registry_file(&app)?;
+    let mut entries = recent::load(&file);
+    recent::rename(&mut entries, &source, &target);
+    let _ = recent::save(&file, &entries);
+    let entry = entries
+        .into_iter()
+        .find(|entry| Path::new(&entry.path) == target)
+        .unwrap_or_else(|| recent::RecentWorkspace::new(&target, String::new()));
+    Ok(workspace_ref(entry, None))
+}
+
+/// Delete a workspace by removing its entire directory. The caller must pass
+/// the current workspace name exactly; the expected name is derived from the
+/// path, never taken from the caller. Refused for the default workspace, for
+/// the currently open workspace, and while a job runs.
+#[tauri::command]
+#[specta::specta]
+async fn workspace_delete(
+    path: String,
+    confirm_name: String,
+    app: AppHandle,
+    state: State<'_, Service>,
+) -> AppResult<()> {
+    state.ensure_idle()?;
+    let source = PathBuf::from(&path);
+    refuse_default_workspace(&app, &source)?;
+    if !source.join(DB_FILENAME).exists() {
+        return Err(AppError::new(
+            "workspace_not_found",
+            "No workspace database was found at this path; nothing to delete.",
+        ));
+    }
+    {
+        let current = state.workspace.lock().await;
+        if let Some(open) = current.as_ref() {
+            if open.path == source {
+                return Err(AppError::new(
+                    "workspace_busy",
+                    "Close the open workspace before deleting it.",
+                ));
+            }
+        }
+    }
+    let expected = source
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if confirm_name != expected {
+        return Err(AppError::new(
+            "confirm_name_mismatch",
+            "Type the workspace name exactly to confirm deletion.",
+        ));
+    }
+    std::fs::remove_dir_all(&source)?;
+    let file = registry_file(&app)?;
+    let mut entries = recent::load(&file);
+    recent::forget(&mut entries, &path);
+    let _ = recent::save(&file, &entries);
+    Ok(())
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn series_list(
@@ -725,6 +865,8 @@ fn command_builder() -> Builder<tauri::Wry> {
             workspace_info,
             workspaces_list,
             workspaces_forget,
+            workspace_rename,
+            workspace_delete,
             import_start,
             import_preview,
             import_configs_list,
@@ -830,5 +972,30 @@ mod tests {
 
         assert_eq!(super::find_sidecar(Some(directory.path()), None), None);
         assert_eq!(super::find_sidecar(None, None), None);
+    }
+
+    #[test]
+    fn workspace_names_are_trimmed_single_folder_names() {
+        assert_eq!(
+            super::workspace_name("  planner 2026  ").unwrap(),
+            "planner 2026"
+        );
+        assert_eq!(
+            super::workspace_name("sklep-kraków").unwrap(),
+            "sklep-kraków"
+        );
+    }
+
+    #[test]
+    fn workspace_names_reject_empty_dotted_and_separator_values() {
+        for value in ["", "   ", ".", "..", "a/b", "a\\b", "a\0b"] {
+            let error = super::workspace_name(value).unwrap_err();
+            assert_eq!(error.code, "invalid_workspace_name");
+        }
+        assert_eq!(
+            super::workspace_name(&"x".repeat(129)).unwrap_err().code,
+            "invalid_workspace_name"
+        );
+        assert!(super::workspace_name(&"x".repeat(128)).is_ok());
     }
 }

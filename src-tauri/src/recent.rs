@@ -66,6 +66,24 @@ pub fn forget(entries: &mut Vec<RecentWorkspace>, path: &str) -> bool {
     entries.len() != before
 }
 
+/// Re-point one registry entry after the workspace directory moved. Keeps the
+/// recorded open timestamp. A path that is not listed is a no-op.
+pub fn rename(entries: &mut [RecentWorkspace], old_path: &Path, new_path: &Path) -> bool {
+    let mut renamed = false;
+    for entry in entries.iter_mut() {
+        if Path::new(&entry.path) != old_path {
+            continue;
+        }
+        entry.path = new_path.to_string_lossy().into_owned();
+        entry.name = new_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| entry.path.clone());
+        renamed = true;
+    }
+    renamed
+}
+
 /// The default workspace lives in the application data directory. Keep it in
 /// the list even before its first recorded open, so existing installs always
 /// see the path to their data. It has no open timestamp until opened once.
@@ -139,6 +157,26 @@ mod tests {
         assert!(forget(&mut entries, "/data/alpha"));
         assert_eq!(entries, vec![entry("beta")]);
         assert!(!forget(&mut entries, "/data/alpha"));
+    }
+
+    #[test]
+    fn rename_repoints_the_entry_and_keeps_the_open_timestamp() {
+        let mut entries = vec![entry("alpha"), entry("beta")];
+        assert!(rename(
+            &mut entries,
+            Path::new("/data/alpha"),
+            Path::new("/data/renamed")
+        ));
+        assert_eq!(entries[0].path, "/data/renamed");
+        assert_eq!(entries[0].name, "renamed");
+        assert_eq!(entries[0].last_opened_at, "2026-01-01T00:00:00Z");
+        assert_eq!(entries[1], entry("beta"));
+
+        assert!(!rename(
+            &mut entries,
+            Path::new("/data/gamma"),
+            Path::new("/data/other")
+        ));
     }
 
     #[test]

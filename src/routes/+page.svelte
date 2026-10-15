@@ -12,12 +12,13 @@
 	import WorkspacePanel from '#lib/components/WorkspacePanel.svelte';
 	import WorkspacePicker from '#lib/components/WorkspacePicker.svelte';
 	import { formatPercent, formatTimestamp, humanizeToken, shortId } from '#lib/frontend/format.ts';
-	import { createWorkspaceHint } from '#lib/frontend/home.ts';
+	import { createWorkspaceHint, workspaceActionHint } from '#lib/frontend/home.ts';
 	import { resolveLocale, t } from '#lib/frontend/i18n.ts';
 	import {
 		cancelJob,
 		closeWorkspace,
 		createWorkspace,
+		deleteWorkspace,
 		describeError,
 		exportPlanCsv,
 		fetchJobStatus,
@@ -35,6 +36,7 @@
 		pickCsvExport,
 		pickWorkspaceDirectory,
 		queryErrorCode,
+		renameWorkspace,
 		saveOverride,
 		startForecast,
 		startImport
@@ -76,7 +78,11 @@
 	let comparisonOpen = $state(false);
 	/** Home flow with no workspace open: module menu, then the workspace list. */
 	let homeScreen = $state<'home' | 'picker'>('home');
-	const actionErrorHint = $derived(actionError ? createWorkspaceHint(actionError.code) : null);
+	const actionErrorHint = $derived(
+		actionError
+			? createWorkspaceHint(actionError.code) ?? workspaceActionHint(actionError.code)
+			: null
+	);
 
 	// Debounce the series search; a new search always restarts at page one.
 	$effect(() => {
@@ -438,6 +444,32 @@
 		}
 	}
 
+	/** Rename a workspace folder; returns false so the picker keeps the form open. */
+	async function handleRenameWorkspace(path: string, name: string): Promise<boolean> {
+		actionError = null;
+		try {
+			await renameWorkspace(path, name);
+			await queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+			return true;
+		} catch (error) {
+			actionError = describeError(error);
+			return false;
+		}
+	}
+
+	/** Delete a workspace directory after the typed-name confirmation. */
+	async function handleDeleteWorkspace(path: string, confirmName: string): Promise<boolean> {
+		actionError = null;
+		try {
+			await deleteWorkspace(path, confirmName);
+			await queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+			return true;
+		} catch (error) {
+			actionError = describeError(error);
+			return false;
+		}
+	}
+
 	async function handleImport() {
 		actionError = null;
 		try {
@@ -690,6 +722,8 @@
 								onOpenDirectory={handleOpenWorkspace}
 								onOpenPath={handleOpenRecentWorkspace}
 								onForget={handleForgetWorkspace}
+								onRename={handleRenameWorkspace}
+								onDelete={handleDeleteWorkspace}
 								onBack={() => (homeScreen = 'home')}
 							/>
 						{/if}

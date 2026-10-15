@@ -97,6 +97,14 @@ export async function forgetWorkspace(path: string): Promise<void> {
 	await unwrap(await commands.workspacesForget(path));
 }
 
+export async function renameWorkspace(path: string, name: string): Promise<WorkspaceRef> {
+	return unwrap(await commands.workspaceRename(path, name));
+}
+
+export async function deleteWorkspace(path: string, confirmName: string): Promise<void> {
+	await unwrap(await commands.workspaceDelete(path, confirmName));
+}
+
 export async function startImport(
 	path: string,
 	descriptor: ParsingDescriptor | null = null
