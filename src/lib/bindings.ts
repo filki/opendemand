@@ -92,6 +92,9 @@ export const commands = {
 	overrideAppend: (edit: OverrideEdit) => typedError<OverrideRevision, AppError>(__TAURI_INVOKE("override_append", { edit })),
 	seriesNoteAdd: (edit: SeriesNoteEdit) => typedError<SeriesNote, AppError>(__TAURI_INVOKE("series_note_add", { edit })),
 	seriesReviewSet: (edit: ReviewActionEdit) => typedError<SeriesReviewInfo, AppError>(__TAURI_INVOKE("series_review_set", { edit })),
+	reviewPolicy: () => typedError<InboxPolicy, AppError>(__TAURI_INVOKE("review_policy")),
+	reviewPolicySet: (edit: InboxPolicyEdit) => typedError<InboxPolicy, AppError>(__TAURI_INVOKE("review_policy_set", { edit })),
+	exceptionInbox: (runId: string, search: string, filter: string, offset: number, limit: number) => typedError<ExceptionInbox, AppError>(__TAURI_INVOKE("exception_inbox", { runId, search, filter, offset, limit })),
 	exportCsv: (runId: string, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_csv", { runId, path })),
 	exportXlsx: (runId: string, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_xlsx", { runId, path })),
 };
@@ -116,6 +119,21 @@ export type DemandChangePoint = {
 	current_status: string | null,
 	/**  `added`, `removed`, or `changed`. */
 	change_kind: string,
+};
+
+export type ExceptionInbox = {
+	run_id: string,
+	policy: InboxPolicy,
+	/**
+	 *  Newest completed run of the immediately preceding revision; None when
+	 *  no comparison evidence exists (the material-change rule is unavailable).
+	 */
+	predecessor_run_id: string | null,
+	/**  True when material-change rules were evaluated against a predecessor run. */
+	material_change_available: boolean,
+	/**  Rows matching the search and filter across the whole run. */
+	total: number,
+	rows: InboxItem[],
 };
 
 export type ExportResult = {
@@ -187,6 +205,62 @@ export type ImportResult = {
 	observation_count: number,
 	issue_count: number,
 	last_week: string,
+};
+
+/**
+ *  One derived exception-inbox row: a series with at least one applicable rule
+ *  for the selected run. Nothing here is stored; rules, fingerprints, and
+ *  review state are computed at read time (ADR-0028).
+ */
+export type InboxItem = {
+	product_id: string,
+	location_id: string,
+	series_key: string,
+	location_code: string,
+	outcome: string,
+	reason: string | null,
+	/**  Rule codes ordered by the fixed priority; the first entry set the row order. */
+	rules: string[],
+	/**  Sum of absolute baseline deltas over common calendar weeks. */
+	change_abs: number | null,
+	/**
+	 *  Relative change; null when the previous baseline magnitude is zero
+	 *  (the percentage is unavailable, never invented).
+	 */
+	change_rel: number | null,
+	/**  Earliest due override review date for this series, when any is due. */
+	due_review_date: string | null,
+	/**  `reviewed` or `unreviewed` for the selected run. */
+	review_status: string,
+	reviewed_at: string | null,
+	/**  Prior notes attached to this series (evidence link). */
+	note_count: number,
+	last_note_at: string | null,
+};
+
+/**
+ *  Versioned, profile-scoped thresholds for the derived exception inbox
+ *  (ADR-0028). Both thresholds are NULL together (rule disabled) or set.
+ */
+export type InboxPolicy = {
+	/**  Absolute material-change threshold in the series' own quantity units. */
+	change_abs: number | null,
+	/**
+	 *  Relative material-change threshold as a fraction of the previous
+	 *  baseline magnitude (0.25 means 25%).
+	 */
+	change_rel: number | null,
+	/**  Latest stored policy version; None when never configured. */
+	version: number | null,
+};
+
+/**
+ *  Raw threshold input; empty strings disable the rule. Both fields must be
+ *  provided together or both empty.
+ */
+export type InboxPolicyEdit = {
+	change_abs: string | null,
+	change_rel: string | null,
 };
 
 export type JobInfo = {

@@ -15,6 +15,7 @@ Vocabulary for issues, tests, ADRs, docs, and UI copy. Definitions here are conc
 - **Evidence fingerprint** — deterministic hash of what a review acknowledgement covered (the run outcome/reason for one series plus its cell override revision map); a mismatch at read time makes the series unreviewed again (ADR-0027).
 - **Demand change** — a read-time cell difference between two revisions at one `product × location × week_start`: `added`, `removed`, or `changed` quantity/status; `missing` stays distinct from zero (ADR-0022).
 - **Eligibility status** — per series × model × run: `not_eligible` (below the model floor), `production_only` (too few completed origins), or `champion_eligible`.
+- **Exception inbox** — derived, read-time ranked list of exception series for one completed run, with fixed rule priority; review state filters rows but never suppresses evidence, and nothing is stored (ADR-0028).
 - **fallback_naive** — a run outcome: no champion was available (too few completed origins, or no origin common to all candidates), so the Naive baseline was used; flagged.
 - **Forecast bias** — `sum(forecast − actual) / sum(|actual|)` pooled over a model's completed origins; positive means overforecasting; unavailable when the actual total is zero; diagnostic only, never a ranking input.
 - **Forecast change** — a read-time baseline difference between two runs at the same `week_start`; horizon edge weeks are non-comparable and count as no change (ADR-0022).
@@ -24,12 +25,14 @@ Vocabulary for issues, tests, ADRs, docs, and UI copy. Definitions here are conc
 - **MAE** — mean absolute error: `sum(|actual − forecast|) / 12` over one backtest origin's 12-week horizon.
 - **Import configuration** — a named, profile-scoped parsing descriptor the guided import can save and reuse; editing or deleting one never changes a committed revision, which keeps its own frozen snapshot (ADR-0021).
 - **Mapping fingerprint** — identity of the mapping plan an import used; part of the idempotency key together with the content hash. For preprocessed imports the plan includes the parsing descriptor digest (ADR-0020).
+- **Material change** — derived inbox evidence: the sum of absolute baseline deltas over common calendar weeks between two adjacent runs, plus its ratio to the previous baseline magnitude (null when that magnitude is zero); the rule fires only when both configured thresholds are met (ADR-0028).
 - **model_failure** — a run outcome: no fallback candidate produced a forecast; the run records the failure and invents no values.
 - **Observation status** — one of `known`, `zero`, `missing`, `return`, `correction`, `stockout`, `partial`; `missing` and `partial` carry NULL quantity and break `H`.
 - **Parsing descriptor** — the versioned, deterministically serialized description of how one source file becomes observations (format, encoding, delimiter or sheet, header row, column bindings, date formats, separators, aggregation); it joins the mapping fingerprint and is frozen per preprocessed revision (ADR-0019, ADR-0020).
 - **Override** — append-only manual edit to a forecast cell; revisions are sequential, NULL clears, the highest revision wins, and overrides are scoped to one run.
 - **Override reason** — the required planner reason code stored with each new override revision (`promotion`, `customer_information`, `supply_constraint`, `data_quality`, `other`); `other` requires a note. It records intent, never a detected cause (ADR-0027).
 - **Review event** — append-only acknowledgement (`reviewed` or `reopened`) of one series in one run, stored with the evidence fingerprint it covered; the current state is derived at read time (ADR-0027).
+- **Review policy** — append-only versions of the profile-scoped material-change thresholds (absolute and relative); both set enables the rule, both empty disables it, and the highest version is current (ADR-0028).
 - **Run outcome** — one of `ok`, `fallback_naive`, `insufficient_history`, `model_failure`, `invalid_data`.
 - **Selection score** — pooled WAPE over the comparable evaluation set, or pooled MAE when that set's actual total is zero; lower is better (ADR-0017).
 - **Series** — one product × location pair; the unit of history, qualification, and forecast status.

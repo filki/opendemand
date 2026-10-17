@@ -35,6 +35,9 @@ The UI never opens SQLite or runs the Python engine directly. This document cove
 - `override_append(edit: OverrideEdit)`: append a run-scoped value or clearing revision and return `OverrideRevision`.
 - `series_note_add(edit: SeriesNoteEdit)`: append one profile-scoped planner note for a series and return the stored `SeriesNote`. The run provides the profile scope and must be completed; the series must be part of it.
 - `series_review_set(edit: ReviewActionEdit)`: append one review or reopen event for a series and run and return the derived `SeriesReviewInfo`. The evidence fingerprint is computed server-side at append time.
+- `review_policy()`: return the active profile's current inbox policy (latest version, or all-null when never configured).
+- `review_policy_set(edit: InboxPolicyEdit)`: append one policy version and return it. Both thresholds enable the material-change rule; both empty disable it; a partial pair fails with `invalid_policy` and appends nothing.
+- `exception_inbox(run_id: string, search: string, filter: string, offset: number, limit: number)`: derive the ranked exception inbox for one completed run (ADR-0028). `filter` is `all`, `unreviewed`, or `reviewed`; unknown values fail with `invalid_filter`. Limit clamps to 1..200; search and filter apply before pagination in one read snapshot. Unknown and incomplete runs fail with `unknown_run` and `run_not_completed`.
 - `export_csv(run_id: string, path: string)`: publish the saved full-run plan to a new CSV file and return `ExportResult`.
 - `export_xlsx(run_id: string, path: string)`: publish the same saved plan as a new XLSX workbook with `Plan` and `Summary` sheets; return `ExportResult`.
 
@@ -53,6 +56,9 @@ Jobs use string ids to correlate Tauri, SQLite, and sidecar messages.
 - `PlanningPoint`: `week_start`, 1-based `horizon`, nullable `baseline`, `override_value`, and `effective`, `value_source` (`model | override | missing`), `override_revision` (0 only when no revision exists), and the latest revision's nullable `override_reason`, `override_note`, and `override_review_date`. A non-zero `override_revision` with a null `override_reason` is a legacy override (ADR-0027).
 - `SeriesNote`: `id`, `note`, nullable `context_run_id` (the run open when the note was written), `created_at`.
 - `SeriesReviewInfo`: derived `status` (`reviewed | unreviewed`) and nullable `reviewed_at`. A stored acknowledgement whose evidence fingerprint no longer matches reads as `unreviewed`.
+- `InboxPolicy`: nullable `change_abs`, `change_rel`, and `version`. Both thresholds are null together (rule disabled) or set (numeric threshold in the series' own units, and a fraction like 0.25). `version` is null when never configured.
+- `InboxItem`: series identity (`product_id`, `location_id`, `series_key`, `location_code`), `outcome`, nullable `reason`, `rules` (codes in fixed priority order), nullable `change_abs`/`change_rel` (material change evidence; the relative value is null when the previous baseline magnitude is zero), nullable `due_review_date`, `review_status` (`reviewed | unreviewed`), nullable `reviewed_at`, `note_count`, and nullable `last_note_at`.
+- `ExceptionInbox`: `run_id`, `policy`, nullable `predecessor_run_id` (newest completed run of the immediately preceding revision), `material_change_available`, `total` (matching rows across the run), and paginated `rows`.
 - `RunSummary`: `id`, `revision_id`, `status`, `created_at`, `horizon_start_week`, `engine_version`.
 - `RunOverview`: `series_count`, `covered_series`, `coverage`, `outcomes` (all five outcome keys, including zero counts), `exception_count`, and `exceptions`. Coverage is the fraction with `ok` or `fallback_naive`, not forecast accuracy; zero series yields zero coverage. Totals are independent of pagination.
 - `RunException`: `product_id`, `location_id`, `series_key`, `location_code`, `outcome`, nullable `reason`. Exceptions have non-`ok` status or a recorded reason, including `ok` after production fallback. Order is model failure, invalid data, insufficient history, Naive fallback, then `ok` with a reason, followed by SKU/location/identity tie-breaks.
@@ -103,6 +109,10 @@ The effective forecast uses the latest override revision's value when non-null, 
 ## Decision memory
 
 `SeriesNoteEdit` carries `run_id`, `product_id`, `location_id`, and `note`; `ReviewActionEdit` carries the same identity plus `action` (`reviewed` or `reopened`). Both require a completed run and a series in its scope; errors include `unknown_run`, `run_not_completed`, `unknown_series`, `invalid_note`, and `invalid_action`. Notes are profile-scoped and survive across runs; review state belongs to one run and reopens automatically when its evidence changes (ADR-0027). Decision memory never changes coverage, outcomes, or exports.
+
+## Exception inbox
+
+The inbox (ADR-0028) derives one row per exception series of the selected completed run with all applicable rule codes in the fixed priority order: `model_failure`, `invalid_data`, `insufficient_history`, `imputed_input`, `production_fallback`, `material_change`, `review_due`. Material-change evidence compares the run with the newest completed run of the immediately preceding revision: the sum of absolute baseline deltas over common calendar weeks and its ratio to the previous magnitude; when that magnitude is zero the ratio is null and the absolute threshold alone decides. Thresholds are per profile, append-only versions; the rule stays off until both are set. Review state is a filter, never suppression: reviewed rows stay listed and reopen automatically when evidence changes. No monetary impact, no cross-series score, and no stored inbox state.
 
 ## Full-Run CSV And XLSX Export
 

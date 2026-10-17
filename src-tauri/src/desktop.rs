@@ -444,6 +444,38 @@ async fn series_review_set(
 
 #[tauri::command]
 #[specta::specta]
+async fn review_policy(state: State<'_, Service>) -> AppResult<InboxPolicy> {
+    state.current().await?.review_policy().await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn review_policy_set(
+    edit: InboxPolicyEdit,
+    state: State<'_, Service>,
+) -> AppResult<InboxPolicy> {
+    state.current().await?.save_review_policy(edit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn exception_inbox(
+    run_id: String,
+    search: String,
+    filter: String,
+    offset: u32,
+    limit: u32,
+    state: State<'_, Service>,
+) -> AppResult<ExceptionInbox> {
+    state
+        .current()
+        .await?
+        .exception_inbox(&run_id, &search, &filter, offset, limit)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn run_overview(
     run_id: String,
     offset: u32,
@@ -963,6 +995,9 @@ fn command_builder() -> Builder<tauri::Wry> {
             override_append,
             series_note_add,
             series_review_set,
+            review_policy,
+            review_policy_set,
+            exception_inbox,
             export_csv,
             export_xlsx
         ])

@@ -13,9 +13,10 @@ use crate::{
     preprocess::{self, descriptor_json, ImportConfig, ParsingDescriptor},
     selection,
     types::{
-        DemandChangePoint, ExportResult, ForecastChangePoint, ForecastInput, ForecastPoint,
-        HistoryPoint, ImportResult, InputSeries, ModelOriginRow, ObservationRecord, OverrideEdit,
-        OverrideRevision, PlanningPoint, ReviewActionEdit, RunException, RunOverview, RunSummary,
+        DemandChangePoint, ExceptionInbox, ExportResult, ForecastChangePoint, ForecastInput,
+        ForecastPoint, HistoryPoint, ImportResult, InboxItem, InboxPolicy, InboxPolicyEdit,
+        InputSeries, ModelOriginRow, ObservationRecord, OverrideEdit, OverrideRevision,
+        PlanningPoint, ReviewActionEdit, RunException, RunOverview, RunSummary,
         SeriesChangeSummary, SeriesComparisonDetail, SeriesDetail, SeriesModelComparison,
         SeriesNote, SeriesNoteEdit, SeriesReviewInfo, SeriesSummary, WeeklyChangeFilter,
         WeeklyComparisonContext, WorkspaceInfo,
@@ -48,8 +49,8 @@ use uuid::Uuid;
 /// SQLx is what `open` verifies against.
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../docs/architecture/schema");
 
-const SCHEMA_VERSION: i64 = 4;
-const SCHEMA_VERSION_TEXT: &str = "4";
+const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION_TEXT: &str = "5";
 const CONTRACT_VERSION: &str = "canonical/1";
 /// Contract version of revisions produced by the preprocessing layer.
 const PREPROCESS_CONTRACT: &str = "preprocess/1";
@@ -79,6 +80,18 @@ const OVERRIDE_REASONS: [&str; 5] = [
 /// Rule/policy context label recorded with every review event; bump it when the
 /// acknowledged evidence changes so stored acknowledgements stop matching.
 const REVIEW_CONTEXT: &str = "review/1";
+/// Fixed exception-inbox rule priority (ADR-0028); row order follows the first
+/// applicable rule index. `persistent_bias` arrives with the retrospective
+/// evaluation slice and takes its place before `review_due`.
+const INBOX_RULES: [&str; 7] = [
+    "model_failure",
+    "invalid_data",
+    "insufficient_history",
+    "imputed_input",
+    "production_fallback",
+    "material_change",
+    "review_due",
+];
 const LIST_LIMIT_MAX: u32 = 200;
 const EXPORT_HEADERS: [&str; 12] = [
     "run_id",
@@ -1573,6 +1586,362 @@ impl Workspace {
                 status: "unreviewed".into(),
                 reviewed_at: None,
             },
+        })
+    }
+
+    /// Current profile-scoped exception-inbox policy (ADR-0028).
+    pub async fn review_policy(&self) -> AppResult<InboxPolicy> {
+        let profile_id = active_profile_id(&self.pool).await?;
+        let mut connection = self.pool.acquire().await?;
+        review_policy_row(&mut connection, profile_id).await
+    }
+
+    /// Append one inbox-policy version: both thresholds enable the
+    /// material-change rule, or both empty disable it. Never partial.
+    pub async fn save_review_policy(&self, edit: InboxPolicyEdit) -> AppResult<InboxPolicy> {
+        let change_abs = parse_threshold(edit.change_abs.as_deref(), "absolute")?;
+        let change_rel = parse_threshold(edit.change_rel.as_deref(), "relative")?;
+        if change_abs.is_some() != change_rel.is_some() {
+            return Err(err(
+                "invalid_policy",
+                "Set both thresholds to enable the change rule, or leave both empty to disable it.",
+            ));
+        }
+        let profile_id = active_profile_id(&self.pool).await?;
+        let _writer = self.writer.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let current: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(version) FROM review_policy WHERE profile_id = ?")
+                .bind(profile_id)
+                .fetch_one(&mut *transaction)
+                .await?;
+        let version = current.unwrap_or(0) + 1;
+        sqlx::query(
+            "INSERT INTO review_policy (profile_id, version, change_abs, change_rel, created_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(profile_id)
+        .bind(version)
+        .bind(change_abs)
+        .bind(change_rel)
+        .bind(now_iso().as_str())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        let version = i32::try_from(version)
+            .map_err(|_| err("contract_violation", "The policy version is unsupported."))?;
+        Ok(InboxPolicy {
+            change_abs,
+            change_rel,
+            version: Some(version),
+        })
+    }
+
+    /// Derived exception inbox for one completed run (ADR-0028): one row per
+    /// exception series with all applicable rule codes in the fixed priority
+    /// order. Membership, fingerprints, change aggregates, and review state
+    /// are computed at read time; nothing is stored. Search and the review
+    /// filter apply before pagination in one read snapshot.
+    pub async fn exception_inbox(
+        &self,
+        run_id: &str,
+        search: &str,
+        filter: &str,
+        offset: u32,
+        limit: u32,
+    ) -> AppResult<ExceptionInbox> {
+        if !matches!(filter, "all" | "unreviewed" | "reviewed") {
+            return Err(err(
+                "invalid_filter",
+                "Choose all, unreviewed, or reviewed rows.",
+            ));
+        }
+        let limit = limit.clamp(1, LIST_LIMIT_MAX);
+        let run = parse_uuid(run_id, "run_id")?;
+        let run_bytes = run.as_bytes().to_vec();
+        let mut connection = self.pool.acquire().await?;
+        let run_row = sqlx::query(
+            "SELECT r.status AS status, r.revision_id AS revision_id, i.profile_id AS profile_id
+             FROM forecast_run r JOIN import_revision i ON i.id = r.revision_id WHERE r.id = ?",
+        )
+        .bind(run_bytes.as_slice())
+        .fetch_optional(&mut *connection)
+        .await?
+        .ok_or_else(|| {
+            err(
+                "unknown_run",
+                "The forecast run does not exist in this workspace.",
+            )
+        })?;
+        if run_row.get::<String, _>("status") != "completed" {
+            return Err(err(
+                "run_not_completed",
+                "Only completed forecast runs can be reviewed.",
+            ));
+        }
+        let revision_id = i32::try_from(run_row.get::<i64, _>("revision_id"))
+            .map_err(|_| err("contract_violation", "The run revision is unsupported."))?;
+        let profile_id: i64 = run_row.get("profile_id");
+        let policy = review_policy_row(&mut connection, profile_id).await?;
+        let predecessor = predecessor_run(&mut connection, profile_id, revision_id).await?;
+        let today = Utc::now().date_naive().to_string();
+
+        let status_rows = sqlx::query(
+            "SELECT s.product_id AS product_id, s.location_id AS location_id,
+                    s.status AS outcome, s.reason AS reason, s.imputed_weeks AS imputed_weeks,
+                    p.sku AS series_key, l.code AS location_code
+             FROM forecast_series_status s
+             JOIN product p ON p.id = s.product_id
+             JOIN location l ON l.id = s.location_id
+             WHERE s.run_id = ?
+             ORDER BY p.sku, l.code, s.product_id, s.location_id",
+        )
+        .bind(run_bytes.as_slice())
+        .fetch_all(&mut *connection)
+        .await?;
+
+        let mut changes: HashMap<SeriesKey, (f64, f64)> = HashMap::new();
+        if let Some((predecessor_bytes, _)) = &predecessor {
+            let rows = sqlx::query(
+                "SELECT c.product_id AS product_id, c.location_id AS location_id,
+                        SUM(ABS(c.value - p.value)) AS change_abs, SUM(ABS(p.value)) AS prev_abs
+                 FROM forecast c
+                 JOIN forecast p ON p.run_id = ? AND p.product_id = c.product_id
+                     AND p.location_id = c.location_id AND p.week_start = c.week_start
+                 WHERE c.run_id = ?
+                 GROUP BY c.product_id, c.location_id",
+            )
+            .bind(predecessor_bytes.as_slice())
+            .bind(run_bytes.as_slice())
+            .fetch_all(&mut *connection)
+            .await?;
+            for row in &rows {
+                changes.insert(
+                    (row.get("product_id"), row.get("location_id")),
+                    (
+                        row.get::<f64, _>("change_abs"),
+                        row.get::<f64, _>("prev_abs"),
+                    ),
+                );
+            }
+        }
+
+        let mut reviews: HashMap<SeriesKey, (String, String, String)> = HashMap::new();
+        let rows = sqlx::query(
+            "SELECT product_id, location_id, action, evidence_fingerprint, created_at
+             FROM series_review WHERE profile_id = ? AND run_id = ? ORDER BY id",
+        )
+        .bind(profile_id)
+        .bind(run_bytes.as_slice())
+        .fetch_all(&mut *connection)
+        .await?;
+        for row in &rows {
+            reviews.insert(
+                (row.get("product_id"), row.get("location_id")),
+                (
+                    row.get("action"),
+                    row.get("evidence_fingerprint"),
+                    row.get("created_at"),
+                ),
+            );
+        }
+
+        let mut override_maps: HashMap<SeriesKey, Vec<(String, i64)>> = HashMap::new();
+        let rows = sqlx::query(
+            "SELECT product_id, location_id, week_start, MAX(revision) AS revision
+             FROM forecast_override WHERE run_id = ?
+             GROUP BY product_id, location_id, week_start
+             ORDER BY product_id, location_id, week_start",
+        )
+        .bind(run_bytes.as_slice())
+        .fetch_all(&mut *connection)
+        .await?;
+        for row in &rows {
+            override_maps
+                .entry((row.get("product_id"), row.get("location_id")))
+                .or_default()
+                .push((row.get("week_start"), row.get("revision")));
+        }
+
+        let mut notes: HashMap<SeriesKey, (i64, String)> = HashMap::new();
+        let rows = sqlx::query(
+            "SELECT product_id, location_id, COUNT(*) AS note_count, MAX(created_at) AS last_note_at
+             FROM series_note WHERE profile_id = ? GROUP BY product_id, location_id",
+        )
+        .bind(profile_id)
+        .fetch_all(&mut *connection)
+        .await?;
+        for row in &rows {
+            notes.insert(
+                (row.get("product_id"), row.get("location_id")),
+                (row.get("note_count"), row.get("last_note_at")),
+            );
+        }
+
+        let mut due: HashMap<SeriesKey, String> = HashMap::new();
+        let rows = sqlx::query(
+            "SELECT o.product_id AS product_id, o.location_id AS location_id,
+                    MIN(m.review_date) AS due_review_date
+             FROM forecast_override o
+             JOIN override_meta m ON m.run_id = o.run_id AND m.product_id = o.product_id
+                 AND m.location_id = o.location_id AND m.week_start = o.week_start
+                 AND m.revision = o.revision
+             WHERE o.run_id = ? AND o.value IS NOT NULL AND m.review_date IS NOT NULL
+               AND m.review_date <= ?
+               AND o.revision = (SELECT MAX(x.revision) FROM forecast_override x
+                   WHERE x.run_id = o.run_id AND x.product_id = o.product_id
+                     AND x.location_id = o.location_id AND x.week_start = o.week_start)
+             GROUP BY o.product_id, o.location_id",
+        )
+        .bind(run_bytes.as_slice())
+        .bind(today.as_str())
+        .fetch_all(&mut *connection)
+        .await?;
+        for row in &rows {
+            due.insert(
+                (row.get("product_id"), row.get("location_id")),
+                row.get("due_review_date"),
+            );
+        }
+
+        let policy_enabled = policy.change_abs.is_some() && policy.change_rel.is_some();
+        let mut items: Vec<(usize, InboxItem)> = Vec::new();
+        for row in &status_rows {
+            let product: Vec<u8> = row.get("product_id");
+            let location: Vec<u8> = row.get("location_id");
+            let key: SeriesKey = (product.clone(), location.clone());
+            let outcome: String = row.get("outcome");
+            let reason: Option<String> = row.get("reason");
+            let imputed_weeks: i64 = row.get("imputed_weeks");
+            let mut rules: Vec<&'static str> = Vec::new();
+            match outcome.as_str() {
+                "model_failure" => rules.push("model_failure"),
+                "invalid_data" => rules.push("invalid_data"),
+                "insufficient_history" => rules.push("insufficient_history"),
+                _ => {}
+            }
+            if imputed_weeks > 0 {
+                rules.push("imputed_input");
+            }
+            if outcome == "fallback_naive" || (outcome == "ok" && reason.is_some()) {
+                rules.push("production_fallback");
+            }
+            let mut change_abs = None;
+            let mut change_rel = None;
+            if policy_enabled {
+                if let Some((abs, prev_abs)) = changes.get(&key) {
+                    if *abs > 0.0 && *abs >= policy.change_abs.unwrap_or(f64::MAX) {
+                        let rel = if *prev_abs > 0.0 {
+                            Some(*abs / *prev_abs)
+                        } else {
+                            None
+                        };
+                        let fires = match rel {
+                            Some(rel) => rel >= policy.change_rel.unwrap_or(f64::MAX),
+                            None => true,
+                        };
+                        if fires {
+                            rules.push("material_change");
+                            change_abs = Some(*abs);
+                            change_rel = rel;
+                        }
+                    }
+                }
+            }
+            let due_review_date = due.get(&key).cloned();
+            if due_review_date.is_some() {
+                rules.push("review_due");
+            }
+            if rules.is_empty() {
+                continue;
+            }
+            let empty: Vec<(String, i64)> = Vec::new();
+            let override_map = override_maps.get(&key).unwrap_or(&empty);
+            let (review_status, reviewed_at) = match reviews.get(&key) {
+                Some((action, fingerprint, created_at)) if action == "reviewed" => {
+                    let current = fingerprint_from_parts(
+                        &run_bytes,
+                        &product,
+                        &location,
+                        Some((outcome.as_str(), reason.as_deref())),
+                        override_map,
+                    );
+                    if &current == fingerprint {
+                        ("reviewed", Some(created_at.clone()))
+                    } else {
+                        ("unreviewed", None)
+                    }
+                }
+                _ => ("unreviewed", None),
+            };
+            let note_meta = notes.get(&key);
+            let priority = INBOX_RULES
+                .iter()
+                .position(|rule| *rule == rules[0])
+                .unwrap_or(INBOX_RULES.len());
+            items.push((
+                priority,
+                InboxItem {
+                    product_id: uuid_from_bytes(&product)?.to_string(),
+                    location_id: uuid_from_bytes(&location)?.to_string(),
+                    series_key: row.get("series_key"),
+                    location_code: row.get("location_code"),
+                    outcome,
+                    reason,
+                    rules: rules.into_iter().map(str::to_string).collect(),
+                    change_abs,
+                    change_rel,
+                    due_review_date,
+                    review_status: review_status.to_string(),
+                    reviewed_at,
+                    note_count: note_meta.map(|(count, _)| *count as u32).unwrap_or(0),
+                    last_note_at: note_meta.map(|(_, last)| last.clone()),
+                },
+            ));
+        }
+
+        let needle = search.trim().to_lowercase();
+        let mut filtered: Vec<(usize, InboxItem)> = items
+            .into_iter()
+            .filter(|(_, item)| {
+                if !needle.is_empty() {
+                    let series = item.series_key.to_lowercase();
+                    let location = item.location_code.to_lowercase();
+                    if !series.contains(&needle) && !location.contains(&needle) {
+                        return false;
+                    }
+                }
+                match filter {
+                    "unreviewed" => item.review_status == "unreviewed",
+                    "reviewed" => item.review_status == "reviewed",
+                    _ => true,
+                }
+            })
+            .collect();
+        filtered.sort_by(|(left_priority, left), (right_priority, right)| {
+            left_priority
+                .cmp(right_priority)
+                .then_with(|| left.series_key.cmp(&right.series_key))
+                .then_with(|| left.location_code.cmp(&right.location_code))
+                .then_with(|| left.product_id.cmp(&right.product_id))
+                .then_with(|| left.location_id.cmp(&right.location_id))
+        });
+        let total = u32::try_from(filtered.len())
+            .map_err(|_| err("contract_violation", "The inbox is too large to report."))?;
+        let rows: Vec<InboxItem> = filtered
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .map(|(_, item)| item)
+            .collect();
+        let material_change_available = predecessor.is_some();
+        Ok(ExceptionInbox {
+            run_id: run.to_string(),
+            policy,
+            predecessor_run_id: predecessor.map(|(_, id)| id),
+            material_change_available,
+            total,
+            rows,
         })
     }
 
@@ -3314,6 +3683,9 @@ async fn load_observations(
 // Planner decision memory (ADR-0027)
 // ---------------------------------------------------------------------------
 
+/// Raw `(product_id, location_id)` bytes; the series identity in bulk lookups.
+type SeriesKey = (Vec<u8>, Vec<u8>);
+
 async fn load_series_notes(
     pool: &SqlitePool,
     profile_id: i64,
@@ -3400,6 +3772,29 @@ async fn decision_scope(
 /// revisions change the map and reopen the series at read time. The leading
 /// version marker is the rule context; bump it when the covered evidence
 /// changes.
+fn fingerprint_from_parts(
+    run: &[u8],
+    product: &[u8],
+    location: &[u8],
+    status: Option<(&str, Option<&str>)>,
+    overrides: &[(String, i64)],
+) -> String {
+    let mut lines = vec![
+        format!("{REVIEW_CONTEXT}|v1"),
+        hex(run),
+        hex(product),
+        hex(location),
+        match status {
+            Some((outcome, reason)) => format!("{outcome}|{}", reason.unwrap_or_default()),
+            None => "no-status".to_string(),
+        },
+    ];
+    for (week, revision) in overrides {
+        lines.push(format!("{week}:{revision}"));
+    }
+    hex(&Sha256::digest(lines.join("\n").as_bytes()))
+}
+
 async fn evidence_fingerprint(
     connection: &mut SqliteConnection,
     run: &[u8],
@@ -3415,20 +3810,12 @@ async fn evidence_fingerprint(
     .bind(location)
     .fetch_optional(&mut *connection)
     .await?;
-    let mut lines = vec![
-        format!("{REVIEW_CONTEXT}|v1"),
-        hex(run),
-        hex(product),
-        hex(location),
-        match &status {
-            Some(row) => {
-                let outcome: String = row.get("status");
-                let reason: Option<String> = row.get("reason");
-                format!("{outcome}|{}", reason.unwrap_or_default())
-            }
-            None => "no-status".to_string(),
-        },
-    ];
+    let status = status.as_ref().map(|row| {
+        (
+            row.get::<String, _>("status"),
+            row.get::<Option<String>, _>("reason"),
+        )
+    });
     let overrides = sqlx::query(
         "SELECT week_start, MAX(revision) AS revision FROM forecast_override
          WHERE run_id = ? AND product_id = ? AND location_id = ?
@@ -3439,12 +3826,19 @@ async fn evidence_fingerprint(
     .bind(location)
     .fetch_all(&mut *connection)
     .await?;
-    for row in &overrides {
-        let week: String = row.get("week_start");
-        let revision: i64 = row.get("revision");
-        lines.push(format!("{week}:{revision}"));
-    }
-    Ok(hex(&Sha256::digest(lines.join("\n").as_bytes())))
+    let overrides: Vec<(String, i64)> = overrides
+        .iter()
+        .map(|row| (row.get("week_start"), row.get("revision")))
+        .collect();
+    Ok(fingerprint_from_parts(
+        run,
+        product,
+        location,
+        status
+            .as_ref()
+            .map(|(outcome, reason)| (outcome.as_str(), reason.as_deref())),
+        &overrides,
+    ))
 }
 
 /// Derived review state for one series in one run. A stored acknowledgement
@@ -3550,6 +3944,85 @@ fn validate_optional_review_date(text: Option<&str>) -> AppResult<Option<String>
         }
         None => Ok(None),
     }
+}
+
+fn parse_threshold(text: Option<&str>, label: &str) -> AppResult<Option<f64>> {
+    match text.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(text) => {
+            let value = text
+                .parse::<f64>()
+                .ok()
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .ok_or_else(|| {
+                    err(
+                        "invalid_policy",
+                        format!("The {label} threshold must be a positive number."),
+                    )
+                })?;
+            Ok(Some(value))
+        }
+        None => Ok(None),
+    }
+}
+
+async fn review_policy_row(
+    connection: &mut SqliteConnection,
+    profile_id: i64,
+) -> AppResult<InboxPolicy> {
+    let row = sqlx::query(
+        "SELECT version, change_abs, change_rel FROM review_policy
+         WHERE profile_id = ? ORDER BY version DESC LIMIT 1",
+    )
+    .bind(profile_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    Ok(match row {
+        Some(row) => InboxPolicy {
+            change_abs: row.get("change_abs"),
+            change_rel: row.get("change_rel"),
+            version: Some(
+                i32::try_from(row.get::<i64, _>("version"))
+                    .map_err(|_| err("contract_violation", "The policy version is unsupported."))?,
+            ),
+        },
+        None => InboxPolicy {
+            change_abs: None,
+            change_rel: None,
+            version: None,
+        },
+    })
+}
+
+/// The newest completed run of the immediately preceding import revision of
+/// one profile (ADR-0022 adjacency). Never skips an unforecast revision: when
+/// that revision has no completed run, no comparison evidence exists.
+async fn predecessor_run(
+    connection: &mut SqliteConnection,
+    profile_id: i64,
+    revision_id: i32,
+) -> AppResult<Option<(Vec<u8>, String)>> {
+    let previous_revision: Option<i64> =
+        sqlx::query_scalar("SELECT MAX(id) FROM import_revision WHERE profile_id = ? AND id < ?")
+            .bind(profile_id)
+            .bind(revision_id)
+            .fetch_one(&mut *connection)
+            .await?;
+    let Some(previous_revision) = previous_revision else {
+        return Ok(None);
+    };
+    let run = sqlx::query(
+        "SELECT id FROM forecast_run WHERE revision_id = ? AND status = 'completed'
+         ORDER BY created_at DESC, id DESC LIMIT 1",
+    )
+    .bind(previous_revision)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some(row) = run else {
+        return Ok(None);
+    };
+    let bytes: Vec<u8> = row.get("id");
+    let id = uuid_from_bytes(&bytes)?.to_string();
+    Ok(Some((bytes, id)))
 }
 
 fn run_summary_row(row: &SqliteRow) -> AppResult<RunSummary> {

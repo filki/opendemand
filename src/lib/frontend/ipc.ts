@@ -8,9 +8,12 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { commands } from '#lib/bindings.ts';
 import type {
 	AppError,
+	ExceptionInbox,
 	ExportResult,
 	ImportConfig,
 	ImportPreview,
+	InboxPolicy,
+	InboxPolicyEdit,
 	JobInfo,
 	OverrideEdit,
 	OverrideRevision,
@@ -258,6 +261,27 @@ export async function addSeriesNote(edit: SeriesNoteEdit): Promise<SeriesNote> {
 /** Record one review or reopen event for a series and run (ADR-0027). */
 export async function setSeriesReview(edit: ReviewActionEdit): Promise<SeriesReviewInfo> {
 	return unwrap(await commands.seriesReviewSet(edit));
+}
+
+/** Derived exception inbox for one completed run (ADR-0028). */
+export async function fetchExceptionInbox(
+	runId: string,
+	search: string,
+	filter: string,
+	offset: number,
+	limit: number
+): Promise<ExceptionInbox> {
+	return unwrap(await commands.exceptionInbox(runId, search, filter, offset, limit));
+}
+
+/** Current profile-scoped inbox policy (ADR-0028). */
+export async function fetchReviewPolicy(): Promise<InboxPolicy> {
+	return unwrap(await commands.reviewPolicy());
+}
+
+/** Append one inbox-policy version: both thresholds or both empty. */
+export async function saveReviewPolicy(edit: InboxPolicyEdit): Promise<InboxPolicy> {
+	return unwrap(await commands.reviewPolicySet(edit));
 }
 
 export async function exportPlanCsv(runId: string, path: string): Promise<ExportResult> {

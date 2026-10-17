@@ -12,6 +12,7 @@
 	} from '#lib/bindings.ts';
 	import BrowserFallback from '#lib/components/BrowserFallback.svelte';
 	import CsvFormatCard from '#lib/components/CsvFormatCard.svelte';
+	import ExceptionInbox from '#lib/components/ExceptionInbox.svelte';
 	import HomeScreen from '#lib/components/HomeScreen.svelte';
 	import ImportWizard from '#lib/components/ImportWizard.svelte';
 	import JobMonitor from '#lib/components/JobMonitor.svelte';
@@ -99,6 +100,7 @@
 	let seriesScope = '';
 	let wizardOpen = $state(false);
 	let comparisonOpen = $state(false);
+	let inboxOpen = $state(false);
 	/** Home flow with no workspace open: module menu, then the workspace list. */
 	let homeScreen = $state<'home' | 'picker'>('home');
 	const actionErrorHint = $derived(
@@ -501,6 +503,7 @@
 		if (jobBusy || plannerDirty || plannerSaving || exporting) return;
 		actionError = null;
 		comparisonOpen = false;
+		inboxOpen = false;
 		wizardOpen = true;
 	}
 
@@ -549,8 +552,8 @@
 	 * Open one run overview exception under the same run it was read from,
 	 * through the same dirty-edit guard as the series list.
 	 */
-	function handleSelectException(productId: string, locationId: string) {
-		if (!completedRun) return;
+	function handleSelectException(productId: string, locationId: string): boolean {
+		if (!completedRun) return false;
 		const selection = selectRunException(
 			{
 				dirty: plannerDirty,
@@ -563,13 +566,20 @@
 			},
 			{ runId: completedRun.id, productId, locationId }
 		);
-		if (!selection) return;
-		// The series detail and the run comparison share the main area, so
-		// the click deliberately leaves the comparison to show the exception.
+		if (!selection) return false;
+		// The series detail, the run comparison, and the review inbox share the
+		// main area, so the click deliberately leaves those views.
 		comparisonOpen = selection.comparisonOpen;
+		inboxOpen = false;
 		plannerDirty = false;
 		selectedRunId = selection.runId;
 		selectedSeries = { productId: selection.productId, locationId: selection.locationId };
+		return true;
+	}
+
+	/** Leave the inbox for the selected series under the inbox's own run. */
+	function handleInboxOpenSeries(productId: string, locationId: string) {
+		handleSelectException(productId, locationId);
 	}
 
 	function handleSelectRun(runId: string) {
@@ -578,6 +588,7 @@
 		plannerDirty = false;
 		exportNotice = null;
 		actionError = null;
+		inboxOpen = false;
 		offset = 0;
 		searchInput = '';
 	}
@@ -755,7 +766,8 @@
 						<div class="export-controls">
 							<button class="btn btn-secondary" disabled={!displayRun || displayRun.status !== 'completed' || plannerDirty || plannerSaving || exporting} onclick={handleExport}>{exporting && exportKind === 'csv' ? 'Exporting CSV…' : 'Export CSV'}</button>
 							<button class="btn btn-secondary" disabled={!displayRun || displayRun.status !== 'completed' || plannerDirty || plannerSaving || exporting} onclick={handleExportXlsx}>{exporting && exportKind === 'xlsx' ? t(locale, 'export.xlsxBusy') : t(locale, 'export.xlsx')}</button>
-							<button class="btn btn-secondary" disabled={jobBusy || plannerDirty || plannerSaving || exporting || completedRunCount < 2} onclick={() => (comparisonOpen = true)}>Compare runs</button>
+							<button class="btn btn-secondary" disabled={jobBusy || plannerDirty || plannerSaving || exporting || completedRunCount < 2} onclick={() => { inboxOpen = false; comparisonOpen = true; }}>Compare runs</button>
+							<button class="btn btn-secondary" disabled={jobBusy || plannerDirty || plannerSaving || exporting || !completedRun} onclick={() => { comparisonOpen = false; inboxOpen = true; }}>{t(locale, 'inbox.open')}</button>
 							<p class="muted">{plannerDirty ? 'Save or discard edits before switching series, runs, or exporting.' : 'Exports all series in the selected forecast. Compare runs to see what changed between recent imports.'}</p>
 						</div>
 					</section>
@@ -792,6 +804,13 @@
 					</div>
 				{:else if comparisonOpen && workspace}
 					<WeeklyComparison {locale} onClose={handleCloseComparison} />
+				{:else if inboxOpen && completedRun}
+					<ExceptionInbox
+						runId={completedRun.id}
+						{locale}
+						onOpenSeries={handleInboxOpenSeries}
+						onClose={() => (inboxOpen = false)}
+					/>
 				{:else if workspaceQuery.isPending}
 					<p class="muted" role="status">Opening workspace…</p>
 				{:else if workspaceQuery.isError && !isNoWorkspaceError(workspaceQuery.error)}

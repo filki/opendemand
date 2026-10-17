@@ -132,6 +132,69 @@ pub struct ReviewActionEdit {
     pub action: String,
 }
 
+/// Versioned, profile-scoped thresholds for the derived exception inbox
+/// (ADR-0028). Both thresholds are NULL together (rule disabled) or set.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct InboxPolicy {
+    /// Absolute material-change threshold in the series' own quantity units.
+    pub change_abs: Option<f64>,
+    /// Relative material-change threshold as a fraction of the previous
+    /// baseline magnitude (0.25 means 25%).
+    pub change_rel: Option<f64>,
+    /// Latest stored policy version; None when never configured.
+    pub version: Option<i32>,
+}
+
+/// Raw threshold input; empty strings disable the rule. Both fields must be
+/// provided together or both empty.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct InboxPolicyEdit {
+    pub change_abs: Option<String>,
+    pub change_rel: Option<String>,
+}
+
+/// One derived exception-inbox row: a series with at least one applicable rule
+/// for the selected run. Nothing here is stored; rules, fingerprints, and
+/// review state are computed at read time (ADR-0028).
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct InboxItem {
+    pub product_id: String,
+    pub location_id: String,
+    pub series_key: String,
+    pub location_code: String,
+    pub outcome: String,
+    pub reason: Option<String>,
+    /// Rule codes ordered by the fixed priority; the first entry set the row order.
+    pub rules: Vec<String>,
+    /// Sum of absolute baseline deltas over common calendar weeks.
+    pub change_abs: Option<f64>,
+    /// Relative change; null when the previous baseline magnitude is zero
+    /// (the percentage is unavailable, never invented).
+    pub change_rel: Option<f64>,
+    /// Earliest due override review date for this series, when any is due.
+    pub due_review_date: Option<String>,
+    /// `reviewed` or `unreviewed` for the selected run.
+    pub review_status: String,
+    pub reviewed_at: Option<String>,
+    /// Prior notes attached to this series (evidence link).
+    pub note_count: u32,
+    pub last_note_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ExceptionInbox {
+    pub run_id: String,
+    pub policy: InboxPolicy,
+    /// Newest completed run of the immediately preceding revision; None when
+    /// no comparison evidence exists (the material-change rule is unavailable).
+    pub predecessor_run_id: Option<String>,
+    /// True when material-change rules were evaluated against a predecessor run.
+    pub material_change_available: bool,
+    /// Rows matching the search and filter across the whole run.
+    pub total: u32,
+    pub rows: Vec<InboxItem>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct OverrideRevision {
     pub revision: u32,

@@ -171,6 +171,16 @@ Decision memory (ADR-0027, migration 004) stores only user-authored intent; memb
 - `override_meta` (immutable, one row per exact override revision): the required `reason_code` and optional `review_date`. The free-text note lives in the existing `forecast_override.note` column on the same revision. `other` requires a note. Overrides without metadata (historical rows) render as legacy with no invented reason. A review date is a reminder only while its revision is the latest; it never clears or expires an override.
 - Exports, coverage, and comparisons do not change; decision rows join the never-auto-delete business data set (ADR-0009).
 
+## 13. Exception Inbox (derived, with persisted thresholds)
+
+The ranked review inbox (ADR-0028, migration 005) adds no derived storage:
+
+- `review_policy` (append-only versions per profile): the absolute and relative material-change thresholds. Both null disables the rule; versions never update, and the latest version is current.
+- Rules are computed at read time for one completed run with a fixed priority: `model_failure`, `invalid_data`, `insufficient_history`, `imputed_input` (imputed weeks > 0), `production_fallback` (fallback outcome or `ok` with a recorded reason), `material_change`, `review_due`. Row order follows the highest-priority rule, then series key, location code, and identities.
+- Material-change evidence: sum of absolute baseline deltas over common calendar weeks against the newest completed run of the immediately preceding revision (adjacency per ADR-0022, never skipping an unforecast revision), and that sum divided by the previous baseline magnitude over the same weeks. The rule fires only with a positive change meeting the absolute threshold and — when the previous magnitude is positive — the relative threshold. A zero previous magnitude discloses the unavailable percentage.
+- `review_due` marks the latest override revision of a cell when its review date is due and its value is non-null; it is a reminder and changes nothing (ADR-0027).
+- Review state filters rows but never suppresses evidence; search and filters apply before pagination in one snapshot. Inbox rows, totals, and priorities are never stored.
+
 ## Related Documents
 
 - ADRs: `adr/README.md` (full index; semantics live in the referenced ADRs)
