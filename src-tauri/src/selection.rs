@@ -13,7 +13,13 @@
 use chrono::NaiveDate;
 
 /// Complexity order, used as the deterministic tie-break (ADR-0006).
-pub const MODELS: [&str; 3] = ["naive", "seasonal_naive_52", "auto_ets_52"];
+pub const MODELS: [&str; 5] = [
+    "naive",
+    "seasonal_naive_52",
+    "croston_sba",
+    "tsb",
+    "auto_ets_52",
+];
 
 /// Exact held-out sums over one completed backtest origin.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

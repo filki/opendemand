@@ -53,8 +53,8 @@ use uuid::Uuid;
 /// SQLx is what `open` verifies against.
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../docs/architecture/schema");
 
-const SCHEMA_VERSION: i64 = 8;
-const SCHEMA_VERSION_TEXT: &str = "8";
+const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION_TEXT: &str = "9";
 const CONTRACT_VERSION: &str = "canonical/1";
 /// Contract version of revisions produced by the preprocessing layer.
 const PREPROCESS_CONTRACT: &str = "preprocess/1";
@@ -4347,6 +4347,11 @@ impl Workspace {
             revision_id,
             cutoff,
             timezone,
+            model_set: crate::forecast::MODEL_SET_DEFAULT.to_string(),
+            models: crate::forecast::MODELS
+                .iter()
+                .map(|(model_id, floor)| ((*model_id).to_string(), *floor))
+                .collect(),
             series,
         })
     }
@@ -4547,9 +4552,15 @@ async fn write_xlsx_plan(
         summary.write_string(row, 0, format!("outcome.{status}"))?;
         summary.write_number(row, 1, coverage.outcomes.get(*status).copied().unwrap_or(0))?;
     }
-    for (index, model) in ["naive", "seasonal_naive_52", "auto_ets_52"]
-        .iter()
-        .enumerate()
+    for (index, model) in [
+        "naive",
+        "seasonal_naive_52",
+        "croston_sba",
+        "tsb",
+        "auto_ets_52",
+    ]
+    .iter()
+    .enumerate()
     {
         let row = index as u32 + 14;
         summary.write_string(row, 0, format!("statistical_champion.{model}"))?;

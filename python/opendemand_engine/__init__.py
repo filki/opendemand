@@ -6,7 +6,7 @@ __version__ = "0.5.3"
 
 PROTOCOL_ID = "opendemand.sidecar/1"
 ARROW_CONTRACT_ID = "opendemand.arrow/1"
-SUPPORTED_MODELS = ("naive", "seasonal_naive_52", "auto_ets_52")
+SUPPORTED_MODELS = ("naive", "seasonal_naive_52", "auto_ets_52", "croston_sba", "tsb")
 
 OBSERVATIONS_FILE = "observations.arrow"
 TASKS_FILE = "tasks.arrow"

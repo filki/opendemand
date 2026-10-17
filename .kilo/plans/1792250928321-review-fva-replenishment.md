@@ -28,7 +28,7 @@ Make OpenDemand useful for recurring professional planning through three feature
 
 Implement vertical slices in this order. All three features are approved for planning; do not interpret this plan as authority to commit, publish releases, or change GitHub issues.
 
-Migration numbers as implemented (superseding the "004-007" reservation): 004 planner decision memory (slice 1), 005 review policy (slice 2), 006 plan publication + actuals confirmations (slices 3-4), 007 inventory inputs (slice 5, extended in slice 6), 008 sparse-model registry rebuild (slice 7). Recheck the next free number before each new migration.
+Migration numbers as implemented (superseding the "004-007" reservation): 004 planner decision memory (slice 1), 005 review policy (slice 2), 006 plan publication (slice 3), 007 actuals confirmations + bias policy (slice 4), 008 inventory inputs (slices 5-6), 009 sparse-model registry rebuild (slice 7). All slices shipped; recheck the next free number (010) before any new migration.
 
 ### 1. Persist Decision Memory
 

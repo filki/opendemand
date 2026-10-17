@@ -57,7 +57,7 @@ class ProtocolTests(unittest.TestCase):
                 "job_id": None,
                 "engine_version": opendemand_engine.__version__,
                 "contracts": [h.CONTRACT_ID],
-                "models": ["naive", "seasonal_naive_52", "auto_ets_52"],
+                "models": ["naive", "seasonal_naive_52", "auto_ets_52", "croston_sba", "tsb"],
             },
         )
         self.assert_protocol_only(envelopes)

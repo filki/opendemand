@@ -200,9 +200,10 @@ export async function fetchWeeklyComparisonDetail(
 
 export async function startForecast(
 	revisionId: number,
-	imputation: string | null = null
+	imputation: string | null = null,
+	modelSet: string | null = null
 ): Promise<JobInfo> {
-	return unwrap(await commands.forecastStart(revisionId, imputation));
+	return unwrap(await commands.forecastStart(revisionId, imputation, modelSet));
 }
 
 export async function fetchJobStatus(jobId: string): Promise<JobInfo> {

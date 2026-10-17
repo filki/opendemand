@@ -22,13 +22,14 @@
 		onSwitch: () => void;
 		onImport: () => void;
 		onGuidedImport: () => void;
-		onForecast: (imputationMethod: string | null) => void;
+		onForecast: (imputationMethod: string | null, modelSet: string) => void;
 		onLocaleChange: (value: Locale) => void;
 	} = $props();
 
 	let forecastDialog: HTMLDialogElement;
 	let fillMissingWeeks = $state(false);
 	let imputationMethod = $state('last');
+	let modelSet = $state('default');
 
 	function handleLocaleSelect(event: Event) {
 		onLocaleChange((event.currentTarget as HTMLSelectElement).value as Locale);
@@ -36,11 +37,12 @@
 
 	function openForecastDialog() {
 		fillMissingWeeks = false;
+		modelSet = 'default';
 		forecastDialog.showModal();
 	}
 
 	function confirmForecast() {
-		onForecast(fillMissingWeeks ? imputationMethod : null);
+		onForecast(fillMissingWeeks ? imputationMethod : null, modelSet);
 		forecastDialog.close();
 	}
 </script>
@@ -176,6 +178,24 @@
 				</select>
 			</label>
 		{/if}
+
+		<label class="fill-field method-field" for="model-set">
+			<span>Model set</span>
+			<select
+				id="model-set"
+				name="model-set"
+				autocomplete="off"
+				value={modelSet}
+				onchange={(event) => (modelSet = (event.currentTarget as HTMLSelectElement).value)}
+			>
+				<option value="default">Naive, SeasonalNaive, AutoETS</option>
+				<option value="sparse">Add Croston-SBA and TSB for intermittent demand</option>
+			</select>
+			<span class="muted small">
+				Sparse candidates need a complete, non-negative history; other series keep the default
+				models.
+			</span>
+		</label>
 
 		<div class="dialog-actions">
 			<button class="btn btn-secondary" onclick={() => forecastDialog.close()}>Cancel</button>

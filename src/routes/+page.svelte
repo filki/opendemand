@@ -541,11 +541,11 @@
 		comparisonOpen = false;
 	}
 
-	async function handleForecast(imputationMethod: string | null) {
+	async function handleForecast(imputationMethod: string | null, modelSet: string) {
 		actionError = null;
 		if (latestRevisionId === null) return;
 		try {
-			beginJob(await startForecast(latestRevisionId, imputationMethod));
+			beginJob(await startForecast(latestRevisionId, imputationMethod, modelSet));
 		} catch (error) {
 			actionError = describeError(error);
 		}

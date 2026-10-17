@@ -735,5 +735,9 @@ pub struct ForecastInput {
     pub revision_id: i32,
     pub cutoff: NaiveDate,
     pub timezone: String,
+    /// Model set id frozen into the run configuration (`default` or `sparse`).
+    pub model_set: String,
+    /// Exact `(model_id, training floor)` list planned for this run.
+    pub models: Vec<(String, i32)>,
     pub series: Vec<InputSeries>,
 }

@@ -29,9 +29,12 @@ from .errors import (
     FAIL_UNSUPPORTED_MODEL,
     EngineError,
     TaskFailure,
+    FAIL_SPARSE_UNSUPPORTED,
 )
 from .metrics import compute_metrics
 from .modeling import MODEL_FLOOR, forecast
+
+SPARSE_MODELS = frozenset({"croston_sba", "tsb"})
 
 HORIZON_WEEKS = 12
 BACKTEST_ORIGIN_RANGE = (1, 4)
@@ -255,6 +258,13 @@ def execute_task(task: TaskRow, index: ObservationIndex) -> TaskOutcome:
     history = _read_numeric_window(
         index, task, task.train_start_week, task.train_size, FAIL_MISSING_TRAINING_DATA, "training"
     )
+    if task.model_id in SPARSE_MODELS and any(value < 0.0 for value in history):
+        # Sparse candidates are only valid on complete non-negative windows;
+        # Rust already excludes them, and this is the fail-closed double check.
+        raise _fail(
+            FAIL_SPARSE_UNSUPPORTED,
+            f"{task.model_id} requires a non-negative training window",
+        )
     actuals: list[float] | None = None
     if task.kind == KIND_BACKTEST:
         actuals = _read_numeric_window(

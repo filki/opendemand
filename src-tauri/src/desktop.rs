@@ -1,6 +1,5 @@
 use crate::{
     error::{AppError, AppResult},
-    forecast::run_forecast,
     imputation::ImputationMethod,
     preprocess::ParsingDescriptor,
     recent,
@@ -734,6 +733,7 @@ fn sidecar_binary(app: &AppHandle) -> Option<PathBuf> {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn queue_job(
     state: &Service,
     app: AppHandle,
@@ -742,6 +742,7 @@ async fn queue_job(
     descriptor: Option<ParsingDescriptor>,
     revision: Option<i32>,
     imputation: Option<ImputationMethod>,
+    model_set: Option<String>,
 ) -> AppResult<JobInfo> {
     let workspace_guard = state.workspace.lock().await;
     let workspace = workspace_guard
@@ -822,10 +823,11 @@ async fn queue_job(
                     let progress = Arc::new(move |phase: &str, value| {
                         publish(&progress_app, &progress_jobs, &progress_id, phase, value)
                     });
-                    run_forecast(
+                    crate::forecast::run_forecast_with_model_set(
                         &job_workspace,
                         revision.unwrap(),
                         imputation,
+                        model_set.as_deref().unwrap_or("default"),
                         &job_id,
                         cancel,
                         progress,
@@ -901,6 +903,7 @@ async fn import_start(
         "import",
         Some(path.into()),
         descriptor,
+        None,
         None,
         None,
     )
@@ -1014,6 +1017,7 @@ async fn weekly_comparison_series_detail(
 async fn forecast_start(
     revision_id: i32,
     imputation: Option<String>,
+    model_set: Option<String>,
     app: AppHandle,
     state: State<'_, Service>,
 ) -> AppResult<JobInfo> {
@@ -1032,6 +1036,8 @@ async fn forecast_start(
             )
         })?),
     };
+    let model_set = model_set.unwrap_or_else(|| "default".to_string());
+    crate::forecast::models_for_set(&model_set)?;
     queue_job(
         &state,
         app,
@@ -1040,6 +1046,7 @@ async fn forecast_start(
         None,
         Some(revision_id),
         imputation,
+        Some(model_set),
     )
     .await
 }

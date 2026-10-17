@@ -44,6 +44,7 @@ Vocabulary for issues, tests, ADRs, docs, and UI copy. Definitions here are conc
 - **Run outcome** — one of `ok`, `fallback_naive`, `insufficient_history`, `model_failure`, `invalid_data`.
 - **Selection score** — pooled WAPE over the comparable evaluation set, or pooled MAE when that set's actual total is zero; lower is better (ADR-0017).
 - **Series** — one product × location pair; the unit of history, qualification, and forecast status.
+- **Sparse model set** — opt-in run configuration (`sparse`) adding Croston-SBA and TSB to the default three models; sparse candidates are planned only on complete, non-negative, non-imputed windows (ADR-0032).
 - **Series note** — append-only, profile-scoped planner note attached to one series; it survives across runs and never changes plan values, coverage, or stored history (ADR-0027).
 - **Series qualification** — per-revision eligibility: `eligible`, `insufficient_history` (`H < 12`), or `invalid_data`.
 - **SKU** — the product's canonical display code; product identity is the UUIDv7 id, not the SKU (ADR-0004).

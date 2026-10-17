@@ -34,8 +34,56 @@ pub const MODELS: [(&str, i32); 3] = [
     ("seasonal_naive_52", 104),
     ("auto_ets_52", 104),
 ];
+/// Opt-in intermittent-demand candidates (ADR-0032): the same 12-week floor as
+/// Naive; TSB smoothing parameters are frozen policy, not fitted.
+pub const SPARSE_MODELS: [(&str, i32); 2] = [("croston_sba", 12), ("tsb", 12)];
+pub const MODEL_SET_DEFAULT: &str = "default";
+pub const MODEL_SET_SPARSE: &str = "sparse";
 const HORIZON_WEEKS: i32 = 12;
 const MAX_ORIGINS: i32 = 4;
+
+/// Resolve one model-set id into the exact planned model list; unknown ids are
+/// refused instead of silently falling back.
+pub fn models_for_set(model_set: &str) -> AppResult<Vec<(&'static str, i32)>> {
+    let mut models: Vec<(&'static str, i32)> = MODELS.to_vec();
+    match model_set {
+        MODEL_SET_DEFAULT => {}
+        MODEL_SET_SPARSE => models.extend(SPARSE_MODELS),
+        other => {
+            return Err(AppError::new(
+                "invalid_model_set",
+                format!("Unknown model set '{other}'; choose default or sparse."),
+            ));
+        }
+    }
+    Ok(models)
+}
+
+fn is_sparse_model(model_id: &str) -> bool {
+    SPARSE_MODELS.iter().any(|(id, _)| *id == model_id)
+}
+
+/// True when the last `train_size` dense weeks are all finite non-negative
+/// values and none of them was filled by imputation. Sparse candidates are
+/// only planned on such windows (ADR-0032); everything else keeps the
+/// existing-model behavior with an eligibility explanation.
+fn sparse_window_supported(series: &crate::types::InputSeries, train_size: i32) -> bool {
+    let length = series.observations.len() as i32;
+    let start = length - train_size;
+    if start < 0 {
+        return false;
+    }
+    for position in start..length {
+        match series.observations[position as usize].quantity {
+            Some(value) if value.is_finite() && value >= 0.0 => {}
+            _ => return false,
+        }
+    }
+    !series
+        .imputed_indices
+        .iter()
+        .any(|&position| (start..length).contains(&(position as i32)))
+}
 
 fn cancelled(cancel: &AtomicBool) -> AppResult<()> {
     if cancel.load(Ordering::SeqCst) {
@@ -64,8 +112,12 @@ fn plan_tasks(input: &ForecastInput) -> AppResult<Vec<Task>> {
                     "Series history exceeds the supported calendar.",
                 )
             })?;
-        for (model_id, floor) in MODELS {
+        for (model_id, floor) in &input.models {
+            let floor = *floor;
             if h < floor {
+                continue;
+            }
+            if is_sparse_model(model_id) && !sparse_window_supported(series, h) {
                 continue;
             }
             let mut add_task = |kind: &str, index: Option<i32>, train_size: i32| {
@@ -80,7 +132,7 @@ fn plan_tasks(input: &ForecastInput) -> AppResult<Vec<Task>> {
                     ),
                     product_id: series.product_id,
                     location_id: series.location_id,
-                    model_id: model_id.into(),
+                    model_id: model_id.to_string(),
                     kind: kind.into(),
                     origin_index: index,
                     train_start: start,
@@ -94,6 +146,9 @@ fn plan_tasks(input: &ForecastInput) -> AppResult<Vec<Task>> {
             for index in 1..=origins {
                 let train_size = h - HORIZON_WEEKS * (origins - index + 1);
                 if target_window_imputed(&series.imputed_indices, train_size) {
+                    continue;
+                }
+                if is_sparse_model(model_id) && !sparse_window_supported(series, train_size) {
                     continue;
                 }
                 add_task("backtest", Some(index), train_size);
@@ -123,10 +178,44 @@ pub async fn run_forecast(
     progress: Progress,
     engine_binary: Option<PathBuf>,
 ) -> AppResult<ForecastResult> {
+    run_forecast_with_model_set(
+        workspace,
+        revision_id,
+        imputation,
+        MODEL_SET_DEFAULT,
+        job_id,
+        cancel,
+        progress,
+        engine_binary,
+    )
+    .await
+}
+
+/// Run one forecast with an explicit model set (ADR-0032): `default` keeps the
+/// approved three models; `sparse` additionally plans Croston-SBA and TSB for
+/// eligible intermittent windows. The resolved model list and the set id
+/// freeze into the run configuration.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_forecast_with_model_set(
+    workspace: &Workspace,
+    revision_id: i32,
+    imputation: Option<ImputationMethod>,
+    model_set: &str,
+    job_id: &str,
+    cancel: Arc<AtomicBool>,
+    progress: Progress,
+    engine_binary: Option<PathBuf>,
+) -> AppResult<ForecastResult> {
+    let models = models_for_set(model_set)?
+        .into_iter()
+        .map(|(model_id, floor)| (model_id.to_string(), floor))
+        .collect::<Vec<_>>();
     cancelled(&cancel)?;
     progress("preparing", 0.0);
     let started_at = Utc::now().to_rfc3339();
     let mut input = workspace.forecast_input(revision_id).await?;
+    input.model_set = model_set.to_string();
+    input.models = models;
     if let Some(method) = imputation {
         for series in &mut input.series {
             imputation::impute_series(series, method);
@@ -166,7 +255,7 @@ pub async fn run_forecast(
 /// One model's evidence for one series: planned origins, completed origins
 /// with their held-out sums, and its production task outcome.
 struct SeriesModel<'a> {
-    model_id: &'static str,
+    model_id: String,
     production_eligible: bool,
     production: Option<&'a Task>,
     backtests: Vec<&'a Task>,
@@ -177,11 +266,14 @@ fn series_models<'a>(
     series: &crate::types::InputSeries,
     scoped: &[&'a Task],
     output: &EngineOutput,
+    models: &[(String, i32)],
 ) -> Vec<SeriesModel<'a>> {
     let h = series.h_length as i32;
-    MODELS
-        .into_iter()
+    models
+        .iter()
         .map(|(model_id, floor)| {
+            let model_id = model_id.as_str();
+            let floor = *floor;
             let model_tasks = scoped
                 .iter()
                 .filter(|task| task.model_id == model_id)
@@ -209,9 +301,12 @@ fn series_models<'a>(
                 .collect::<Vec<_>>();
             let production_completed =
                 production.is_some_and(|task| output.statuses[&task.id].status == "completed");
-            let production_eligible = series.qualification_status == "eligible" && h >= floor;
+            let production_eligible = series.qualification_status == "eligible"
+                && h >= floor
+                && (!is_sparse_model(model_id) || sparse_window_supported(series, h));
+            let _ = floor;
             SeriesModel {
-                model_id,
+                model_id: model_id.to_string(),
                 production_eligible,
                 production,
                 backtests,
@@ -309,14 +404,20 @@ async fn persist(
     let mut transaction = workspace.pool.begin().await?;
     let run_id = Uuid::now_v7();
     let finished_at = Utc::now().to_rfc3339();
-    let models = serde_json::json!(MODELS.map(|(model_id, _)| model_id));
+    let models = serde_json::json!(input
+        .models
+        .iter()
+        .map(|(model_id, _)| model_id.clone())
+        .collect::<Vec<_>>());
     let floors = serde_json::Value::Object(
-        MODELS
+        input
+            .models
             .iter()
-            .map(|(model_id, floor)| ((*model_id).to_owned(), serde_json::json!(floor)))
+            .map(|(model_id, floor)| (model_id.clone(), serde_json::json!(floor)))
             .collect(),
     );
     let config = serde_json::json!({
+        "model_set": input.model_set,
         "models": models,
         "window_weeks": HORIZON_WEEKS,
         "max_origins": MAX_ORIGINS,
@@ -332,10 +433,10 @@ async fn persist(
         .bind(env!("CARGO_PKG_VERSION")).bind(&output.engine_version)
         .bind(imputation.map(ImputationMethod::id)).execute(&mut *transaction).await?;
 
-    for (model_id, _) in MODELS {
+    for (model_id, _) in &input.models {
         let model_tasks = tasks
             .iter()
-            .filter(|task| task.model_id == model_id)
+            .filter(|task| task.model_id == *model_id)
             .collect::<Vec<_>>();
         let completed = model_tasks
             .iter()
@@ -371,7 +472,7 @@ async fn persist(
             .get(&(series.product_id, series.location_id))
             .cloned()
             .unwrap_or_default();
-        let models = series_models(series, &scoped, output);
+        let models = series_models(series, &scoped, output, &input.models);
         let evidences = models
             .iter()
             .map(|model| model.evidence.clone())
@@ -391,10 +492,10 @@ async fn persist(
                 .filter(|status| status.status == "failed");
             sqlx::query("INSERT INTO series_model_evaluation (run_id, product_id, location_id, model_id, eligibility_status, origins_planned, origins_completed, selection_score, selection_rank, is_champion, production_status, failure_code, failure_detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                 .bind(run_id.as_bytes().as_slice()).bind(series.product_id.as_bytes().as_slice()).bind(series.location_id.as_bytes().as_slice())
-                .bind(model.model_id).bind(eligibility_status(model))
+                .bind(&model.model_id).bind(eligibility_status(model))
                 .bind(model.backtests.len() as i32).bind(model.evidence.completed.len() as i32)
                 .bind(score).bind(rank)
-                .bind(i32::from(selected.champion.as_deref() == Some(model.model_id)))
+                .bind(i32::from(selected.champion.as_deref() == Some(model.model_id.as_str())))
                 .bind(status)
                 .bind(failure.and_then(|status| status.failure_code.as_deref()))
                 .bind(failure.and_then(|status| status.failure_detail.as_deref()))
@@ -405,14 +506,14 @@ async fn persist(
                 let metric = output.origins.get(&task.id);
                 sqlx::query("INSERT INTO series_model_origin (run_id, product_id, location_id, model_id, origin_index, origin_week_start, train_size, status, wape, mae, metric_kind, metric_value, failure_code, failure_detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                     .bind(run_id.as_bytes().as_slice()).bind(series.product_id.as_bytes().as_slice()).bind(series.location_id.as_bytes().as_slice())
-                    .bind(model.model_id).bind(task.origin_index).bind(task.train_end.to_string()).bind(task.train_size).bind(&status.status)
+                    .bind(&model.model_id).bind(task.origin_index).bind(task.train_end.to_string()).bind(task.train_size).bind(&status.status)
                     .bind(metric.and_then(|metric| metric.wape)).bind(metric.map(|metric| metric.mae)).bind(metric.map(|metric| metric.metric_kind.as_str())).bind(metric.map(|metric| metric.metric_value))
                     .bind(&status.failure_code).bind(&status.failure_detail).execute(&mut *transaction).await?;
                 if let Some(points) = output.points.get(&task.id) {
                     for point in points {
                         sqlx::query("INSERT INTO backtest_forecast (run_id, product_id, location_id, model_id, origin_index, week_start, value) VALUES (?, ?, ?, ?, ?, ?, ?)")
                             .bind(run_id.as_bytes().as_slice()).bind(series.product_id.as_bytes().as_slice()).bind(series.location_id.as_bytes().as_slice())
-                            .bind(model.model_id).bind(task.origin_index).bind(&point.week_start).bind(point.value).execute(&mut *transaction).await?;
+                            .bind(&model.model_id).bind(task.origin_index).bind(&point.week_start).bind(point.value).execute(&mut *transaction).await?;
                     }
                 }
             }
@@ -492,6 +593,11 @@ mod tests {
             revision_id: 1,
             cutoff: NaiveDate::from_ymd_opt(2026, 2, 23).unwrap(),
             timezone: "UTC".into(),
+            model_set: MODEL_SET_DEFAULT.into(),
+            models: MODELS
+                .iter()
+                .map(|(model_id, floor)| ((*model_id).to_string(), *floor))
+                .collect(),
             series,
         }
     }
@@ -651,7 +757,7 @@ mod tests {
             })
             .collect();
         SeriesModel {
-            model_id,
+            model_id: model_id.to_string(),
             production_eligible,
             production: None,
             backtests: vec![],

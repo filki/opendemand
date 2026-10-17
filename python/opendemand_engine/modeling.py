@@ -17,7 +17,7 @@ from typing import Callable, Sequence
 
 from .errors import FAIL_FIT_ERROR, FAIL_PREDICT_ERROR, FAIL_UNSUPPORTED_MODEL, TaskFailure
 
-MODEL_FLOOR = {"naive": 12, "seasonal_naive_52": 104, "auto_ets_52": 104}
+MODEL_FLOOR = {"naive": 12, "seasonal_naive_52": 104, "auto_ets_52": 104, "croston_sba": 12, "tsb": 12}
 SEASON_LENGTH = 52
 
 
@@ -39,10 +39,25 @@ def _auto_ets():
     return AutoETS(season_length=SEASON_LENGTH)
 
 
+def _croston_sba():
+    from statsforecast.models import CrostonSBA
+
+    return CrostonSBA()
+
+
+def _tsb():
+    from statsforecast.models import TSB
+
+    # Frozen policy parameters (ADR-0032): not fitted against held-out data.
+    return TSB(alpha_d=0.1, alpha_p=0.1)
+
+
 FACTORIES: dict[str, Callable[[], object]] = {
     "naive": _naive,
     "seasonal_naive_52": _seasonal_naive,
     "auto_ets_52": _auto_ets,
+    "croston_sba": _croston_sba,
+    "tsb": _tsb,
 }
 
 
