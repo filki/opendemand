@@ -48,6 +48,50 @@ export interface SaveFailure {
 	conflict: boolean;
 }
 
+/**
+ * The planner states that must block a series or run selection change: an
+ * unsaved draft, an in-flight save, or an in-flight export. Both the series
+ * list and the run-overview exceptions go through this one guard.
+ */
+export interface SelectionGuardState {
+	dirty: boolean;
+	saving: boolean;
+	exporting: boolean;
+}
+
+export function canChangeSelection(state: SelectionGuardState): boolean {
+	return !state.dirty && !state.saving && !state.exporting;
+}
+
+export interface RunExceptionSelectionState extends SelectionGuardState {
+	selectedRunId: string | null;
+	selectedProductId: string | null;
+	selectedLocationId: string | null;
+	comparisonOpen: boolean;
+}
+
+export interface RunExceptionTarget {
+	runId: string;
+	productId: string;
+	locationId: string;
+}
+
+export function selectRunException(
+	state: RunExceptionSelectionState,
+	target: RunExceptionTarget
+): (RunExceptionTarget & { comparisonOpen: false }) | null {
+	if (!canChangeSelection(state)) return null;
+	if (
+		state.selectedRunId === target.runId &&
+		state.selectedProductId === target.productId &&
+		state.selectedLocationId === target.locationId &&
+		!state.comparisonOpen
+	) {
+		return null;
+	}
+	return { ...target, comparisonOpen: false };
+}
+
 const UNKNOWN_FAILURE: SaveFailure = {
 	code: 'unknown_error',
 	message: 'The change could not be saved.',

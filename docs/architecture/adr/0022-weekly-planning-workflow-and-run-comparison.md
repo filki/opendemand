@@ -1,6 +1,6 @@
 # ADR-0022: Weekly planning workflow and run comparison
 
-**Status:** Accepted
+**Status:** Superseded in part by ADR-0026 (weekly orchestration only)
 **Date:** 2026-10-14
 **Related:** [ADR-0005](0005-missing-data-semantics.md), [ADR-0007](0007-forecast-value-representation.md), [ADR-0013](0013-canonical-import-and-mapping-idempotency.md), [ADR-0014](0014-manual-only-overrides.md), [ADR-0021](0021-import-config-persistence-and-migration-gate-mechanism.md)
 

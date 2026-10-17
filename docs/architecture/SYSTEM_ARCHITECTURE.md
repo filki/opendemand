@@ -93,7 +93,7 @@ Arrow IPC files carry `opendemand.contract=opendemand.arrow/1` and `opendemand.t
 
 ### 4.3 Export
 
-Milestone 2 CSV: `writing` (one read-only WAL snapshot; bounded full-run batches of latest override ?? baseline) → `publishing` (synced temporary files, no-overwrite publication of the selected file and retained `exports/<uuid>.csv` copy) → `completed` or `failed`. The `export_record` and terminal job state commit together after publication. CSV cancellation is not implemented; XLSX remains a later-phase capability.
+CSV and XLSX share `writing` (one read-only WAL snapshot; bounded full-run batches of latest override ?? baseline) → `publishing` (synced temporary files, no-overwrite publication of the selected file and retained `exports/<uuid>.<csv|xlsx>` copy) → `completed` or `failed`. The `export_record` and terminal job state commit together after publication. Export cancellation is not implemented. Rust writes XLSX `Plan` in constant-memory mode and adds the static `Summary` sheet required by ADR-0007; ADR-0025 records the writer choice.
 
 A hard kill before the database commit can leave orphan export files or hidden temporary files. Export artifact reconciliation is not implemented yet; see R-22 in `RISK_REGISTER.md`.
 

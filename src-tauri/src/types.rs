@@ -164,6 +164,36 @@ pub struct RunSummary {
     pub engine_version: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct RunException {
+    pub product_id: String,
+    pub location_id: String,
+    pub series_key: String,
+    pub location_code: String,
+    pub outcome: String,
+    pub reason: Option<String>,
+}
+
+/// Persisted model coverage, not accuracy or manual-plan completeness.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct RunOverview {
+    pub series_count: u32,
+    pub covered_series: u32,
+    pub coverage: f64,
+    pub outcomes: std::collections::BTreeMap<String, u32>,
+    pub exception_count: u32,
+    pub exceptions: Vec<RunException>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum WeeklyChangeFilter {
+    All,
+    Demand,
+    Forecast,
+    Presence,
+}
+
 /// The default weekly comparison pair (ADR-0022): the newest completed run of
 /// the latest import revision and of the immediately preceding revision of the
 /// same source profile. A null member means the comparison is unavailable.

@@ -1,10 +1,10 @@
 <script lang="ts">
 	import type { JobInfo } from '#lib/bindings.ts';
 	import StatusChip from '#lib/components/StatusChip.svelte';
-	import { shortId } from '#lib/frontend/format.ts';
 	import {
 		isActiveJobStatus,
 		jobKindLabel,
+		jobPhaseLabel,
 		jobStatusLabel,
 		progressPercent
 	} from '#lib/frontend/jobs.ts';
@@ -42,52 +42,55 @@
 	const cancelling = $derived(
 		job !== null && (job.status === 'cancelling' || job.status === 'canceling')
 	);
+	const percent = $derived(job ? progressPercent(job.progress) : 0);
 </script>
 
-<section class="panel section" aria-labelledby="job-heading">
-	<h2 id="job-heading">Job</h2>
+<section class="panel section" aria-labelledby="activity-heading">
+	<header class="heading">
+		<h2 id="activity-heading">Activity</h2>
+		{#if job}
+			<StatusChip label={jobStatusLabel(job.status)} tone={jobTone(job.status)} />
+		{/if}
+	</header>
 
 	{#if job && isActiveJobStatus(job.status)}
 		<div class="job">
-			<div class="job-top">
-				<strong>{jobKindLabel(job.kind)}</strong>
-				<StatusChip label={jobStatusLabel(job.status)} tone={jobTone(job.status)} />
-			</div>
-			<p class="phase muted" role="status">
-				{job.phase ? `${jobStatusLabel(job.status)} — ${job.phase}` : jobStatusLabel(job.status)}
-			</p>
+			<strong class="job-kind">{jobKindLabel(job.kind)}</strong>
+			<p class="phase muted" role="status">{jobPhaseLabel(job.phase)}. {percent}% complete.</p>
 			<div
 				class="progress"
 				role="progressbar"
 				aria-label="{jobKindLabel(job.kind)} progress"
 				aria-valuemin={0}
 				aria-valuemax={100}
-				aria-valuenow={progressPercent(job.progress)}
+				aria-valuenow={percent}
+				aria-valuetext="{percent}% complete"
 			>
-				<div class="progress-fill" style="width: {progressPercent(job.progress)}%"></div>
+				<div class="progress-fill" style="width: {percent}%"></div>
 			</div>
 			<div class="job-actions">
 				<button class="btn btn-danger" onclick={onCancel} disabled={cancelling}>
-					{cancelling ? 'Cancelling…' : 'Cancel job'}
+					{cancelling ? 'Cancelling…' : 'Cancel task'}
 				</button>
 			</div>
 		</div>
 	{:else if job}
 		<div class="job">
-			<div class="job-top">
-				<strong>{jobKindLabel(job.kind)}</strong>
-				<StatusChip label={jobStatusLabel(job.status)} tone={jobTone(job.status)} />
-			</div>
+			<strong class="job-kind">{jobKindLabel(job.kind)}</strong>
 			{#if notice}
 				<p class="notice" role="status">{notice}</p>
 			{/if}
 			{#if job.error}
-				<p class="banner banner-error error" role="alert">
-					[{job.error.code}] {job.error.message}
-				</p>
+				<div class="banner banner-error error" role="alert">
+					<p>{job.error.message}</p>
+					<details>
+						<summary>Technical details</summary>
+						<code>{job.error.code}</code>
+					</details>
+				</div>
 			{/if}
 			<div class="job-actions">
-				<button class="btn btn-secondary" onclick={onDismiss}>Dismiss</button>
+				<button class="btn btn-secondary" onclick={onDismiss}>Clear message</button>
 			</div>
 		</div>
 	{:else if notice}
@@ -95,46 +98,61 @@
 	{/if}
 
 	{#if recentJobs.length > 0}
-		<h3 class="recent-heading" id="recent-heading">Recent jobs</h3>
-		<ul class="recent" aria-labelledby="recent-heading">
-			{#each recentJobs as recent (recent.id)}
-				<li>
-					<span class="recent-kind">{jobKindLabel(recent.kind)}</span>
-					<StatusChip label={jobStatusLabel(recent.status)} tone={jobTone(recent.status)} />
-					<span class="mono muted" title={recent.id}>{shortId(recent.id, 10)}</span>
-					{#if recent.error}
-						<span class="recent-error" title={recent.error.message}>{recent.error.code}</span>
-					{/if}
-				</li>
-			{/each}
-		</ul>
-		<button class="btn btn-secondary btn-small" onclick={onRefresh}>Refresh list</button>
+		<details class="recent-details">
+			<summary>Recent activity ({recentJobs.length})</summary>
+			<ul class="recent">
+				{#each recentJobs as recent (recent.id)}
+					<li>
+						<div class="recent-row">
+							<strong>{jobKindLabel(recent.kind)}</strong>
+							<StatusChip label={jobStatusLabel(recent.status)} tone={jobTone(recent.status)} />
+						</div>
+						{#if recent.error}
+							<details class="recent-error">
+								<summary>{recent.error.message}</summary>
+								<code>{recent.error.code}</code>
+							</details>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+			<button class="btn btn-secondary btn-small" onclick={onRefresh}>Refresh activity</button>
+		</details>
 	{/if}
 </section>
 
 <style>
 	.section {
-		padding: 1rem 1.1rem;
+		padding: 0.9rem 1.1rem;
 	}
 
-	h2 {
-		margin-bottom: 0.6rem;
-	}
-
-	.job-top {
+	.heading {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		gap: 0.5rem;
+		gap: 0.75rem;
+	}
+
+	h2 {
+		margin: 0;
+	}
+
+	.job {
+		margin-top: 0.75rem;
+	}
+
+	.job-kind {
+		font-size: 0.95rem;
 	}
 
 	.phase {
-		margin: 0.35rem 0 0.5rem;
+		margin: 0.25rem 0 0.55rem;
 		font-size: 0.88rem;
 	}
 
 	.notice {
-		margin: 0.5rem 0 0;
+		max-width: 80ch;
+		margin: 0.4rem 0 0;
 		font-size: 0.88rem;
 	}
 
@@ -151,43 +169,75 @@
 		border-radius: 999px;
 	}
 
+	.job-actions {
+		display: flex;
+		justify-content: flex-end;
+		margin-top: 0.6rem;
+	}
+
 	.error {
 		margin-top: 0.6rem;
 	}
 
-	.job-actions {
-		margin-top: 0.6rem;
+	.error p {
+		margin: 0 0 0.35rem;
 	}
 
-	.recent-heading {
-		margin: 1rem 0 0.4rem;
+	.error summary,
+	.recent-details summary {
+		width: fit-content;
+		color: var(--ink-soft);
+		font-size: 0.84rem;
+		font-weight: 600;
+		cursor: pointer;
+	}
+
+	.recent-details {
+		margin-top: 0.75rem;
+		padding-top: 0.65rem;
+		border-top: 1px solid var(--border);
 	}
 
 	.recent {
-		margin: 0 0 0.6rem;
+		margin: 0.55rem 0;
 		padding: 0;
 		list-style: none;
 		display: flex;
 		flex-direction: column;
-		gap: 0.3rem;
+		gap: 0.45rem;
 		font-size: 0.85rem;
 	}
 
 	.recent li {
-		display: flex;
-		align-items: center;
-		gap: 0.45rem;
-		flex-wrap: wrap;
+		min-width: 0;
+		padding-bottom: 0.45rem;
+		border-bottom: 1px solid var(--border);
 	}
 
-	.recent-kind {
-		font-weight: 600;
+	.recent-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
 	}
 
 	.recent-error {
-		color: var(--danger);
+		margin-top: 0.3rem;
+		font-size: 0.82rem;
+	}
+
+	.recent-error summary {
+		max-width: 100%;
+		font-weight: 400;
+		overflow-wrap: anywhere;
+	}
+
+	.recent-error code,
+	.error code {
+		display: block;
+		margin-top: 0.3rem;
 		font-family: var(--font-mono);
-		font-size: 0.8em;
+		font-size: 0.8rem;
 	}
 
 	.btn-small {

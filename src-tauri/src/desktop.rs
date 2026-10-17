@@ -162,6 +162,19 @@ async fn workspace_info(state: State<'_, Service>) -> AppResult<WorkspaceInfo> {
     state.current().await?.info().await
 }
 
+#[tauri::command]
+#[specta::specta]
+async fn workspace_set_locale(
+    locale: String,
+    state: State<'_, Service>,
+) -> AppResult<WorkspaceInfo> {
+    let current = state.workspace.lock().await;
+    let workspace = current
+        .as_ref()
+        .ok_or_else(|| AppError::new("no_workspace", "Create or open a workspace first."))?;
+    workspace.set_locale(&locale).await
+}
+
 /// The home screen's workspace list: recent workspaces plus the default
 /// application-data workspace when it exists. The exists flag reflects the
 /// workspace database, not just the folder.
@@ -238,7 +251,6 @@ async fn workspace_rename(
     app: AppHandle,
     state: State<'_, Service>,
 ) -> AppResult<WorkspaceRef> {
-    state.ensure_idle()?;
     let name = workspace_name(&name)?;
     let source = PathBuf::from(&path);
     refuse_default_workspace(&app, &source)?;
@@ -266,6 +278,17 @@ async fn workspace_rename(
         )
     })?;
     let target = parent.join(&name);
+    // Share the open/job lock through the filesystem move and registry update.
+    let current = state.workspace.lock().await;
+    state.ensure_idle()?;
+    if let Some(open) = current.as_ref() {
+        if open.path == source {
+            return Err(AppError::new(
+                "workspace_busy",
+                "Close the open workspace before renaming it.",
+            ));
+        }
+    }
     if target != source {
         if target.exists() {
             return Err(AppError::new(
@@ -298,7 +321,6 @@ async fn workspace_delete(
     app: AppHandle,
     state: State<'_, Service>,
 ) -> AppResult<()> {
-    state.ensure_idle()?;
     let source = PathBuf::from(&path);
     refuse_default_workspace(&app, &source)?;
     if !source.join(DB_FILENAME).exists() {
@@ -307,15 +329,15 @@ async fn workspace_delete(
             "No workspace database was found at this path; nothing to delete.",
         ));
     }
-    {
-        let current = state.workspace.lock().await;
-        if let Some(open) = current.as_ref() {
-            if open.path == source {
-                return Err(AppError::new(
-                    "workspace_busy",
-                    "Close the open workspace before deleting it.",
-                ));
-            }
+    // Share the open/job lock through the filesystem removal and registry update.
+    let current = state.workspace.lock().await;
+    state.ensure_idle()?;
+    if let Some(open) = current.as_ref() {
+        if open.path == source {
+            return Err(AppError::new(
+                "workspace_busy",
+                "Close the open workspace before deleting it.",
+            ));
         }
     }
     let expected = source
@@ -407,6 +429,21 @@ async fn override_append(
 
 #[tauri::command]
 #[specta::specta]
+async fn run_overview(
+    run_id: String,
+    offset: u32,
+    limit: u32,
+    state: State<'_, Service>,
+) -> AppResult<RunOverview> {
+    state
+        .current()
+        .await?
+        .run_overview(&run_id, offset, limit)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn export_csv(
     run_id: String,
     path: String,
@@ -416,6 +453,20 @@ async fn export_csv(
         .current()
         .await?
         .export_csv(&run_id, &PathBuf::from(path))
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn export_xlsx(
+    run_id: String,
+    path: String,
+    state: State<'_, Service>,
+) -> AppResult<ExportResult> {
+    state
+        .current()
+        .await?
+        .export_xlsx(&run_id, &PathBuf::from(path))
         .await
 }
 
@@ -709,6 +760,7 @@ async fn weekly_comparison_series_list(
     current_run_id: String,
     previous_run_id: String,
     search: String,
+    filter: WeeklyChangeFilter,
     offset: u32,
     limit: u32,
     state: State<'_, Service>,
@@ -716,7 +768,14 @@ async fn weekly_comparison_series_list(
     state
         .current()
         .await?
-        .weekly_comparison_series_list(&current_run_id, &previous_run_id, &search, offset, limit)
+        .weekly_comparison_series_list(
+            &current_run_id,
+            &previous_run_id,
+            &search,
+            filter,
+            offset,
+            limit,
+        )
         .await
 }
 
@@ -863,6 +922,7 @@ fn command_builder() -> Builder<tauri::Wry> {
             workspace_open,
             workspace_close,
             workspace_info,
+            workspace_set_locale,
             workspaces_list,
             workspaces_forget,
             workspace_rename,
@@ -884,8 +944,10 @@ fn command_builder() -> Builder<tauri::Wry> {
             series_detail,
             series_models,
             runs_list,
+            run_overview,
             override_append,
-            export_csv
+            export_csv,
+            export_xlsx
         ])
         .events(collect_events![JobProgress])
 }

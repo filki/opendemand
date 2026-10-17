@@ -10,6 +10,7 @@ The UI never opens SQLite or runs the Python engine directly. This document cove
 - `workspace_open(path: string)`: open an existing workspace and reconcile retained files. A successful open records the path in the recent-workspaces list.
 - `workspace_close()`: close the active workspace and return to the home flow. Refused with `workspace_busy` while a job runs.
 - `workspace_info()`: return the active workspace, latest revision, locale, and recovery findings.
+- `workspace_set_locale(locale: string)`: persist `en`, `pl`, or `es` in the existing workspace settings and return `WorkspaceInfo`. Unsupported values fail with `invalid_locale`; no import descriptor, timezone, or run changes. Import and weekly-review copy follow this choice; other screens and stored diagnostics can remain English.
 - `workspaces_list()`: return the home screen's workspace list — recent workspaces plus the default application-data workspace while it exists — each with `exists` reflecting its database file.
 - `workspaces_forget(path: string)`: remove one recent-workspaces entry. The default application-data workspace reappears while its database exists.
 - `workspace_rename(path: string, name: string)`: rename a workspace by moving its directory and re-pointing the registry entry; returns the updated `WorkspaceRef`. Error codes: `invalid_workspace_name`, `workspace_name_taken`, `workspace_not_found`, `workspace_default`, `workspace_busy` (open workspace or active job), `io_error`.
@@ -21,7 +22,7 @@ The UI never opens SQLite or runs the Python engine directly. This document cove
 - `import_config_delete(id: number)`: delete a saved configuration; revisions keep their frozen descriptor.
 - `import_config_suggestion()`: return the id of the single saved configuration whose descriptor exactly matches the latest preprocessed revision's frozen descriptor; `null` when there is no match or more than one match.
 - `weekly_comparison_context()`: return the default comparison pair (newest completed run of the latest revision and of the immediately preceding revision). Null members mark an unavailable comparison.
-- `weekly_comparison_series_list(current_run_id: string, previous_run_id: string, search: string, offset: number, limit: number)`: return only changed series of the validated pair, in stable SKU/location order. Rust rejects runs that are not completed or not adjacent revisions of one profile.
+- `weekly_comparison_series_list(current_run_id: string, previous_run_id: string, search: string, filter: WeeklyChangeFilter, offset: number, limit: number)`: return only changed series of the validated pair, in stable SKU/location order. `filter` is `all`, `demand`, `forecast`, or `presence`; filters and search apply before pagination. Demand and forecast filters can overlap; presence selects added/removed series. Rust rejects runs that are not completed or not adjacent revisions of one profile.
 - `weekly_comparison_series_detail(current_run_id: string, previous_run_id: string, product_id: string, location_id: string)`: return the weekly demand and baseline forecast comparison plus the current run's effective plan for one series.
 - `forecast_start(revision_id: number, imputation: string | null)`: queue a run pinned to an immutable revision and return its initial `JobInfo`. `imputation` is `last`, `last_seasonal_52`, `mean_4`, or `null`; it fills missing weeks in the run's model input only (ADR-0023) and neither the stored history nor the exports change.
 - `job_status(job_id: string)`: return progress, terminal error, and import/forecast result.
@@ -30,8 +31,10 @@ The UI never opens SQLite or runs the Python engine directly. This document cove
 - `series_list(revision_id: number, search: string, offset: number, limit: number)`: return revision-scoped series. Limit is 1..200; offset is nonnegative.
 - `series_detail(revision_id: number, product_id: string, location_id: string, run_id: string | null)`: return history, persisted baseline forecasts, planning points, and override capability. Run and revision must match.
 - `runs_list(revision_id: number | null)`: return persisted runs for a revision; `null` returns run history across all revisions.
+- `run_overview(run_id: string, offset: number, limit: number)`: read full-run coverage/outcome counts and a paginated exception list from one read-only snapshot. Limit is clamped to 1..200; the UI requests 20. Unknown and incomplete runs fail with `unknown_run` and `run_not_completed`.
 - `override_append(edit: OverrideEdit)`: append a run-scoped value or clearing revision and return `OverrideRevision`.
 - `export_csv(run_id: string, path: string)`: publish the saved full-run plan to a new CSV file and return `ExportResult`.
+- `export_xlsx(run_id: string, path: string)`: publish the same saved plan as a new XLSX workbook with `Plan` and `Summary` sheets; return `ExportResult`.
 
 UUIDs are lowercase hyphenated strings at this boundary and `BLOB(16)` inside SQLite.
 Revision ids are JSON numbers; Rust rejects values outside the supported integer range.
@@ -47,6 +50,8 @@ Jobs use string ids to correlate Tauri, SQLite, and sidecar messages.
 - `SeriesDetail`: `product_id`, `location_id`, `location_code`, `series_key`, `history`, `forecast`, `planning`, `can_override`, and nullable `run_id`, `outcome`, `reason`, `horizon_start_week`, `selected_model_id`, and `selection_score`.
 - `PlanningPoint`: `week_start`, 1-based `horizon`, nullable `baseline`, `override_value`, and `effective`, `value_source` (`model | override | missing`), and `override_revision` (0 only when no revision exists).
 - `RunSummary`: `id`, `revision_id`, `status`, `created_at`, `horizon_start_week`, `engine_version`.
+- `RunOverview`: `series_count`, `covered_series`, `coverage`, `outcomes` (all five outcome keys, including zero counts), `exception_count`, and `exceptions`. Coverage is the fraction with `ok` or `fallback_naive`, not forecast accuracy; zero series yields zero coverage. Totals are independent of pagination.
+- `RunException`: `product_id`, `location_id`, `series_key`, `location_code`, `outcome`, nullable `reason`. Exceptions have non-`ok` status or a recorded reason, including `ok` after production fallback. Order is model failure, invalid data, insufficient history, Naive fallback, then `ok` with a reason, followed by SKU/location/identity tie-breaks.
 - `OverrideRevision`: the newly appended `revision` number.
 - `ParsingDescriptor`: the versioned description of how one source file becomes observations. All fields are nullable for partial detection results: `descriptor_version`, `format` (`csv`/`xlsx`), `encoding`, `delimiter`, `header_row`, `sheet`, `key_columns`, `key_separator`, `date_column`, `date_formats`, `quantity_column`, `unit_column` (reserved, unused), `decimal_separator`, `thousands_separator`, `aggregation`.
 - `ImportPreview`: `detected` (descriptor with detection results merged in), `headers`, `sample_rows`, `parsed_rows` (composed `series_key`, Monday `week_start`, parsed `quantity`, `status`), `findings`, `can_parse`, `truncated`, and `sheets` (workbook sheet names, empty for text exports).
@@ -65,7 +70,7 @@ Jobs use string ids to correlate Tauri, SQLite, and sidecar messages.
 Commands return a typed Result. Tauri event `job-progress` carries `JobInfo`.
 Events are advisory; `job_status`, `jobs_list`, and `runs_list` restore authoritative state.
 Import parsing and forecasting run outside the UI thread. One import and one forecast may run concurrently; writes serialize through the Rust-owned connection.
-Workspace switching is rejected while an import or forecast job is active. The UI also blocks switching while edits are pending or CSV export is in progress.
+Workspace switching is rejected while an import or forecast job is active. The UI also blocks switching while edits are pending or an export is in progress.
 
 ## Run-Scoped Overrides
 
@@ -86,15 +91,17 @@ Every accepted write appends the next revision, including a clear. Baseline fore
 
 The effective forecast uses the latest override revision's value when non-null, otherwise the baseline; it never searches backward past a clear. If neither value exists it is missing, not zero. A clear retains its revision number for the next concurrency check. The UI preserves invalid and stale drafts, requires explicit refresh/rebase for conflicts, and pins the edited run when background imports or forecasts complete.
 
-## Full-Run CSV Export
+## Full-Run CSV And XLSX Export
 
 Export reads the saved plan for every series in the selected completed run and all 12 horizon weeks from one read-only WAL snapshot, using bounded keyset batches. Unsaved UI drafts are not exported. Columns are defined in `../DATA_ARCHITECTURE.md`; missing values are blank. Files use UTF-8 with a BOM, CRLF records, and a `.` decimal separator.
 
-The selected path must be absolute with a case-insensitive `.csv` extension, have an existing parent directory, and not already exist. Destinations inside the workspace are rejected except directly in its `exports/` directory. Validation errors include `invalid_export_path`, `export_exists`, `unknown_run`, and `run_not_completed`; CSV write failures can report `export_failed` or a common I/O error.
+XLSX `Plan` has the same columns and rows. Dates and quantities are typed cells; missing values remain blank. Identity strings remain literal text, including leading zeroes and formula-like names. `Summary` contains run/revision/horizon/engine identity, coverage, outcome counts, and statistical champion counts. Champion counts are distinct from the model used after production fallback. Values are static, with no spreadsheet formulas (ADR-0025).
 
-Rust writes and syncs temporary files before no-overwrite publication. A successful export includes the selected CSV, a retained workspace copy at `exports/<uuid>.csv`, an `export_record`, and a completed export job. The command returns only after publication and the database transaction succeed; CSV export cancellation is not implemented.
+The selected path must be absolute with a case-insensitive `.csv` or `.xlsx` extension matching the command, have an existing parent directory, and not already exist. Destinations inside the workspace are rejected except directly in its `exports/` directory. Validation errors include `invalid_export_path`, `export_exists`, `unknown_run`, and `run_not_completed`; write failures can report `export_failed` or a common I/O error. Workbook write and worksheet-limit errors report `export_failed`.
 
-A hard kill between publication and database commit can leave a complete orphan CSV/archive or hidden temporary file without an `export_record`. Startup reconciliation does not reclaim these export artifacts yet (risk R-22). The native save-dialog flow was manually verified on macOS on 2026-10-14: the dialog opens with the suggested file name, honors the chosen folder, cancel leaves no artifacts, and the written file matches the format rules above. Opening the output in Excel remains unverified; browser checks used a simulated dialog with real Rust workspace methods.
+Rust writes and syncs temporary files before no-overwrite publication. A successful export includes the selected file, a retained workspace copy at `exports/<uuid>.<csv|xlsx>`, an `export_record`, and a completed export job. The command returns only after publication and the database transaction succeed; export cancellation is not implemented. XLSX uses constant-memory worksheet output and bounded database reads.
+
+A hard kill between publication and database commit can leave a complete orphan export/archive or hidden temporary file without an `export_record`. Startup reconciliation does not reclaim these export artifacts yet (risk R-22). The CSV native save-dialog flow was manually verified on macOS on 2026-10-14. The new XLSX native dialog and opening output in Excel/LibreOffice still require manual application checks; automated workbook checks use `calamine`.
 
 ## Weekly comparison
 

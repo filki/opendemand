@@ -3,27 +3,36 @@
 	import type { SeriesChangeSummary } from '#lib/bindings.ts';
 	import StatusChip from '#lib/components/StatusChip.svelte';
 	import WeeklyChangeDetail from '#lib/components/WeeklyChangeDetail.svelte';
-	import { shortId } from '#lib/frontend/format.ts';
+	import { t, type Locale } from '#lib/frontend/i18n.ts';
 	import {
 		fetchWeeklyComparisonContext,
 		fetchWeeklyComparisonDetail,
 		fetchWeeklyComparisonList,
 		queryErrorCode
 	} from '#lib/frontend/ipc.ts';
+	import {
+		changedListEmptyText,
+		WEEKLY_CHANGE_FILTERS,
+		weeklyChangeFilterLabel,
+		type WeeklyChangeFilter
+	} from '#lib/frontend/weekly.ts';
 
-	let { onClose }: { onClose: () => void } = $props();
+	let { locale, onClose }: { locale: Locale; onClose: () => void } = $props();
 
 	const PAGE_SIZE = 50;
 
 	let searchInput = $state('');
 	let debouncedSearch = $state('');
+	let filter = $state<WeeklyChangeFilter>('all');
 	let offset = $state(0);
 	let selected = $state<{ productId: string; locationId: string } | null>(null);
+	// The inputs a result page belongs to; a change resets page and selection
+	// so a row filtered out of the new result can never stay selected.
+	let resultScope = '';
 
 	$effect(() => {
 		const timer = setTimeout(() => {
 			debouncedSearch = searchInput;
-			offset = 0;
 		}, 250);
 		return () => clearTimeout(timer);
 	});
@@ -37,13 +46,23 @@
 	const currentRunId = $derived(context?.current?.id ?? null);
 	const previousRunId = $derived(context?.previous?.id ?? null);
 
+	$effect(() => {
+		const scope = `${currentRunId ?? ''}\u0000${previousRunId ?? ''}\u0000${debouncedSearch}\u0000${filter}`;
+		if (scope !== resultScope) {
+			resultScope = scope;
+			offset = 0;
+			selected = null;
+		}
+	});
+
 	const listQuery = createQuery(() => ({
-		queryKey: ['weekly-list', currentRunId, previousRunId, debouncedSearch, offset],
+		queryKey: ['weekly-list', currentRunId, previousRunId, debouncedSearch, filter, offset],
 		queryFn: () =>
 			fetchWeeklyComparisonList(
 				currentRunId as string,
 				previousRunId as string,
 				debouncedSearch,
+				filter,
 				offset,
 				PAGE_SIZE
 			),
@@ -54,7 +73,7 @@
 	const hasNext = $derived(changed.length === PAGE_SIZE);
 
 	$effect(() => {
-		if (selected === null && !listQuery.isFetching) {
+		if (selected === null && !listQuery.isFetching && listQuery.isFetched) {
 			const first = (listQuery.data ?? [])[0];
 			if (first) selected = { productId: first.product_id, locationId: first.location_id };
 		}
@@ -98,64 +117,70 @@
 <section class="panel card comparison" aria-labelledby="comparison-heading">
 	<header class="head">
 		<div>
-			<h2 id="comparison-heading">Weekly comparison</h2>
+			<h2 id="comparison-heading">{t(locale, 'weekly.title')}</h2>
 			{#if context && context.current && context.previous}
 				<p class="muted small pair">
-					Revision {context.previous.revision_id} run {shortId(context.previous.id)} ({context.previous.horizon_start_week} horizon)
-					→
-					Revision {context.current.revision_id} run {shortId(context.current.id)} ({context.current.horizon_start_week} horizon)
+					{t(locale, 'weekly.pair', {
+						previousRevision: context.previous.revision_id,
+						currentRevision: context.current.revision_id
+					})}
 				</p>
 			{/if}
 		</div>
-		<button class="btn btn-secondary" onclick={onClose}>Close</button>
+		<button class="btn btn-secondary" onclick={onClose}>{t(locale, 'weekly.close')}</button>
 	</header>
 
 	{#if contextQuery.isPending}
-		<p class="muted" role="status">Loading comparison…</p>
+		<p class="muted" role="status">{t(locale, 'weekly.loading')}</p>
 	{:else if contextQuery.isError}
 		<div class="banner banner-error" role="alert">
 			<p>[{queryErrorCode(contextQuery.error)}] {contextQuery.error.message}</p>
-			<button class="btn btn-secondary" onclick={() => void contextQuery.refetch()}>Retry</button>
+			<button class="btn btn-secondary" onclick={() => void contextQuery.refetch()}>
+				{t(locale, 'common.retry')}
+			</button>
 		</div>
 	{:else if !context || !context.current}
-		<p class="muted">
-			No completed forecast run exists for the latest revision yet. Run the weekly update to
-			import new sales and forecast them.
-		</p>
+		<p class="muted">{t(locale, 'weekly.noCurrent')}</p>
 	{:else if !context.previous}
-		<p class="banner banner-warn">
-			Comparison unavailable: the immediately previous import revision has no completed run.
-			It is never skipped in favour of an older revision.
-		</p>
+		<p class="banner banner-warn">{t(locale, 'weekly.noPrevious')}</p>
 	{:else}
 		<div class="grid">
 			<div class="list-pane">
-				<label class="field-label" for="weekly-search">Search changed series</label>
+				<label class="field-label" for="weekly-search">{t(locale, 'weekly.searchLabel')}</label>
 				<input
 					id="weekly-search"
 					type="search"
-					placeholder="Filter by series key"
+					placeholder={t(locale, 'weekly.searchPlaceholder')}
 					value={searchInput}
 					oninput={(event) => (searchInput = event.currentTarget.value)}
 				/>
+				<label class="field-label" for="weekly-filter">{t(locale, 'weekly.filterLabel')}</label>
+				<select
+					id="weekly-filter"
+					value={filter}
+					onchange={(event) =>
+						(filter = (event.currentTarget as HTMLSelectElement).value as WeeklyChangeFilter)}
+				>
+					{#each WEEKLY_CHANGE_FILTERS as option (option)}
+						<option value={option}>{weeklyChangeFilterLabel(locale, option)}</option>
+					{/each}
+				</select>
 
 				{#if listQuery.isError}
 					<div class="banner banner-error" role="alert">
 						<p>[{queryErrorCode(listQuery.error)}] {listQuery.error.message}</p>
 						<button class="btn btn-secondary btn-small" onclick={() => void listQuery.refetch()}>
-							Retry
+							{t(locale, 'common.retry')}
 						</button>
 					</div>
 				{:else if listQuery.isPending && listQuery.isFetching}
-					<p class="muted small" role="status">Loading changed series…</p>
+					<p class="muted small" role="status">{t(locale, 'weekly.loadingList')}</p>
 				{:else if changed.length === 0}
 					<p class="muted small">
-						{debouncedSearch
-							? 'No changed series match this search.'
-							: 'No series changed between these two runs.'}
+						{changedListEmptyText(locale, debouncedSearch, filter)}
 					</p>
 				{:else}
-					<ul class="list" aria-label="Changed series">
+					<ul class="list" aria-label={t(locale, 'weekly.listAria')}>
 						{#each changed as item (item.product_id + ':' + item.location_id)}
 							<li>
 								<button
@@ -169,15 +194,23 @@
 									<span class="row-meta">
 										<span class="muted">{item.location_code}</span>
 										{#if item.presence === 'current_only'}
-											<StatusChip label="Only in new revision" tone="warn" />
+											<StatusChip label={t(locale, 'weekly.presenceCurrentOnly')} tone="warn" />
 										{:else if item.presence === 'previous_only'}
-											<StatusChip label="Only in previous revision" tone="warn" />
+											<StatusChip label={t(locale, 'weekly.presencePreviousOnly')} tone="warn" />
 										{/if}
 										{#if item.demand_change_count > 0}
-											<StatusChip label={`Demand ${item.demand_change_count}`} tone="neutral" />
+											<StatusChip
+												label={t(locale, 'weekly.demandCount', { count: item.demand_change_count })}
+												tone="neutral"
+											/>
 										{/if}
 										{#if item.forecast_change_count > 0}
-											<StatusChip label={`Forecast ${item.forecast_change_count}`} tone="neutral" />
+											<StatusChip
+												label={t(locale, 'weekly.forecastCount', {
+													count: item.forecast_change_count
+												})}
+												tone="neutral"
+											/>
 										{/if}
 									</span>
 								</button>
@@ -192,26 +225,29 @@
 						onclick={() => (offset = Math.max(0, offset - PAGE_SIZE))}
 						disabled={offset === 0 || listQuery.isFetching}
 					>
-						Previous
+						{t(locale, 'common.previous')}
 					</button>
 					<span class="muted range">
-						{changed.length > 0 ? `Showing ${offset + 1}–${offset + changed.length}` : 'Nothing to show'}
+						{changed.length > 0
+							? t(locale, 'weekly.range', { from: offset + 1, to: offset + changed.length })
+							: t(locale, 'weekly.nothingToShow')}
 					</span>
 					<button
 						class="btn btn-secondary btn-small"
 						onclick={() => (offset = offset + PAGE_SIZE)}
 						disabled={!hasNext || listQuery.isFetching}
 					>
-						Next
+						{t(locale, 'common.next')}
 					</button>
 				</div>
 			</div>
 
 			<div class="detail-pane">
 				{#if selected === null}
-					<p class="muted">Select a changed series to inspect its weekly detail.</p>
+					<p class="muted">{t(locale, 'weekly.selectHint')}</p>
 				{:else}
 					<WeeklyChangeDetail
+						{locale}
 						detail={detailQuery.data ?? null}
 						loading={detailQuery.isPending}
 						error={detailQuery.isError
@@ -257,7 +293,8 @@
 		align-items: start;
 	}
 
-	.list-pane input {
+	.list-pane input,
+	.list-pane select {
 		margin-bottom: 0.6rem;
 		width: 100%;
 	}

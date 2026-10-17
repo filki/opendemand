@@ -27,9 +27,11 @@ This directory records the accepted architecture decisions for OpenDemand. Each 
 | [0019](0019-raw-source-preprocessing-layer.md) | Raw-source preprocessing layer | Accepted | 2026-10-14 |
 | [0020](0020-parsing-descriptor-in-the-mapping-fingerprint.md) | Parsing configuration in the mapping fingerprint | Accepted | 2026-10-14 |
 | [0021](0021-import-config-persistence-and-migration-gate-mechanism.md) | Import configuration persistence and the pre-migration backup mechanism | Accepted | 2026-10-14 |
-| [0022](0022-weekly-planning-workflow-and-run-comparison.md) | Weekly planning workflow and run comparison | Accepted | 2026-10-14 |
+| [0022](0022-weekly-planning-workflow-and-run-comparison.md) | Weekly planning workflow and run comparison | Superseded in part by 0026 | 2026-10-14 |
 | [0023](0023-model-input-imputation.md) | Model-input imputation of missing weeks | Accepted | 2026-10-14 |
 | [0024](0024-workspace-rename-and-deletion.md) | Workspace rename and deletion | Accepted | 2026-10-15 |
+| [0025](0025-native-xlsx-plan-export.md) | Native XLSX plan export | Accepted | 2026-10-15 |
+| [0026](0026-forecast-workspace-exploration-and-pipeline-orchestration.md) | Keep forecasting exploratory; move weekly orchestration to Pipelines | Accepted | 2026-10-17 |
 
 Schema status: migration 001 is frozen (2026-10-13; SHA-256 recorded in `../schema/001_init.sha256`); migration 002 adds `import_config` and `import_revision.descriptor_json`; migration 003 adds the run-level imputation method and per-series filled-week counts (ADR-0023). Migrations are applied only behind the verified pre-migration backup (ADR-0021). All schema changes use new numbered migrations.
 

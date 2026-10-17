@@ -9,8 +9,6 @@ export function createWorkspaceHint(code: string): string | null {
 	switch (code) {
 		case 'workspace_exists':
 			return 'A workspace already lives in that folder. Open it from the list instead.';
-		case 'workspace_not_empty':
-			return 'Choose an empty folder for a new workspace.';
 		case 'workspace_not_directory':
 			return 'Choose a folder, not a file.';
 		default:
@@ -63,6 +61,8 @@ export function workspaceActionHint(code: string): string | null {
 			return 'Use a single folder name without path separators.';
 		case 'workspace_name_taken':
 			return 'A folder with that name already exists next to this workspace.';
+		case 'workspace_not_found':
+			return 'No OpenDemand workspace was found in that folder. Choose an existing workspace or create one in the default location.';
 		case 'confirm_name_mismatch':
 			return 'Type the workspace name exactly to confirm deletion.';
 		case 'workspace_default':

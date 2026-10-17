@@ -1,6 +1,6 @@
 # AGENTS.md
 
-OpenDemand is a local-first, SKU-level demand forecasting desktop application: one user, one local workspace, all business data on the machine, no network listeners. Milestones 1–6 work end-to-end in development; the latest completed milestone is Milestone 6, the weekly planning workflow and run comparison (ADR-0022). `README.md` carries the honest status and verification gaps. Technical artifacts, docs, tests, and code are English.
+OpenDemand is a local-first, SKU-level demand forecasting desktop application: one user, one local workspace, all business data on the machine, no network listeners. Milestones 1–6 work end-to-end in development; the forecasting workspace keeps imports, on-demand forecasts, and run comparison separate, while weekly orchestration is deferred to Pipelines (ADR-0026). `README.md` carries the honest status and verification gaps. Technical artifacts, docs, tests, and code are English.
 ## Language
 Use ASD-STE100 as your primary language.
 ## Approved stack — preserve it
@@ -15,7 +15,7 @@ Decisions live in `docs/architecture/adr/` (start at `README.md` there); do not 
 ## Current-phase rules
 
 - **Migration 001 is frozen.** `docs/architecture/schema/001_init.sql` passed 44 integration/recovery tests on 2026-10-13. Its SHA-256 is recorded in `001_init.sha256`. Never edit it; schema changes require a new numbered migration and verified backup.
-- **Current scope: Milestone 6 (weekly planning workflow).** Preserve the working import/forecast chain, run-scoped planner, raw-source preprocessing, and weekly comparison. MCP, XLSX export, scheduled or automatic imports, periodic backups and restore, and the true monthly forecasting mode remain deferred until separately approved. Weekly comparison output is derived at read time (ADR-0022); never store comparison state.
+- **Current scope: Milestone 6 and approved planner workflow improvements.** Preserve raw-source import, on-demand forecasts, the run-scoped planner, and run comparison. Weekly import-and-forecast orchestration belongs to Pipelines (ADR-0026). XLSX export follows ADR-0025. MCP, scheduled imports, periodic backups and restore, and the true monthly forecasting mode remain deferred until separately approved. Run comparison and overview output are derived at read time; never store comparison state.
 - **Accepted ADRs are historical.** To change a decision, add a new ADR that supersedes the old one; the old record keeps its text.
 
 ## Verification

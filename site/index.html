@@ -125,6 +125,14 @@
 
 			<section class="section" aria-labelledby="how-title">
 				<h2 id="how-title">What it does today</h2>
+				<p class="section-lede">
+					New to the app? Try the
+					<a href="https://github.com/filki/opendemand#first-forecast">sample workflow</a>:
+					two small files
+					(<a href="https://github.com/filki/opendemand/blob/main/examples/quickstart/first-import.csv">snapshot A</a>,
+					<a href="https://github.com/filki/opendemand/blob/main/examples/quickstart/weekly-update.csv">a later import</a>)
+					show a guided import, a first forecast, then a separate forecast and comparison for newer data — no real data needed.
+				</p>
 				<ol class="steps">
 					<li>
 						<h3>Add your data</h3>
@@ -136,26 +144,27 @@
 						</p>
 					</li>
 					<li>
-						<h3>Run the weekly forecast</h3>
+						<h3>Generate a forecast</h3>
 						<p>
-							One weekly update: load the new export and the app forecasts the freshest
-							data, with the best of three models (Naive, SeasonalNaive, AutoETS) chosen
-							per product. Everything runs on your computer. You do not need Python or
-							other tools.
+							After importing, choose Generate forecast when you are ready. If weeks are
+							missing, decide whether to estimate them for this forecast; stored history
+							stays unchanged. The app selects the best of three models (Naive,
+							SeasonalNaive, AutoETS) per product. Everything runs locally; you do not need
+							Python or other tools.
 						</p>
 					</li>
 					<li>
-						<h3>Compare and adjust</h3>
+						<h3>Compare runs and adjust</h3>
 						<p>
-							See what changed since last week: demand edits and forecast movement for
-							every product, the new forecast next to the previous run. Adjust single
-							weeks by hand and compare them with the untouched baseline.
+							Choose Compare runs to review the latest import against the previous one.
+							Inspect demand edits and forecast movement, then adjust single weeks by
+							hand and compare them with the untouched baseline.
 						</p>
 					</li>
 					<li>
 						<h3>Export the plan</h3>
 						<p>
-							Export the whole plan of the selected run to CSV — every product, all 12
+							Export the whole plan of the selected run to CSV or XLSX — every product, all 12
 							weeks. Exports never overwrite an existing file.
 						</p>
 					</li>
@@ -166,7 +175,8 @@
 				<h2 id="download-title">Download</h2>
 				<p class="section-lede">
 					This is a development preview for early testing. Choose the package for your
-					system.
+					system. The latest published installers are v0.5.1; newer development features
+					described below are not in those downloads yet.
 				</p>
 
 				<article class="product-band">
@@ -270,10 +280,14 @@
 							<li>Guided import of raw CSV, TXT, and Excel exports with a live preview and validation</li>
 							<li>Saved import configurations: one mapping reused every week</li>
 							<li>Naive, SeasonalNaive, and AutoETS forecasts with automatic per-product selection</li>
-							<li>Weekly update: import, forecast, and run comparison in one flow</li>
+							<li>Separate import, on-demand forecast, and manual run-comparison actions</li>
+							<li>Per-forecast choice to estimate missing weeks without changing stored history</li>
 							<li>Demand changes and baseline forecast deltas between two revisions</li>
 							<li>Manual week-by-week forecast changes compared with the baseline</li>
-							<li>Full-run CSV export</li>
+							<li>Full-run CSV and native XLSX export with Plan and Summary sheets</li>
+							<li>Persistent run coverage and exception overview</li>
+							<li>Weekly comparison filters for demand, forecast, and series presence changes</li>
+							<li>English, Polish, and Spanish language selection for import and weekly review</li>
 							<li>Automated tests for data, engine, app, and packages</li>
 						</ul>
 					</div>
@@ -281,8 +295,8 @@
 						<h3>Not built yet</h3>
 						<ul>
 							<li>Periodic backups and restore (a pre-migration backup exists)</li>
-							<li>XLSX export</li>
-							<li>Scheduled or automatic imports (the weekly update is manual)</li>
+							<li>Weekly import-and-forecast orchestration (planned for Pipelines)</li>
+							<li>Scheduled imports</li>
 							<li>The optional read-only MCP connection</li>
 						</ul>
 					</div>

@@ -15,11 +15,13 @@ use crate::{
     types::{
         DemandChangePoint, ExportResult, ForecastChangePoint, ForecastInput, ForecastPoint,
         HistoryPoint, ImportResult, InputSeries, ModelOriginRow, ObservationRecord, OverrideEdit,
-        OverrideRevision, PlanningPoint, RunSummary, SeriesChangeSummary, SeriesComparisonDetail,
-        SeriesDetail, SeriesModelComparison, SeriesSummary, WeeklyComparisonContext, WorkspaceInfo,
+        OverrideRevision, PlanningPoint, RunException, RunOverview, RunSummary,
+        SeriesChangeSummary, SeriesComparisonDetail, SeriesDetail, SeriesModelComparison,
+        SeriesSummary, WeeklyChangeFilter, WeeklyComparisonContext, WorkspaceInfo,
     },
 };
 use chrono::{Datelike, Duration as ChronoDuration, NaiveDate, Utc, Weekday};
+use rust_xlsxwriter::{Format, Workbook};
 use sha2::{Digest, Sha256};
 use sqlx::{
     sqlite::{
@@ -63,6 +65,26 @@ const PRE_MIGRATION_BACKUPS_KEPT: usize = 3;
 /// Upper bound on the length of a saved configuration name.
 const MAX_CONFIG_NAME_CHARS: usize = 200;
 const LIST_LIMIT_MAX: u32 = 200;
+const EXPORT_HEADERS: [&str; 12] = [
+    "run_id",
+    "product_sku",
+    "product_name",
+    "location_code",
+    "week_start",
+    "horizon",
+    "baseline",
+    "override",
+    "effective",
+    "value_source",
+    "series_status",
+    "model_id",
+];
+
+#[derive(Clone, Copy)]
+enum ExportFormat {
+    Csv,
+    Xlsx,
+}
 /// Upper bound on the number of dense weekly points materialised for a single
 /// series, protecting memory against a corrupted or absurd date span.
 const MAX_HISTORY_WEEKS: i64 = 5_200;
@@ -175,6 +197,10 @@ const WEEKLY_CHANGED_SERIES_SQL: &str = "
     WHERE (COALESCE(d.changes, 0) > 0 OR COALESCE(f.changes, 0) > 0
            OR s.in_current = 0 OR s.in_previous = 0)
       AND p.sku LIKE ?
+      AND (? = 'all'
+           OR (? = 'demand' AND COALESCE(d.changes, 0) > 0)
+           OR (? = 'forecast' AND COALESCE(f.changes, 0) > 0)
+           OR (? = 'presence' AND (s.in_current = 0 OR s.in_previous = 0)))
     ORDER BY p.sku, s.location_id
     LIMIT ? OFFSET ?";
 
@@ -350,6 +376,20 @@ impl Workspace {
             locale,
             recovery_issues,
         })
+    }
+
+    pub async fn set_locale(&self, locale: &str) -> AppResult<WorkspaceInfo> {
+        if !["en", "pl", "es"].contains(&locale) {
+            return Err(err("invalid_locale", "Choose English, Polish, or Spanish."));
+        }
+        let _writer = self.writer.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("UPDATE workspace_settings SET locale = ? WHERE id = 1")
+            .bind(locale)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        self.info().await
     }
 
     /// Import a canonical `canonical/1` CSV as an immutable revision.
@@ -1373,20 +1413,37 @@ impl Workspace {
     /// gives export_record a durable relative path; the selected file is a copy.
     /// Neither publication may overwrite existing data.
     pub async fn export_csv(&self, run_id: &str, target: &Path) -> AppResult<ExportResult> {
+        self.export_plan(run_id, target, ExportFormat::Csv).await
+    }
+
+    pub async fn export_xlsx(&self, run_id: &str, target: &Path) -> AppResult<ExportResult> {
+        self.export_plan(run_id, target, ExportFormat::Xlsx).await
+    }
+
+    async fn export_plan(
+        &self,
+        run_id: &str,
+        target: &Path,
+        format: ExportFormat,
+    ) -> AppResult<ExportResult> {
         let run = parse_uuid(run_id, "run_id")?;
+        let extension = match format {
+            ExportFormat::Csv => "csv",
+            ExportFormat::Xlsx => "xlsx",
+        };
         if !target.is_absolute()
             || !target
                 .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("csv"))
+                .is_some_and(|value| value.eq_ignore_ascii_case(extension))
         {
             return Err(err(
                 "invalid_export_path",
-                "Choose an absolute path ending in .csv.",
+                format!("Choose an absolute path ending in .{extension}."),
             ));
         }
         let parent = target
             .parent()
-            .ok_or_else(|| err("invalid_export_path", "Choose a CSV file destination."))?
+            .ok_or_else(|| err("invalid_export_path", "Choose an export file destination."))?
             .canonicalize()?;
         let root = self.path.canonicalize()?;
         if parent.starts_with(&root) && parent != root.join("exports") {
@@ -1406,12 +1463,8 @@ impl Workspace {
         };
         let result = async {
             // A read-only WAL snapshot keeps every batch consistent without
-            // occupying the sole writer connection while a large CSV is built.
-            let mut reader = SqliteConnection::connect_with(
-                &SqliteConnectOptions::new().filename(self.path.join(DB_FILENAME))
-                    .read_only(true).foreign_keys(true).journal_mode(SqliteJournalMode::Wal)
-                    .synchronous(SqliteSynchronous::Full).busy_timeout(Duration::from_millis(5_000)),
-            ).await?;
+            // occupying the sole writer connection while a large export is built.
+            let mut reader = self.read_connection().await?;
             let mut snapshot = reader.begin().await?;
             let status: Option<String> = sqlx::query_scalar("SELECT status FROM forecast_run WHERE id = ?")
                 .bind(run.as_bytes().as_slice()).fetch_optional(&mut *snapshot).await?;
@@ -1420,57 +1473,21 @@ impl Workspace {
                 Some("completed") => {},
                 _ => return Err(err("run_not_completed", "Only completed forecast runs can be exported.")),
             }
-            let outcomes: BTreeMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
-                "SELECT status, COUNT(*) FROM forecast_series_status WHERE run_id = ? GROUP BY status",
-            ).bind(run.as_bytes().as_slice()).fetch_all(&mut *snapshot).await?.into_iter().collect();
-            let series_count: i64 = outcomes.values().sum();
-            let covered_series = outcomes.get("ok").copied().unwrap_or(0)
-                + outcomes.get("fallback_naive").copied().unwrap_or(0);
-            let coverage = serde_json::json!({
-                "series_count": series_count, "covered_series": covered_series,
-                "coverage": covered_series as f64 / series_count.max(1) as f64, "outcomes": outcomes,
-            }).to_string();
+            let coverage = run_coverage(&mut snapshot, run.as_bytes()).await?;
 
             let mut temporary = tempfile::Builder::new().prefix(".opendemand-export-").tempfile_in(&parent)?;
-            // UTF-8 BOM and CRLF make names and records portable to desktop Excel.
-            temporary.write_all(b"\xef\xbb\xbf")?;
-            let mut row_count = 0i64;
-            {
-                let mut writer = csv::WriterBuilder::new()
-                    .terminator(csv::Terminator::CRLF).from_writer(&mut temporary);
-                writer.write_record([
-                    "run_id", "product_sku", "product_name", "location_code", "week_start", "horizon",
-                    "baseline", "override", "effective", "value_source", "series_status", "model_id",
-                ]).map_err(|_| err("export_failed", "Could not write the CSV header."))?;
-                let mut after = (Vec::<u8>::new(), Vec::<u8>::new());
-                loop {
-                    // Page the run inventory by its primary key before expanding
-                    // each series into weeks, never re-scan a growing OFFSET.
-                    let rows = load_planning_rows(&mut snapshot, run.as_bytes(), None, None, (&after.0, &after.1), 32).await?;
-                    let Some(last) = rows.last() else { break; };
-                    after = (last.get("product_id"), last.get("location_id"));
-                    for row in &rows {
-                        let point = planning_point(row);
-                        writer.write_record([
-                            run.to_string(), row.get::<String, _>("product_sku"), row.get("product_name"),
-                            row.get("location_code"), point.week_start, point.horizon.to_string(),
-                            point.baseline.map(|value| value.to_string()).unwrap_or_default(),
-                            point.override_value.map(|value| value.to_string()).unwrap_or_default(),
-                            point.effective.map(|value| value.to_string()).unwrap_or_default(),
-                            point.value_source, row.get("series_status"), row.get::<Option<String>, _>("model_id").unwrap_or_default(),
-                        ]).map_err(|_| err("export_failed", "Could not write the CSV rows. Check the destination and retry."))?;
-                    }
-                    row_count += rows.len() as i64;
-                }
-                writer.flush()?;
-            }
+            let row_count = match format {
+                ExportFormat::Csv => write_csv_plan(&mut snapshot, &run, &mut temporary).await?,
+                ExportFormat::Xlsx => write_xlsx_plan(&mut snapshot, &run, &mut temporary, &coverage).await?,
+            };
+            let coverage = serde_json::to_string(&coverage)?;
             snapshot.commit().await?;
             reader.close().await?;
             temporary.as_file().sync_all()?;
 
             let exports = self.path.join("exports");
             std::fs::create_dir_all(&exports)?;
-            let relative_path = format!("exports/{}.csv", Uuid::now_v7());
+            let relative_path = format!("exports/{}.{extension}", Uuid::now_v7());
             let archive_path = self.path.join(&relative_path);
             let archive = tempfile::Builder::new().prefix(".opendemand-export-").tempfile_in(&exports)?;
             std::fs::copy(temporary.path(), archive.path())?;
@@ -1479,8 +1496,8 @@ impl Workspace {
             let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
             let export_id = sqlx::query(
                 "INSERT INTO export_record (run_id, format, relative_path, created_at, row_count, coverage_json)
-                 VALUES (?, 'csv', ?, ?, ?, ?)",
-            ).bind(run.as_bytes().as_slice()).bind(&relative_path).bind(now_iso()).bind(row_count).bind(coverage)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            ).bind(run.as_bytes().as_slice()).bind(extension).bind(&relative_path).bind(now_iso()).bind(row_count).bind(coverage)
                 .execute(&mut *transaction).await?.last_insert_rowid();
             sqlx::query("UPDATE job SET status = 'completed', finished_at = ? WHERE id = ?")
                 .bind(now_iso()).bind(job_id).execute(&mut *transaction).await?;
@@ -1510,6 +1527,99 @@ impl Workspace {
             }
         }
         result
+    }
+
+    /// Read aggregate outcomes and a bounded exception page from one snapshot.
+    pub async fn run_overview(
+        &self,
+        run_id: &str,
+        offset: u32,
+        limit: u32,
+    ) -> AppResult<RunOverview> {
+        let run = parse_uuid(run_id, "run_id")?;
+        let mut reader = self.read_connection().await?;
+        let mut transaction = reader.begin().await?;
+        let status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM forecast_run WHERE id = ?")
+                .bind(run.as_bytes().as_slice())
+                .fetch_optional(&mut *transaction)
+                .await?;
+        match status.as_deref() {
+            None => {
+                return Err(err(
+                    "unknown_run",
+                    "The forecast run does not exist in this workspace.",
+                ))
+            }
+            Some("completed") => {}
+            _ => return Err(err("run_not_completed", "Choose a completed forecast run.")),
+        }
+        let mut coverage = run_coverage(&mut transaction, run.as_bytes()).await?;
+        for outcome in [
+            "ok",
+            "fallback_naive",
+            "insufficient_history",
+            "model_failure",
+            "invalid_data",
+        ] {
+            coverage.outcomes.entry(outcome.into()).or_insert(0);
+        }
+        let exception_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM forecast_series_status
+             WHERE run_id = ? AND (status != 'ok' OR reason IS NOT NULL)",
+        )
+        .bind(run.as_bytes().as_slice())
+        .fetch_one(&mut *transaction)
+        .await?;
+        let rows = sqlx::query(
+            "SELECT s.product_id, s.location_id, p.sku, l.code, s.status, s.reason
+             FROM forecast_series_status s
+             JOIN product p ON p.id = s.product_id JOIN location l ON l.id = s.location_id
+             WHERE s.run_id = ? AND (s.status != 'ok' OR s.reason IS NOT NULL)
+             ORDER BY CASE s.status WHEN 'model_failure' THEN 0 WHEN 'invalid_data' THEN 1
+                 WHEN 'insufficient_history' THEN 2 WHEN 'fallback_naive' THEN 3 ELSE 4 END,
+                 p.sku, l.code, s.product_id, s.location_id
+             LIMIT ? OFFSET ?",
+        )
+        .bind(run.as_bytes().as_slice())
+        .bind(i64::from(limit.clamp(1, LIST_LIMIT_MAX)))
+        .bind(i64::from(offset))
+        .fetch_all(&mut *transaction)
+        .await?;
+        let mut exceptions = Vec::with_capacity(rows.len());
+        for row in rows {
+            exceptions.push(RunException {
+                product_id: uuid_from_bytes(&row.get::<Vec<u8>, _>("product_id"))?.to_string(),
+                location_id: uuid_from_bytes(&row.get::<Vec<u8>, _>("location_id"))?.to_string(),
+                series_key: row.get("sku"),
+                location_code: row.get("code"),
+                outcome: row.get("status"),
+                reason: row.get("reason"),
+            });
+        }
+        transaction.commit().await?;
+        reader.close().await?;
+        Ok(RunOverview {
+            series_count: coverage.series_count,
+            covered_series: coverage.covered_series,
+            coverage: coverage.coverage,
+            outcomes: coverage.outcomes,
+            exception_count: exception_count as u32,
+            exceptions,
+        })
+    }
+
+    async fn read_connection(&self) -> AppResult<SqliteConnection> {
+        Ok(SqliteConnection::connect_with(
+            &SqliteConnectOptions::new()
+                .filename(self.path.join(DB_FILENAME))
+                .read_only(true)
+                .foreign_keys(true)
+                .journal_mode(SqliteJournalMode::Wal)
+                .synchronous(SqliteSynchronous::Full)
+                .busy_timeout(Duration::from_millis(5_000)),
+        )
+        .await?)
     }
 
     /// List recent persisted forecast runs for a revision.
@@ -1599,6 +1709,7 @@ impl Workspace {
         current_run_id: &str,
         previous_run_id: &str,
         search: &str,
+        filter: WeeklyChangeFilter,
         offset: u32,
         limit: u32,
     ) -> AppResult<Vec<SeriesChangeSummary>> {
@@ -1608,6 +1719,12 @@ impl Workspace {
         let limit = limit.clamp(1, LIST_LIMIT_MAX) as i64;
         let offset = offset as i64;
         let pattern = format!("%{search}%");
+        let filter = match filter {
+            WeeklyChangeFilter::All => "all",
+            WeeklyChangeFilter::Demand => "demand",
+            WeeklyChangeFilter::Forecast => "forecast",
+            WeeklyChangeFilter::Presence => "presence",
+        };
         let rows = sqlx::query(WEEKLY_CHANGED_SERIES_SQL)
             .bind(pair.current_revision)
             .bind(pair.previous_revision)
@@ -1628,6 +1745,10 @@ impl Workspace {
             .bind(pair.current_end.to_string())
             .bind(pair.current_run.as_slice())
             .bind(pattern.as_str())
+            .bind(filter)
+            .bind(filter)
+            .bind(filter)
+            .bind(filter)
             .bind(limit)
             .bind(offset)
             .fetch_all(&self.pool)
@@ -2018,6 +2139,238 @@ impl Workspace {
 // ---------------------------------------------------------------------------
 // Connection and schema verification
 // ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+struct RunCoverage {
+    series_count: u32,
+    covered_series: u32,
+    coverage: f64,
+    outcomes: BTreeMap<String, u32>,
+}
+
+async fn write_csv_plan(
+    connection: &mut SqliteConnection,
+    run: &Uuid,
+    temporary: &mut tempfile::NamedTempFile,
+) -> AppResult<i64> {
+    // Keep the existing Excel-friendly CSV bytes unchanged.
+    temporary.write_all(b"\xef\xbb\xbf")?;
+    let mut writer = csv::WriterBuilder::new()
+        .terminator(csv::Terminator::CRLF)
+        .from_writer(temporary);
+    writer
+        .write_record(EXPORT_HEADERS)
+        .map_err(|_| err("export_failed", "Could not write the CSV header."))?;
+    let mut after = (Vec::<u8>::new(), Vec::<u8>::new());
+    let mut row_count = 0i64;
+    loop {
+        let rows = load_planning_rows(
+            connection,
+            run.as_bytes(),
+            None,
+            None,
+            (&after.0, &after.1),
+            32,
+        )
+        .await?;
+        let Some(last) = rows.last() else {
+            break;
+        };
+        after = (last.get("product_id"), last.get("location_id"));
+        for row in &rows {
+            let point = planning_point(row);
+            writer
+                .write_record([
+                    run.to_string(),
+                    row.get::<String, _>("product_sku"),
+                    row.get("product_name"),
+                    row.get("location_code"),
+                    point.week_start,
+                    point.horizon.to_string(),
+                    point
+                        .baseline
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                    point
+                        .override_value
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                    point
+                        .effective
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                    point.value_source,
+                    row.get("series_status"),
+                    row.get::<Option<String>, _>("model_id").unwrap_or_default(),
+                ])
+                .map_err(|_| {
+                    err(
+                        "export_failed",
+                        "Could not write the CSV rows. Check the destination and retry.",
+                    )
+                })?;
+        }
+        row_count += rows.len() as i64;
+    }
+    writer.flush()?;
+    Ok(row_count)
+}
+
+async fn write_xlsx_plan(
+    connection: &mut SqliteConnection,
+    run: &Uuid,
+    temporary: &mut tempfile::NamedTempFile,
+    coverage: &RunCoverage,
+) -> AppResult<i64> {
+    let mut workbook = Workbook::new();
+    let date_format = Format::new().set_num_format("yyyy-mm-dd");
+    let mut row_count = 0u32;
+    {
+        // Flush completed rows to temporary files instead of retaining the plan.
+        let sheet = workbook.add_worksheet_with_constant_memory();
+        sheet.set_name("Plan")?;
+        for (column, header) in EXPORT_HEADERS.iter().enumerate() {
+            sheet.write_string(0, column as u16, *header)?;
+        }
+        let mut after = (Vec::<u8>::new(), Vec::<u8>::new());
+        loop {
+            let rows = load_planning_rows(
+                connection,
+                run.as_bytes(),
+                None,
+                None,
+                (&after.0, &after.1),
+                32,
+            )
+            .await?;
+            let Some(last) = rows.last() else {
+                break;
+            };
+            after = (last.get("product_id"), last.get("location_id"));
+            for row in &rows {
+                row_count += 1;
+                let point = planning_point(row);
+                for (column, text) in [
+                    run.to_string(),
+                    row.get("product_sku"),
+                    row.get("product_name"),
+                    row.get("location_code"),
+                ]
+                .iter()
+                .enumerate()
+                {
+                    // Explicit strings preserve leading zeroes and cannot become formulas.
+                    sheet.write_string(row_count, column as u16, text)?;
+                }
+                let week = NaiveDate::parse_from_str(&point.week_start, "%Y-%m-%d")
+                    .map_err(|_| err("export_failed", "The plan contains an invalid week date."))?;
+                sheet.write_datetime_with_format(row_count, 4, week, &date_format)?;
+                sheet.write_number(row_count, 5, point.horizon)?;
+                for (column, value) in [
+                    (6, point.baseline),
+                    (7, point.override_value),
+                    (8, point.effective),
+                ] {
+                    if let Some(value) = value {
+                        sheet.write_number(row_count, column, value)?;
+                    }
+                }
+                sheet.write_string(row_count, 9, &point.value_source)?;
+                sheet.write_string(row_count, 10, row.get::<String, _>("series_status"))?;
+                if let Some(model) = row.get::<Option<String>, _>("model_id") {
+                    sheet.write_string(row_count, 11, model)?;
+                }
+            }
+        }
+    }
+    let metadata = sqlx::query(
+        "SELECT revision_id, horizon_start_week, horizon_weeks, engine_version FROM forecast_run WHERE id = ?",
+    ).bind(run.as_bytes().as_slice()).fetch_one(&mut *connection).await?;
+    let champions: BTreeMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
+        "SELECT model_id, COUNT(*) FROM series_model_evaluation WHERE run_id = ? AND is_champion = 1 GROUP BY model_id",
+    ).bind(run.as_bytes().as_slice()).fetch_all(&mut *connection).await?.into_iter().collect();
+    let summary = workbook.add_worksheet();
+    summary.set_name("Summary")?;
+    summary.write_string(0, 0, "Metric")?;
+    summary.write_string(0, 1, "Value")?;
+    for (row, label, value) in [
+        (1, "run_id", run.to_string()),
+        (3, "horizon_start_week", metadata.get("horizon_start_week")),
+        (5, "engine_version", metadata.get("engine_version")),
+    ] {
+        summary.write_string(row, 0, label)?;
+        summary.write_string(row, 1, value)?;
+    }
+    for (row, label, value) in [
+        (
+            2,
+            "revision_id",
+            metadata.get::<i64, _>("revision_id") as f64,
+        ),
+        (
+            4,
+            "horizon_weeks",
+            metadata.get::<i64, _>("horizon_weeks") as f64,
+        ),
+        (6, "series_count", f64::from(coverage.series_count)),
+        (7, "covered_series", f64::from(coverage.covered_series)),
+        (8, "coverage", coverage.coverage),
+    ] {
+        summary.write_string(row, 0, label)?;
+        summary.write_number(row, 1, value)?;
+    }
+    for (index, status) in [
+        "ok",
+        "fallback_naive",
+        "insufficient_history",
+        "model_failure",
+        "invalid_data",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let row = index as u32 + 9;
+        summary.write_string(row, 0, format!("outcome.{status}"))?;
+        summary.write_number(row, 1, coverage.outcomes.get(*status).copied().unwrap_or(0))?;
+    }
+    for (index, model) in ["naive", "seasonal_naive_52", "auto_ets_52"]
+        .iter()
+        .enumerate()
+    {
+        let row = index as u32 + 14;
+        summary.write_string(row, 0, format!("statistical_champion.{model}"))?;
+        summary.write_number(row, 1, champions.get(*model).copied().unwrap_or(0) as f64)?;
+    }
+    summary.write_string(17, 0, "coverage_definition")?;
+    summary.write_string(
+        17,
+        1,
+        "Share of series with ok or fallback_naive outcomes; not forecast accuracy.",
+    )?;
+    workbook.save_to_writer(temporary.as_file_mut())?;
+    Ok(i64::from(row_count))
+}
+
+async fn run_coverage(connection: &mut SqliteConnection, run: &[u8]) -> AppResult<RunCoverage> {
+    let outcomes: BTreeMap<String, u32> = sqlx::query_as::<_, (String, i64)>(
+        "SELECT status, COUNT(*) FROM forecast_series_status WHERE run_id = ? GROUP BY status",
+    )
+    .bind(run)
+    .fetch_all(connection)
+    .await?
+    .into_iter()
+    .map(|(status, count)| (status, count as u32))
+    .collect();
+    let series_count = outcomes.values().sum::<u32>();
+    let covered_series = outcomes.get("ok").copied().unwrap_or(0)
+        + outcomes.get("fallback_naive").copied().unwrap_or(0);
+    Ok(RunCoverage {
+        series_count,
+        covered_series,
+        coverage: f64::from(covered_series) / f64::from(series_count.max(1)),
+        outcomes,
+    })
+}
 
 async fn load_planning_rows(
     connection: &mut SqliteConnection,

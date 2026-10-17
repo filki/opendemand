@@ -43,11 +43,40 @@ export function progressPercent(progress: number | null | undefined): number {
 export function jobKindLabel(kind: string): string {
 	switch (kind) {
 		case 'import':
-			return 'CSV import';
+			return 'Import data';
 		case 'forecast':
-			return 'Naive forecast';
+			return 'Forecast';
 		default:
 			return humanizeToken(kind);
+	}
+}
+
+export function jobPhaseLabel(phase: string): string {
+	switch (phase) {
+		case 'queued':
+			return 'Waiting to start';
+		case 'validating':
+			return 'Checking the file';
+		case 'staging':
+			return 'Preparing the import';
+		case 'committing':
+			return 'Saving imported history';
+		case 'preparing':
+			return 'Preparing forecast data';
+		case 'validate_input':
+			return 'Checking weekly history';
+		case 'backtest':
+			return 'Comparing forecast methods';
+		case 'production':
+			return 'Generating forecast values';
+		case 'write_output':
+			return 'Saving forecast results';
+		case 'persisting':
+			return 'Saving the forecast';
+		case 'cancelling':
+			return 'Cancelling';
+		default:
+			return humanizeToken(phase);
 	}
 }
 

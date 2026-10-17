@@ -15,6 +15,7 @@ import type {
 	OverrideEdit,
 	OverrideRevision,
 	ParsingDescriptor,
+	RunOverview,
 	RunSummary,
 	SeriesChangeSummary,
 	SeriesComparisonDetail,
@@ -25,6 +26,8 @@ import type {
 	WorkspaceInfo,
 	WorkspaceRef
 } from '#lib/bindings.ts';
+import type { Locale } from './i18n.ts';
+import type { WeeklyChangeFilter } from './weekly.ts';
 
 export type IpcOutcome<T> = { status: 'ok'; data: T } | { status: 'error'; error: AppError };
 
@@ -75,6 +78,11 @@ export function isTauriRuntime(scope: unknown = globalThis): boolean {
 
 export async function fetchWorkspaceInfo(): Promise<WorkspaceInfo> {
 	return unwrap(await commands.workspaceInfo());
+}
+
+/** Persist the workspace locale (en/pl/es); returns the updated workspace. */
+export async function setWorkspaceLocale(locale: Locale): Promise<WorkspaceInfo> {
+	return unwrap(await commands.workspaceSetLocale(locale));
 }
 
 export async function createWorkspace(path: string | null): Promise<WorkspaceInfo> {
@@ -146,11 +154,19 @@ export async function fetchWeeklyComparisonList(
 	currentRunId: string,
 	previousRunId: string,
 	search: string,
+	filter: WeeklyChangeFilter,
 	offset: number,
 	limit: number
 ): Promise<SeriesChangeSummary[]> {
 	return unwrap(
-		await commands.weeklyComparisonSeriesList(currentRunId, previousRunId, search, offset, limit)
+		await commands.weeklyComparisonSeriesList(
+			currentRunId,
+			previousRunId,
+			search,
+			filter,
+			offset,
+			limit
+		)
 	);
 }
 
@@ -214,6 +230,18 @@ export async function fetchRunsList(revisionId: number | null): Promise<RunSumma
 	return unwrap(await commands.runsList(revisionId));
 }
 
+/**
+ * Persisted run outcomes and a page of actionable exceptions. Counts cover
+ * the complete run; `exceptions` is one bounded page.
+ */
+export async function fetchRunOverview(
+	runId: string,
+	offset: number,
+	limit: number
+): Promise<RunOverview> {
+	return unwrap(await commands.runOverview(runId, offset, limit));
+}
+
 export async function saveOverride(edit: OverrideEdit): Promise<OverrideRevision> {
 	return unwrap(await commands.overrideAppend(edit));
 }
@@ -222,12 +250,25 @@ export async function exportPlanCsv(runId: string, path: string): Promise<Export
 	return unwrap(await commands.exportCsv(runId, path));
 }
 
+export async function exportPlanXlsx(runId: string, path: string): Promise<ExportResult> {
+	return unwrap(await commands.exportXlsx(runId, path));
+}
+
 export async function pickCsvExport(runId: string): Promise<string | null> {
 	const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
 	return save({
 		title: 'Export saved plan to CSV',
 		defaultPath: `opendemand-${runId}-${timestamp}.csv`,
 		filters: [{ name: 'Planning CSV', extensions: ['csv'] }]
+	});
+}
+
+export async function pickXlsxExport(runId: string): Promise<string | null> {
+	const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+	return save({
+		title: 'Export saved plan to Excel (XLSX)',
+		defaultPath: `opendemand-${runId}-${timestamp}.xlsx`,
+		filters: [{ name: 'Excel workbook', extensions: ['xlsx'] }]
 	});
 }
 

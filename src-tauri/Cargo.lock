@@ -2668,7 +2668,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "opendemand"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -2677,6 +2677,7 @@ dependencies = [
  "chrono",
  "csv",
  "encoding_rs",
+ "rust_xlsxwriter",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3153,6 +3154,17 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "rust_xlsxwriter"
+version = "0.99.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34f2d2cda7223168a14fb86bc7411dbc3379bd7d49749ecc53b91ed98585b6b0"
+dependencies = [
+ "chrono",
+ "tempfile",
+ "zip",
 ]
 
 [[package]]

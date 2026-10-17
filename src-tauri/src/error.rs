@@ -53,3 +53,12 @@ impl From<serde_json::Error> for AppError {
         )
     }
 }
+
+impl From<rust_xlsxwriter::XlsxError> for AppError {
+    fn from(_: rust_xlsxwriter::XlsxError) -> Self {
+        Self::new(
+            "export_failed",
+            "Could not write the XLSX workbook. Check the destination, free space, and worksheet limits.",
+        )
+    }
+}

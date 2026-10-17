@@ -126,6 +126,14 @@
 
 			<section class="section" aria-labelledby="how-title">
 				<h2 id="how-title">Co aplikacja robi dzisiaj</h2>
+				<p class="section-lede">
+					Nowy w aplikacji? Wypróbuj
+					<a href="https://github.com/filki/opendemand#first-forecast">przykładowy scenariusz</a>:
+					dwa małe pliki
+					(<a href="https://github.com/filki/opendemand/blob/main/examples/quickstart/first-import.csv">plik A</a>,
+					<a href="https://github.com/filki/opendemand/blob/main/examples/quickstart/weekly-update.csv">późniejszy import</a>)
+					pokazują import z kreatorem, pierwszą prognozę, a następnie osobną prognozę i porównanie nowszych danych — bez prawdziwych danych.
+				</p>
 				<ol class="steps">
 					<li>
 						<h3>Wczytaj dane</h3>
@@ -137,26 +145,27 @@
 						</p>
 					</li>
 					<li>
-						<h3>Uruchom cotygodniową prognozę</h3>
+						<h3>Wygeneruj prognozę</h3>
 						<p>
-							Jedna aktualizacja tygodniowa: wczytaj nowy eksport, a aplikacja policzy
-							prognozę dla najświeższych danych — dla każdego produktu wybierze
-							najlepszy z trzech modeli (Naive, SeasonalNaive, AutoETS). Wszystko działa
-							na Twoim komputerze. Nie potrzebujesz Pythona ani innych narzędzi.
+							Po imporcie wybierz Wygeneruj prognozę, gdy będziesz gotowy. Jeśli brakuje
+							tygodni, zdecyduj, czy oszacować je tylko dla tej prognozy; zapisane dane
+							historyczne się nie zmienią. Aplikacja wybierze najlepszy z trzech modeli
+							(Naive, SeasonalNaive, AutoETS) dla każdego produktu. Wszystko działa
+							lokalnie, bez Pythona i innych narzędzi.
 						</p>
 					</li>
 					<li>
-						<h3>Porównaj i popraw</h3>
+						<h3>Porównaj przebiegi i popraw</h3>
 						<p>
-							Zobacz, co się zmieniło od zeszłego tygodnia: zmiany popytu i prognozy
-							dla każdego produktu, nowa prognoza obok poprzedniego przebiegu. Popraw
-							pojedyncze tygodnie ręcznie i porównaj je z nienaruszoną prognozą bazową.
+							Wybierz Porównaj przebiegi, aby zestawić najnowszy import z poprzednim.
+							Sprawdź zmiany popytu i prognozy, a następnie popraw pojedyncze tygodnie
+							ręcznie i porównaj je z nienaruszoną prognozą bazową.
 						</p>
 					</li>
 					<li>
 						<h3>Eksportuj plan</h3>
 						<p>
-							Wyeksportuj cały plan wybranego przebiegu do CSV — każdy produkt,
+							Wyeksportuj cały plan wybranego przebiegu do CSV lub XLSX — każdy produkt,
 							wszystkie 12 tygodni. Eksport nigdy nie nadpisuje istniejącego pliku.
 						</p>
 					</li>
@@ -167,6 +176,8 @@
 				<h2 id="download-title">Pobierz</h2>
 				<p class="section-lede">
 					To wersja rozwojowa do wczesnych testów. Wybierz paczkę dla swojego systemu.
+					Najnowsze opublikowane instalatory to v0.5.1; opisane niżej nowsze funkcje rozwojowe
+					nie są jeszcze dostępne w tych plikach.
 				</p>
 
 				<article class="product-band">
@@ -271,10 +282,14 @@
 							<li>Kreator wczytywania surowych eksportów CSV, TXT i Excel z podglądem i walidacją</li>
 							<li>Zapisane konfiguracje wczytywania: jedno mapowanie na kolejne tygodnie</li>
 							<li>Prognozy Naive, SeasonalNaive i AutoETS z automatycznym wyborem dla każdego produktu</li>
-							<li>Aktualizacja tygodniowa: wczytanie, prognoza i porównanie przebiegów w jednym przepływie</li>
+							<li>Osobne działania: import, prognoza na żądanie i ręczne porównanie przebiegów</li>
+							<li>Wybór szacowania brakujących tygodni dla każdej prognozy, bez zmiany zapisanej historii</li>
 							<li>Zmiany popytu i prognozy bazowej między dwiema wersjami danych</li>
 							<li>Ręczne zmiany prognozy tydzień po tygodniu z porównaniem do wartości bazowej</li>
-							<li>Eksport pełnego przebiegu do CSV</li>
+							<li>Eksport pełnego przebiegu do CSV i XLSX z arkuszami Plan i Summary</li>
+							<li>Trwały podgląd pokrycia prognozą i wyjątków w przebiegu</li>
+							<li>Filtry porównania tygodniowego: popyt, prognoza i obecność serii</li>
+							<li>Wybór języka wczytywania i przeglądu tygodniowego: angielski, polski i hiszpański</li>
 							<li>Testy automatyczne danych, silnika, aplikacji i paczek</li>
 						</ul>
 					</div>
@@ -282,8 +297,8 @@
 						<h3>Jeszcze nie działa</h3>
 						<ul>
 							<li>Okresowe kopie zapasowe i przywracanie (kopia przed migracją już działa)</li>
-							<li>Eksport XLSX</li>
-							<li>Wczytywanie automatyczne według harmonogramu (aktualizacja tygodniowa jest ręczna)</li>
+							<li>Łączenie tygodniowego importu i prognozy w Pipelines (planowane)</li>
+							<li>Importy według harmonogramu</li>
 							<li>Opcjonalne połączenie MCP tylko do odczytu</li>
 						</ul>
 					</div>

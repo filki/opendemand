@@ -2,7 +2,9 @@
 //! selection, and the derived demand/forecast comparison (ADR-0022).
 
 use opendemand_core::{
-    forecast::run_forecast, preprocess::ParsingDescriptor, types::OverrideEdit,
+    forecast::run_forecast,
+    preprocess::ParsingDescriptor,
+    types::{OverrideEdit, SeriesChangeSummary, WeeklyChangeFilter},
     workspace::Workspace,
 };
 use std::{
@@ -14,6 +16,28 @@ fn example(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../docs/architecture/contracts/examples/import")
         .join(name)
+}
+
+/// The exact quickstart files, consumed the way the guide describes: through
+/// the guided import with `series_key`, `week_start`, and `quantity` mapped.
+fn quickstart(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../examples/quickstart")
+        .join(name)
+}
+
+fn quickstart_descriptor() -> ParsingDescriptor {
+    ParsingDescriptor {
+        format: Some("csv".into()),
+        encoding: Some("utf-8".into()),
+        delimiter: Some(",".into()),
+        header_row: Some(1),
+        key_columns: Some(vec!["series_key".into()]),
+        date_column: Some("week_start".into()),
+        date_formats: Some(vec!["%Y-%m-%d".into()]),
+        quantity_column: Some("quantity".into()),
+        ..ParsingDescriptor::default()
+    }
 }
 
 fn write_csv(directory: &Path, name: &str, content: &str) -> PathBuf {
@@ -75,6 +99,30 @@ fn rows_to_content(rows: &[(String, String, f64)]) -> String {
         content.push_str(&format!("{key},{week},{quantity}\n"));
     }
     content
+}
+
+/// Monday weeks ending at `end`, oldest first.
+fn weeks_ending(end: &str, count: usize) -> Vec<String> {
+    let end = chrono::NaiveDate::parse_from_str(end, "%Y-%m-%d").unwrap();
+    (0..count)
+        .rev()
+        .map(|back| {
+            (end - chrono::Duration::weeks(back as i64))
+                .format("%Y-%m-%d")
+                .to_string()
+        })
+        .collect()
+}
+
+fn flat_rows(key: &str, weeks: &[String], quantity: f64) -> Vec<(String, String, f64)> {
+    weeks
+        .iter()
+        .map(|week| (key.to_string(), week.clone(), quantity))
+        .collect()
+}
+
+fn series_keys(rows: &[SeriesChangeSummary]) -> Vec<&str> {
+    rows.iter().map(|row| row.series_key.as_str()).collect()
 }
 
 async fn forecast(workspace: &Workspace, revision_id: i32) -> String {
@@ -247,7 +295,7 @@ async fn weekly_comparison_covers_demand_forecast_and_override_isolation() {
     assert_eq!(previous.revision_id, 1);
 
     let changed = workspace
-        .weekly_comparison_series_list(&run_two, &run_one, "", 0, 200)
+        .weekly_comparison_series_list(&run_two, &run_one, "", WeeklyChangeFilter::All, 0, 200)
         .await
         .unwrap();
     let find = |key: &str| changed.iter().find(|row| row.series_key == key).unwrap();
@@ -380,21 +428,21 @@ async fn weekly_comparison_covers_demand_forecast_and_override_isolation() {
 
     // Search and pagination stay deterministic.
     let searched = workspace
-        .weekly_comparison_series_list(&run_two, &run_one, "ALP", 0, 200)
+        .weekly_comparison_series_list(&run_two, &run_one, "ALP", WeeklyChangeFilter::All, 0, 200)
         .await
         .unwrap();
     assert_eq!(searched.len(), 1);
     assert_eq!(searched[0].series_key, "ALPHA");
     let page_zero = workspace
-        .weekly_comparison_series_list(&run_two, &run_one, "", 0, 1)
+        .weekly_comparison_series_list(&run_two, &run_one, "", WeeklyChangeFilter::All, 0, 1)
         .await
         .unwrap();
     let page_zero_again = workspace
-        .weekly_comparison_series_list(&run_two, &run_one, "", 0, 1)
+        .weekly_comparison_series_list(&run_two, &run_one, "", WeeklyChangeFilter::All, 0, 1)
         .await
         .unwrap();
     let page_one = workspace
-        .weekly_comparison_series_list(&run_two, &run_one, "", 1, 1)
+        .weekly_comparison_series_list(&run_two, &run_one, "", WeeklyChangeFilter::All, 1, 1)
         .await
         .unwrap();
     assert_eq!(page_zero[0].series_key, page_zero_again[0].series_key);
@@ -483,14 +531,14 @@ async fn weekly_context_does_not_skip_unforecast_revisions() {
 
     // A pair whose runs pin non-adjacent revisions is rejected.
     let error = workspace
-        .weekly_comparison_series_list(&run_two, &run_zero, "", 0, 200)
+        .weekly_comparison_series_list(&run_two, &run_zero, "", WeeklyChangeFilter::All, 0, 200)
         .await
         .unwrap_err();
     assert_eq!(error.code, "not_adjacent_revisions");
 
     // Reversed or identical runs are rejected before any comparison work.
     let error = workspace
-        .weekly_comparison_series_list(&run_zero, &run_two, "", 0, 200)
+        .weekly_comparison_series_list(&run_zero, &run_two, "", WeeklyChangeFilter::All, 0, 200)
         .await
         .unwrap_err();
     assert_eq!(error.code, "invalid_comparison_pair");
@@ -498,13 +546,20 @@ async fn weekly_context_does_not_skip_unforecast_revisions() {
     // An incomplete run is never compared.
     let failed_run = insert_run_with_status(&workspace, revision_one, "failed").await;
     let error = workspace
-        .weekly_comparison_series_list(&run_two, &failed_run, "", 0, 200)
+        .weekly_comparison_series_list(&run_two, &failed_run, "", WeeklyChangeFilter::All, 0, 200)
         .await
         .unwrap_err();
     assert_eq!(error.code, "run_not_completed");
 
     let error = workspace
-        .weekly_comparison_series_list("00000000-0000-0000-0000-000000000000", &run_two, "", 0, 200)
+        .weekly_comparison_series_list(
+            "00000000-0000-0000-0000-000000000000",
+            &run_two,
+            "",
+            WeeklyChangeFilter::All,
+            0,
+            200,
+        )
         .await
         .unwrap_err();
     assert_eq!(error.code, "unknown_run");
@@ -565,4 +620,404 @@ async fn weekly_comparison_detail_rejects_series_outside_both_revisions() {
     assert_eq!(detail.demand_changes.len(), 1);
     assert_eq!(detail.demand_changes[0].change_kind, "changed");
     assert!(detail.forecast_changes.is_empty());
+}
+
+/// The guided quickstart (README **First Forecast**): the exact files in
+/// `examples/quickstart/` reach a first forecast, a weekly comparison, one
+/// saved override, and a 36-row CSV export through the real sidecar.
+#[tokio::test]
+async fn quickstart_sample_workflow_completes_a_first_forecast_and_export() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = Workspace::create(directory.path().join("workspace"))
+        .await
+        .unwrap();
+    let descriptor = quickstart_descriptor();
+
+    // Snapshot A through the guided mapping the README tells a tester to bind.
+    let imported_a = workspace
+        .import_raw(
+            &quickstart("first-import.csv"),
+            &descriptor,
+            &AtomicBool::new(false),
+        )
+        .await
+        .unwrap();
+    assert_eq!(imported_a.revision_id, 1);
+    assert!(!imported_a.is_duplicate);
+    assert_eq!(imported_a.series_count, 3);
+    assert_eq!(imported_a.observation_count, 144);
+    assert_eq!(imported_a.issue_count, 0);
+    assert_eq!(imported_a.last_week, "2026-10-05");
+
+    // The saved mapping is offered again on the next raw import.
+    let saved = workspace
+        .save_import_config("Quickstart mapping", &descriptor)
+        .await
+        .unwrap();
+    assert_eq!(
+        workspace.import_config_suggestion().await.unwrap(),
+        Some(saved.id)
+    );
+
+    let run_a = forecast(&workspace, imported_a.revision_id).await;
+
+    // Snapshot B: the weekly update file, one week later.
+    let imported_b = workspace
+        .import_raw(
+            &quickstart("weekly-update.csv"),
+            &descriptor,
+            &AtomicBool::new(false),
+        )
+        .await
+        .unwrap();
+    assert_eq!(imported_b.revision_id, 2);
+    assert!(!imported_b.is_duplicate);
+    assert_eq!(imported_b.observation_count, 147);
+    assert_eq!(imported_b.last_week, "2026-10-12");
+    assert_eq!(
+        workspace.import_config_suggestion().await.unwrap(),
+        Some(saved.id)
+    );
+    let run_b = forecast(&workspace, imported_b.revision_id).await;
+
+    let context = workspace.weekly_comparison_context().await.unwrap();
+    let current = context.current.expect("current run");
+    let previous = context.previous.expect("previous run");
+    assert_eq!(current.id, run_b);
+    assert_eq!(previous.id, run_a);
+    assert_eq!(current.revision_id, 2);
+    assert_eq!(previous.revision_id, 1);
+    assert_eq!(current.horizon_start_week, "2026-10-19");
+    assert_eq!(previous.horizon_start_week, "2026-10-12");
+
+    let changed = workspace
+        .weekly_comparison_series_list(&run_b, &run_a, "", WeeklyChangeFilter::All, 0, 200)
+        .await
+        .unwrap();
+    assert_eq!(series_keys(&changed), ["SKU-A", "SKU-B", "SKU-C"]);
+    let find = |key: &str| changed.iter().find(|row| row.series_key == key).unwrap();
+
+    // Every series has enough history for an evaluated naive champion, so the
+    // guide's "three usable series" claim holds without a three-model contest.
+    for row in &changed {
+        let detail = workspace
+            .weekly_comparison_series_detail(&run_b, &run_a, &row.product_id, &row.location_id)
+            .await
+            .unwrap();
+        assert_eq!(detail.current_outcome.as_deref(), Some("ok"));
+        assert_eq!(detail.previous_outcome.as_deref(), Some("ok"));
+    }
+
+    // SKU-A: the corrected older observation and the added week are demand
+    // changes; identical end values leave the baseline unchanged. Its forecast
+    // horizon still shifts, but only at the edges, which are never changes.
+    let sku_a = find("SKU-A");
+    assert_eq!(sku_a.presence, "both");
+    assert_eq!(sku_a.demand_change_count, 2);
+    assert_eq!(sku_a.forecast_change_count, 0);
+    let sku_a_detail = workspace
+        .weekly_comparison_series_detail(&run_b, &run_a, &sku_a.product_id, &sku_a.location_id)
+        .await
+        .unwrap();
+    let corrected = sku_a_detail
+        .demand_changes
+        .iter()
+        .find(|change| change.week_start == "2026-08-10")
+        .unwrap();
+    assert_eq!(corrected.change_kind, "changed");
+    assert_eq!(corrected.previous_quantity, Some(10.0));
+    assert_eq!(corrected.current_quantity, Some(12.0));
+    let edge_before = sku_a_detail
+        .forecast_changes
+        .iter()
+        .find(|point| point.week_start == "2026-10-12")
+        .unwrap();
+    assert_eq!(edge_before.comparability, "previous_only");
+    assert!(!edge_before.is_change);
+    assert_eq!(edge_before.delta, None);
+    let edge_after = sku_a_detail
+        .forecast_changes
+        .iter()
+        .find(|point| point.week_start == "2027-01-04")
+        .unwrap();
+    assert_eq!(edge_after.comparability, "current_only");
+    assert!(!edge_after.is_change);
+    // The correction changed demand only: no planning cell is an override.
+    assert!(sku_a_detail
+        .planning
+        .iter()
+        .all(|point| point.override_value.is_none() && point.value_source == "model"));
+
+    // SKU-B: the one added cell moves the naive baseline from 20 to 25 on
+    // every common horizon week.
+    let sku_b = find("SKU-B");
+    assert_eq!(sku_b.demand_change_count, 1);
+    assert_eq!(sku_b.forecast_change_count, 11);
+    let sku_b_detail = workspace
+        .weekly_comparison_series_detail(&run_b, &run_a, &sku_b.product_id, &sku_b.location_id)
+        .await
+        .unwrap();
+    let common = sku_b_detail
+        .forecast_changes
+        .iter()
+        .find(|point| point.week_start == "2026-10-19")
+        .unwrap();
+    assert_eq!(common.comparability, "common");
+    assert_eq!(common.previous_value, Some(20.0));
+    assert_eq!(common.current_value, Some(25.0));
+    assert!(common.is_change);
+    assert_eq!(common.delta, Some(5.0));
+
+    // SKU-C is the second horizon-edge-only series.
+    let sku_c = find("SKU-C");
+    assert_eq!(sku_c.demand_change_count, 1);
+    assert_eq!(sku_c.forecast_change_count, 0);
+
+    // One saved override on the new run; the comparison keeps baselines.
+    workspace
+        .append_override(OverrideEdit {
+            run_id: run_b.clone(),
+            product_id: sku_b.product_id.clone(),
+            location_id: sku_b.location_id.clone(),
+            week_start: "2026-10-19".into(),
+            value: Some("99".into()),
+            expected_revision: 0,
+        })
+        .await
+        .unwrap();
+    let sku_b_detail = workspace
+        .weekly_comparison_series_detail(&run_b, &run_a, &sku_b.product_id, &sku_b.location_id)
+        .await
+        .unwrap();
+    let overridden = sku_b_detail
+        .planning
+        .iter()
+        .find(|point| point.week_start == "2026-10-19")
+        .unwrap();
+    assert_eq!(overridden.baseline, Some(25.0));
+    assert_eq!(overridden.override_value, Some(99.0));
+    assert_eq!(overridden.effective, Some(99.0));
+    assert_eq!(overridden.value_source, "override");
+
+    // The full-run CSV carries the 36 plan rows and the effective override.
+    let export_path = directory.path().join("quickstart-plan.csv");
+    let exported = workspace.export_csv(&run_b, &export_path).await.unwrap();
+    assert_eq!(exported.row_count, 36);
+    let text = std::fs::read_to_string(&export_path).unwrap();
+    let data_rows = text.lines().filter(|line| !line.trim().is_empty()).count() - 1;
+    assert_eq!(data_rows, 36);
+    assert_eq!(text.matches(",25,99,99,override,").count(), 1);
+
+    // A duplicate snapshot is a no-op that still reuses run B for the pair.
+    let duplicate_b = workspace
+        .import_raw(
+            &quickstart("weekly-update.csv"),
+            &descriptor,
+            &AtomicBool::new(false),
+        )
+        .await
+        .unwrap();
+    assert!(duplicate_b.is_duplicate);
+    assert_eq!(duplicate_b.revision_id, 2);
+    let context = workspace.weekly_comparison_context().await.unwrap();
+    assert_eq!(context.current.unwrap().id, run_b);
+    assert_eq!(context.previous.unwrap().id, run_a);
+}
+
+/// Focused weekly-change filters: server-side demand, forecast, and presence
+/// narrowing over the full ordered change list, including a match beyond the
+/// first page, overlapping changes, and horizon-edge-only differences.
+#[tokio::test]
+async fn weekly_comparison_filters_narrow_the_changed_series() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = Workspace::create(directory.path().join("workspace"))
+        .await
+        .unwrap();
+    let weeks = weeks_ending("2026-10-05", 48);
+
+    // R1: SKU-A/B/C with 48 flat weeks each, plus SKU-E with its last eight
+    // weeks only (below every model floor).
+    let mut first: Vec<(String, String, f64)> = Vec::new();
+    first.extend(flat_rows("SKU-A", &weeks, 10.0));
+    first.extend(flat_rows("SKU-B", &weeks, 20.0));
+    first.extend(flat_rows("SKU-C", &weeks, 30.0));
+    first.extend(flat_rows("SKU-E", &weeks[40..], 5.0));
+    let revision_one = workspace
+        .import_csv(
+            &write_csv(
+                directory.path(),
+                "filter-first.csv",
+                &rows_to_content(&first),
+            ),
+            &AtomicBool::new(false),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revision_one.revision_id, 1);
+    let run_one = forecast(&workspace, revision_one.revision_id).await;
+
+    // R2: SKU-A corrected in one older week and extended at 10 (edges only),
+    // SKU-B extended at 25 (baseline moves on common weeks), SKU-C extended
+    // at 30 (edges only), and SKU-D arriving with its last eight weeks only.
+    let mut second: Vec<(String, String, f64)> = Vec::new();
+    for week in &weeks {
+        let quantity = if week == "2026-08-10" { 12.0 } else { 10.0 };
+        second.push(("SKU-A".to_string(), week.clone(), quantity));
+    }
+    second.push(("SKU-A".to_string(), "2026-10-12".to_string(), 10.0));
+    second.extend(flat_rows("SKU-B", &weeks, 20.0));
+    second.push(("SKU-B".to_string(), "2026-10-12".to_string(), 25.0));
+    second.extend(flat_rows("SKU-C", &weeks, 30.0));
+    second.push(("SKU-C".to_string(), "2026-10-12".to_string(), 30.0));
+    second.extend(flat_rows("SKU-D", &weeks[41..], 4.0));
+    second.push(("SKU-D".to_string(), "2026-10-12".to_string(), 4.0));
+    let revision_two = workspace
+        .import_csv(
+            &write_csv(
+                directory.path(),
+                "filter-second.csv",
+                &rows_to_content(&second),
+            ),
+            &AtomicBool::new(false),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revision_two.revision_id, 2);
+    let run_two = forecast(&workspace, revision_two.revision_id).await;
+
+    // The default `all` list is unchanged: every changed series in stable
+    // SKU order, with the documented counts.
+    let all = workspace
+        .weekly_comparison_series_list(&run_two, &run_one, "", WeeklyChangeFilter::All, 0, 200)
+        .await
+        .unwrap();
+    assert_eq!(
+        series_keys(&all),
+        ["SKU-A", "SKU-B", "SKU-C", "SKU-D", "SKU-E"]
+    );
+    let find = |key: &str| all.iter().find(|row| row.series_key == key).unwrap();
+    let sku_a = find("SKU-A");
+    assert_eq!(sku_a.presence, "both");
+    assert_eq!(sku_a.demand_change_count, 2);
+    assert_eq!(sku_a.forecast_change_count, 0);
+    let sku_b = find("SKU-B");
+    assert_eq!(sku_b.demand_change_count, 1);
+    assert_eq!(sku_b.forecast_change_count, 11);
+    let sku_c = find("SKU-C");
+    assert_eq!(sku_c.demand_change_count, 1);
+    assert_eq!(sku_c.forecast_change_count, 0);
+    let sku_d = find("SKU-D");
+    assert_eq!(sku_d.presence, "current_only");
+    assert_eq!(sku_d.demand_change_count, 8);
+    assert_eq!(sku_d.forecast_change_count, 0);
+    let sku_e = find("SKU-E");
+    assert_eq!(sku_e.presence, "previous_only");
+    assert_eq!(sku_e.demand_change_count, 8);
+    assert_eq!(sku_e.forecast_change_count, 0);
+
+    // SKU-A differs only at its forecast horizon edges: late-week values on
+    // common weeks are identical and edges are non-comparable, never changes.
+    let sku_a_detail = workspace
+        .weekly_comparison_series_detail(&run_two, &run_one, &sku_a.product_id, &sku_a.location_id)
+        .await
+        .unwrap();
+    assert!(sku_a_detail.forecast_changes.iter().any(|point| {
+        point.week_start == "2026-10-12"
+            && point.comparability == "previous_only"
+            && !point.is_change
+    }));
+    assert!(sku_a_detail.forecast_changes.iter().any(|point| {
+        point.week_start == "2027-01-04"
+            && point.comparability == "current_only"
+            && !point.is_change
+    }));
+    assert!(sku_a_detail
+        .forecast_changes
+        .iter()
+        .filter(|point| point.comparability == "common")
+        .all(|point| !point.is_change));
+
+    // Demand keeps every changed row: arrivals and removals are demand cells.
+    let demand = workspace
+        .weekly_comparison_series_list(&run_two, &run_one, "", WeeklyChangeFilter::Demand, 0, 200)
+        .await
+        .unwrap();
+    assert_eq!(series_keys(&demand), series_keys(&all));
+
+    // Forecast narrows to baselines or availability that moved on comparable
+    // weeks: only SKU-B. The horizon-edge-only series A and C and the short
+    // arrivals/removals D and E do not pass.
+    let forecast = workspace
+        .weekly_comparison_series_list(&run_two, &run_one, "", WeeklyChangeFilter::Forecast, 0, 200)
+        .await
+        .unwrap();
+    assert_eq!(series_keys(&forecast), ["SKU-B"]);
+
+    // Presence keeps only arrivals and removals.
+    let presence = workspace
+        .weekly_comparison_series_list(&run_two, &run_one, "", WeeklyChangeFilter::Presence, 0, 200)
+        .await
+        .unwrap();
+    assert_eq!(series_keys(&presence), ["SKU-D", "SKU-E"]);
+
+    // Overlap: SKU-B satisfies both demand and forecast.
+    assert!(series_keys(&demand).contains(&"SKU-B"));
+    assert!(series_keys(&forecast).contains(&"SKU-B"));
+
+    // Search combines with the filter before pagination.
+    let searched = workspace
+        .weekly_comparison_series_list(
+            &run_two,
+            &run_one,
+            "SKU-B",
+            WeeklyChangeFilter::Forecast,
+            0,
+            200,
+        )
+        .await
+        .unwrap();
+    assert_eq!(series_keys(&searched), ["SKU-B"]);
+    let search_without_match = workspace
+        .weekly_comparison_series_list(
+            &run_two,
+            &run_one,
+            "SKU-B",
+            WeeklyChangeFilter::Presence,
+            0,
+            200,
+        )
+        .await
+        .unwrap();
+    assert!(search_without_match.is_empty());
+    let searched_arrival = workspace
+        .weekly_comparison_series_list(
+            &run_two,
+            &run_one,
+            "SKU-D",
+            WeeklyChangeFilter::Presence,
+            0,
+            200,
+        )
+        .await
+        .unwrap();
+    assert_eq!(series_keys(&searched_arrival), ["SKU-D"]);
+
+    // Filtering happens over the full ordered set before LIMIT/OFFSET: SKU-B
+    // matches on page one though an excluded row sorts first, and the second
+    // page of the presence filter is SKU-E, not an empty page.
+    let forecast_first_page = workspace
+        .weekly_comparison_series_list(&run_two, &run_one, "", WeeklyChangeFilter::Forecast, 0, 1)
+        .await
+        .unwrap();
+    assert_eq!(series_keys(&forecast_first_page), ["SKU-B"]);
+    let presence_second_page = workspace
+        .weekly_comparison_series_list(&run_two, &run_one, "", WeeklyChangeFilter::Presence, 1, 1)
+        .await
+        .unwrap();
+    assert_eq!(series_keys(&presence_second_page), ["SKU-E"]);
+    let all_second_page = workspace
+        .weekly_comparison_series_list(&run_two, &run_one, "", WeeklyChangeFilter::All, 2, 2)
+        .await
+        .unwrap();
+    assert_eq!(series_keys(&all_second_page), ["SKU-C", "SKU-D"]);
 }

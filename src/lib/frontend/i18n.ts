@@ -1,11 +1,20 @@
 /**
- * Minimal message catalog for the guided import. Only the wizard copy is
- * localized (en, pl, es); the rest of the interface is English, and Rust error
- * messages stay English with stable codes.
+ * Minimal message catalog for the guided import, the workspace language
+ * selector, and the weekly review surfaces (comparison, change detail, run
+ * overview). Those are the localized areas (en, pl, es); the rest of the
+ * interface is English, and Rust error messages stay English with stable
+ * codes.
  */
 export type Locale = 'en' | 'pl' | 'es';
 
 export const LOCALES: Locale[] = ['en', 'pl', 'es'];
+
+/** Language names stay in their own language, as language pickers do. */
+export const LOCALE_NAMES: Record<Locale, string> = {
+	en: 'English',
+	pl: 'Polski',
+	es: 'Español'
+};
 
 const en = {
 	'wizard.title': 'Guided import',
@@ -48,7 +57,97 @@ const en = {
 	'wizard.configName': 'Configuration name',
 	'wizard.saveConfig': 'Save configuration',
 	'wizard.deleteConfig': 'Delete',
-	'wizard.noConfigs': 'No saved configurations yet.'
+	'wizard.noConfigs': 'No saved configurations yet.',
+	'common.previous': 'Previous',
+	'common.next': 'Next',
+	'common.retry': 'Retry',
+	'workspace.language': 'Language',
+	'workspace.languageHint':
+		'The chosen language applies to the guided import and the run review surfaces. Field names and saved diagnostics stay unchanged.',
+	'weekly.title': 'Run comparison',
+	'weekly.close': 'Close',
+	'weekly.loading': 'Loading comparison…',
+	'weekly.pair': 'Comparing the latest import (#{currentRevision}) with the previous import (#{previousRevision}).',
+	'weekly.noCurrent': 'The latest import has no forecast yet. Generate a forecast before comparing runs.',
+	'weekly.noPrevious':
+		'This comparison needs a completed forecast for the previous import. It will not substitute an older import.',
+	'weekly.searchLabel': 'Search changed series',
+	'weekly.searchPlaceholder': 'Filter by series key',
+	'weekly.filterLabel': 'Change type',
+	'weekly.filter.all': 'All changes',
+	'weekly.filter.demand': 'Demand corrections',
+	'weekly.filter.forecast': 'Forecast changes',
+	'weekly.filter.presence': 'Arrivals and removals',
+	'weekly.loadingList': 'Loading changed series…',
+	'weekly.noChanges': 'No series changed between these two runs.',
+	'weekly.noSearchMatch': 'No changed series match this search.',
+	'weekly.noFilterMatch': 'No changes match this filter.',
+	'weekly.listAria': 'Changed series',
+	'weekly.demandCount': 'Demand {count}',
+	'weekly.forecastCount': 'Forecast {count}',
+	'weekly.presenceCurrentOnly': 'Only in new revision',
+	'weekly.presencePreviousOnly': 'Only in previous revision',
+	'weekly.selectHint': 'Select a changed series to inspect its weekly detail.',
+	'weekly.range': 'Showing {from}–{to}',
+	'weekly.nothingToShow': 'Nothing to show',
+	'weekly.noteNotInCurrent': 'Not forecast in the current run',
+	'weekly.noteNotInPrevious': 'Not forecast in the previous run',
+	'weekly.noteHorizonEdge': 'Horizon edge, not compared',
+	'weekly.changeAdded': 'Added',
+	'weekly.changeRemoved': 'Removed',
+	'weekly.changeChanged': 'Changed',
+	'detail.aria': 'Series comparison detail',
+	'detail.loading': 'Loading series comparison…',
+	'detail.outcomeNew': 'New run: {outcome}',
+	'detail.outcomePrevious': 'Previous run: {outcome}',
+	'detail.demandHeading': 'History changes ({count})',
+	'detail.demandEmpty': 'No observation cell changed between the two revisions.',
+	'detail.forecastHeading': 'Baseline forecast changes ({count})',
+	'detail.forecastEmpty': 'No baseline forecast exists in either compared run.',
+	'detail.planHeading': 'Current plan (latest run)',
+	'detail.planEmpty': 'The current run has no planning rows for this series.',
+	'detail.week': 'Week',
+	'detail.previous': 'Previous',
+	'detail.current': 'Current',
+	'detail.change': 'Change',
+	'detail.delta': 'Delta',
+	'detail.note': 'Note',
+	'detail.baseline': 'Baseline',
+	'detail.override': 'Override',
+	'detail.effective': 'Effective',
+	'detail.source': 'Source',
+	'detail.deltaNote':
+		'Deltas compare immutable baselines on common calendar weeks only. Overrides never carry between runs.',
+	'outcome.ok': 'Forecasted',
+	'outcome.fallbackNaive': 'Naive fallback',
+	'outcome.insufficientHistory': 'Insufficient history',
+	'outcome.modelFailure': 'Model failure',
+	'outcome.invalidData': 'Invalid data',
+	'outcome.none': 'Not forecast',
+	'status.known': 'Known',
+	'status.zero': 'Zero',
+	'status.missing': 'Missing',
+	'status.return': 'Return',
+	'status.correction': 'Correction',
+	'status.stockout': 'Stockout',
+	'status.partial': 'Partial',
+	'source.override': 'Manual override',
+	'source.model': 'Model',
+	'source.missing': 'Missing',
+	'overview.title': 'Run overview',
+	'overview.loading': 'Loading run overview…',
+	'overview.noSeries': 'No series',
+	'overview.coverage': 'Coverage {covered}/{total} ({percent})',
+	'overview.coverageNote':
+		'Coverage counts series with an ok or naive-fallback forecast. It is not forecast accuracy.',
+	'overview.outcomesHeading': 'Outcomes',
+	'overview.exceptionsHeading': 'Exceptions ({count})',
+	'overview.noExceptions': 'No exceptions in this run.',
+	'overview.range': 'Showing {from}–{to} of {count}',
+	'overview.nothingToShow': 'Nothing to show',
+	'export.xlsx': 'Export XLSX',
+	'export.xlsxBusy': 'Exporting XLSX…',
+	'export.xlsxSaved': 'Exported {rows} weekly rows from all series to {path} (Excel workbook).'
 };
 
 export type MessageKey = keyof typeof en;
@@ -94,7 +193,97 @@ const pl: Record<MessageKey, string> = {
 	'wizard.configName': 'Nazwa konfiguracji',
 	'wizard.saveConfig': 'Zapisz konfigurację',
 	'wizard.deleteConfig': 'Usuń',
-	'wizard.noConfigs': 'Brak zapisanych konfiguracji.'
+	'wizard.noConfigs': 'Brak zapisanych konfiguracji.',
+	'common.previous': 'Wstecz',
+	'common.next': 'Dalej',
+	'common.retry': 'Ponów',
+	'workspace.language': 'Język',
+	'workspace.languageHint':
+		'Wybrany język dotyczy importu z przewodnikiem i powierzchni przeglądu przebiegów. Nazwy pól i zapisane komunikaty diagnostyczne pozostają bez zmian.',
+	'weekly.title': 'Porównanie przebiegów',
+	'weekly.close': 'Zamknij',
+	'weekly.loading': 'Wczytywanie porównania…',
+	'weekly.pair': 'Porównanie najnowszego importu (#{currentRevision}) z poprzednim importem (#{previousRevision}).',
+	'weekly.noCurrent': 'Najnowszy import nie ma jeszcze prognozy. Wygeneruj ją, aby porównać przebiegi.',
+	'weekly.noPrevious':
+		'Porównanie wymaga ukończonej prognozy dla poprzedniego importu. Nie zostanie użyty starszy import.',
+	'weekly.searchLabel': 'Szukaj zmienionych serii',
+	'weekly.searchPlaceholder': 'Filtruj po kluczu serii',
+	'weekly.filterLabel': 'Typ zmiany',
+	'weekly.filter.all': 'Wszystkie zmiany',
+	'weekly.filter.demand': 'Korekty popytu',
+	'weekly.filter.forecast': 'Zmiany prognozy',
+	'weekly.filter.presence': 'Nowe i usunięte serie',
+	'weekly.loadingList': 'Wczytywanie zmienionych serii…',
+	'weekly.noChanges': 'Żadna seria nie zmieniła się między tymi przebiegami.',
+	'weekly.noSearchMatch': 'Żadna zmieniona seria nie pasuje do wyszukiwania.',
+	'weekly.noFilterMatch': 'Żadne zmiany nie pasują do tego filtra.',
+	'weekly.listAria': 'Zmienione serie',
+	'weekly.demandCount': 'Popyt {count}',
+	'weekly.forecastCount': 'Prognoza {count}',
+	'weekly.presenceCurrentOnly': 'Tylko w nowej rewizji',
+	'weekly.presencePreviousOnly': 'Tylko w poprzedniej rewizji',
+	'weekly.selectHint': 'Wybierz zmienioną serię, aby zobaczyć szczegóły tygodniowe.',
+	'weekly.range': 'Pokazano {from}–{to}',
+	'weekly.nothingToShow': 'Nic do pokazania',
+	'weekly.noteNotInCurrent': 'Brak prognozy w bieżącym przebiegu',
+	'weekly.noteNotInPrevious': 'Brak prognozy w poprzednim przebiegu',
+	'weekly.noteHorizonEdge': 'Krawędź horyzontu — bez porównania',
+	'weekly.changeAdded': 'Dodano',
+	'weekly.changeRemoved': 'Usunięto',
+	'weekly.changeChanged': 'Zmieniono',
+	'detail.aria': 'Szczegóły porównania serii',
+	'detail.loading': 'Wczytywanie porównania serii…',
+	'detail.outcomeNew': 'Nowy przebieg: {outcome}',
+	'detail.outcomePrevious': 'Poprzedni przebieg: {outcome}',
+	'detail.demandHeading': 'Zmiany historii ({count})',
+	'detail.demandEmpty': 'Żadna komórka obserwacji nie zmieniła się między rewizjami.',
+	'detail.forecastHeading': 'Zmiany prognozy bazowej ({count})',
+	'detail.forecastEmpty': 'W obu porównywanych przebiegach nie ma prognozy bazowej.',
+	'detail.planHeading': 'Bieżący plan (najnowszy przebieg)',
+	'detail.planEmpty': 'Bieżący przebieg nie ma wierszy planu dla tej serii.',
+	'detail.week': 'Tydzień',
+	'detail.previous': 'Poprzednio',
+	'detail.current': 'Obecnie',
+	'detail.change': 'Zmiana',
+	'detail.delta': 'Różnica',
+	'detail.note': 'Uwaga',
+	'detail.baseline': 'Wartość bazowa',
+	'detail.override': 'Nadpisanie',
+	'detail.effective': 'Wartość efektywna',
+	'detail.source': 'Źródło',
+	'detail.deltaNote':
+		'Różnice porównują niezmienne wartości bazowe tylko na wspólnych tygodniach kalendarza. Nadpisania nie przenoszą się między przebiegami.',
+	'outcome.ok': 'Prognozowana',
+	'outcome.fallbackNaive': 'Prognoza zastępcza Naive',
+	'outcome.insufficientHistory': 'Zbyt krótka historia',
+	'outcome.modelFailure': 'Błąd modelu',
+	'outcome.invalidData': 'Nieprawidłowe dane',
+	'outcome.none': 'Brak prognozy',
+	'status.known': 'Znana',
+	'status.zero': 'Zero',
+	'status.missing': 'Brak',
+	'status.return': 'Zwrot',
+	'status.correction': 'Korekta',
+	'status.stockout': 'Brak towaru',
+	'status.partial': 'Częściowa',
+	'source.override': 'Nadpisanie ręczne',
+	'source.model': 'Model',
+	'source.missing': 'Brak',
+	'overview.title': 'Przegląd przebiegu',
+	'overview.loading': 'Wczytywanie przeglądu przebiegu…',
+	'overview.noSeries': 'Brak serii',
+	'overview.coverage': 'Pokrycie {covered}/{total} ({percent})',
+	'overview.coverageNote':
+		'Pokrycie liczy serie z prognozą (ok lub zastępczą Naive). To nie jest dokładność prognozy.',
+	'overview.outcomesHeading': 'Wyniki',
+	'overview.exceptionsHeading': 'Wyjątki ({count})',
+	'overview.noExceptions': 'Brak wyjątków w tym przebiegu.',
+	'overview.range': 'Pokazano {from}–{to} z {count}',
+	'overview.nothingToShow': 'Nic do pokazania',
+	'export.xlsx': 'Eksport XLSX',
+	'export.xlsxBusy': 'Eksportowanie XLSX…',
+	'export.xlsxSaved': 'Wyeksportowano {rows} wierszy tygodniowych wszystkich serii do {path} (skoroszyt Excel).'
 };
 
 const es: Record<MessageKey, string> = {
@@ -139,7 +328,97 @@ const es: Record<MessageKey, string> = {
 	'wizard.configName': 'Nombre de la configuración',
 	'wizard.saveConfig': 'Guardar configuración',
 	'wizard.deleteConfig': 'Eliminar',
-	'wizard.noConfigs': 'Todavía no hay configuraciones guardadas.'
+	'wizard.noConfigs': 'Todavía no hay configuraciones guardadas.',
+	'common.previous': 'Anterior',
+	'common.next': 'Siguiente',
+	'common.retry': 'Reintentar',
+	'workspace.language': 'Idioma',
+	'workspace.languageHint':
+		'El idioma elegido se aplica a la importación guiada y a las vistas de revisión de ejecuciones. Los nombres de campo y los diagnósticos guardados no cambian.',
+	'weekly.title': 'Comparación de ejecuciones',
+	'weekly.close': 'Cerrar',
+	'weekly.loading': 'Cargando comparación…',
+	'weekly.pair': 'Se compara la importación más reciente (#{currentRevision}) con la anterior (#{previousRevision}).',
+	'weekly.noCurrent': 'La importación más reciente aún no tiene un pronóstico. Genera uno para comparar ejecuciones.',
+	'weekly.noPrevious':
+		'Esta comparación requiere un pronóstico completo para la importación anterior. No se usará una importación más antigua.',
+	'weekly.searchLabel': 'Buscar series modificadas',
+	'weekly.searchPlaceholder': 'Filtrar por clave de serie',
+	'weekly.filterLabel': 'Tipo de cambio',
+	'weekly.filter.all': 'Todos los cambios',
+	'weekly.filter.demand': 'Correcciones de demanda',
+	'weekly.filter.forecast': 'Cambios de pronóstico',
+	'weekly.filter.presence': 'Series añadidas y eliminadas',
+	'weekly.loadingList': 'Cargando series modificadas…',
+	'weekly.noChanges': 'Ninguna serie cambió entre estas dos ejecuciones.',
+	'weekly.noSearchMatch': 'Ninguna serie modificada coincide con la búsqueda.',
+	'weekly.noFilterMatch': 'Ningún cambio coincide con este filtro.',
+	'weekly.listAria': 'Series modificadas',
+	'weekly.demandCount': 'Demanda {count}',
+	'weekly.forecastCount': 'Pronóstico {count}',
+	'weekly.presenceCurrentOnly': 'Solo en la revisión nueva',
+	'weekly.presencePreviousOnly': 'Solo en la revisión anterior',
+	'weekly.selectHint': 'Selecciona una serie modificada para ver su detalle semanal.',
+	'weekly.range': 'Mostrando {from}–{to}',
+	'weekly.nothingToShow': 'Nada que mostrar',
+	'weekly.noteNotInCurrent': 'Sin pronóstico en la ejecución actual',
+	'weekly.noteNotInPrevious': 'Sin pronóstico en la ejecución anterior',
+	'weekly.noteHorizonEdge': 'Borde del horizonte, sin comparación',
+	'weekly.changeAdded': 'Añadido',
+	'weekly.changeRemoved': 'Eliminado',
+	'weekly.changeChanged': 'Modificado',
+	'detail.aria': 'Detalle de comparación de serie',
+	'detail.loading': 'Cargando comparación de serie…',
+	'detail.outcomeNew': 'Ejecución nueva: {outcome}',
+	'detail.outcomePrevious': 'Ejecución anterior: {outcome}',
+	'detail.demandHeading': 'Cambios de historial ({count})',
+	'detail.demandEmpty': 'Ninguna celda de observación cambió entre las dos revisiones.',
+	'detail.forecastHeading': 'Cambios del pronóstico base ({count})',
+	'detail.forecastEmpty': 'No hay pronóstico base en ninguna de las ejecuciones comparadas.',
+	'detail.planHeading': 'Plan actual (última ejecución)',
+	'detail.planEmpty': 'La ejecución actual no tiene filas de plan para esta serie.',
+	'detail.week': 'Semana',
+	'detail.previous': 'Anterior',
+	'detail.current': 'Actual',
+	'detail.change': 'Cambio',
+	'detail.delta': 'Delta',
+	'detail.note': 'Nota',
+	'detail.baseline': 'Base',
+	'detail.override': 'Anulación',
+	'detail.effective': 'Efectiva',
+	'detail.source': 'Origen',
+	'detail.deltaNote':
+		'Los deltas comparan valores base inmutables solo en semanas comunes. Las anulaciones nunca pasan entre ejecuciones.',
+	'outcome.ok': 'Pronosticada',
+	'outcome.fallbackNaive': 'Alternativa Naive',
+	'outcome.insufficientHistory': 'Historial insuficiente',
+	'outcome.modelFailure': 'Fallo del modelo',
+	'outcome.invalidData': 'Datos no válidos',
+	'outcome.none': 'Sin pronóstico',
+	'status.known': 'Conocido',
+	'status.zero': 'Cero',
+	'status.missing': 'Faltante',
+	'status.return': 'Devolución',
+	'status.correction': 'Corrección',
+	'status.stockout': 'Sin existencias',
+	'status.partial': 'Parcial',
+	'source.override': 'Anulación manual',
+	'source.model': 'Modelo',
+	'source.missing': 'Faltante',
+	'overview.title': 'Resumen de la ejecución',
+	'overview.loading': 'Cargando el resumen de la ejecución…',
+	'overview.noSeries': 'Sin series',
+	'overview.coverage': 'Cobertura {covered}/{total} ({percent})',
+	'overview.coverageNote':
+		'La cobertura cuenta las series con pronóstico (ok o alternativa Naive). No es precisión del pronóstico.',
+	'overview.outcomesHeading': 'Resultados',
+	'overview.exceptionsHeading': 'Excepciones ({count})',
+	'overview.noExceptions': 'Sin excepciones en esta ejecución.',
+	'overview.range': 'Mostrando {from}–{to} de {count}',
+	'overview.nothingToShow': 'Nada que mostrar',
+	'export.xlsx': 'Exportar XLSX',
+	'export.xlsxBusy': 'Exportando XLSX…',
+	'export.xlsxSaved': 'Se exportaron {rows} filas semanales de todas las series a {path} (libro de Excel).'
 };
 
 export const messages: Record<Locale, Record<MessageKey, string>> = { en, pl, es };
@@ -153,7 +432,20 @@ export function resolveLocale(value: string | null | undefined): Locale {
 	return 'en';
 }
 
-/** Look up a message, falling back to English and then to the key itself. */
-export function t(locale: Locale, key: MessageKey): string {
-	return messages[locale][key] ?? messages.en[key] ?? key;
+/**
+ * Look up a message, falling back to English and then to the key itself.
+ * `{name}` placeholders are replaced from `params`; missing values leave the
+ * placeholder visible so an unfinished call is obvious, never silently wrong.
+ */
+export function t(
+	locale: Locale,
+	key: MessageKey,
+	params?: Record<string, string | number>
+): string {
+	const template = messages[locale][key] ?? messages.en[key] ?? key;
+	if (!params) return template;
+	return template.replace(/\{(\w+)\}/g, (placeholder, name: string) => {
+		const value = params[name];
+		return value === undefined ? placeholder : String(value);
+	});
 }

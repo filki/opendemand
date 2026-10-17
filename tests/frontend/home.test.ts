@@ -12,7 +12,6 @@ import {
 
 test('create failures get a targeted hint', () => {
 	assert.match(String(createWorkspaceHint('workspace_exists')), /already lives/);
-	assert.match(String(createWorkspaceHint('workspace_not_empty')), /empty folder/);
 	assert.match(String(createWorkspaceHint('workspace_not_directory')), /folder, not a file/);
 	assert.equal(createWorkspaceHint('io_error'), null);
 });
@@ -78,5 +77,6 @@ test('workspace action failures get a targeted hint', () => {
 	assert.match(String(workspaceActionHint('workspace_name_taken')), /already exists/);
 	assert.match(String(workspaceActionHint('confirm_name_mismatch')), /exactly/);
 	assert.match(String(workspaceActionHint('workspace_default')), /default workspace/);
+	assert.match(String(workspaceActionHint('workspace_not_found')), /existing workspace or create one in the default location/);
 	assert.equal(workspaceActionHint('io_error'), null);
 });

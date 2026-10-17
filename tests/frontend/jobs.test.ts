@@ -4,6 +4,7 @@ import {
 	isActiveJobStatus,
 	isTerminalJobStatus,
 	jobKindLabel,
+	jobPhaseLabel,
 	jobStatusLabel,
 	progressPercent,
 	selectDisplayRun,
@@ -32,10 +33,17 @@ test('progressPercent uses fractional progress and clamps invalid values', () =>
 });
 
 test('labels stay sentence case', () => {
-	assert.equal(jobKindLabel('import'), 'CSV import');
-	assert.equal(jobKindLabel('forecast'), 'Naive forecast');
+	assert.equal(jobKindLabel('import'), 'Import data');
+	assert.equal(jobKindLabel('forecast'), 'Forecast');
 	assert.equal(jobStatusLabel('queued'), 'Queued');
 	assert.equal(jobStatusLabel('cancelled'), 'Cancelled');
+});
+
+test('job phases use plain-language progress labels', () => {
+	assert.equal(jobPhaseLabel('queued'), 'Waiting to start');
+	assert.equal(jobPhaseLabel('backtest'), 'Comparing forecast methods');
+	assert.equal(jobPhaseLabel('persisting'), 'Saving the forecast');
+	assert.equal(jobPhaseLabel('custom_phase'), 'Custom Phase');
 });
 
 test('run selection prefers the newest completed run', () => {

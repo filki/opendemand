@@ -1,19 +1,22 @@
 <script lang="ts">
-	import { createQuery, useQueryClient } from '@tanstack/svelte-query';	import type { JobInfo, OverrideEdit, ParsingDescriptor, SeriesSummary } from '#lib/bindings.ts';
+	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
+	import { getVersion } from '@tauri-apps/api/app';
+	import { onMount } from 'svelte';
+	import type { JobInfo, OverrideEdit, ParsingDescriptor, SeriesSummary } from '#lib/bindings.ts';
 	import BrowserFallback from '#lib/components/BrowserFallback.svelte';
 	import CsvFormatCard from '#lib/components/CsvFormatCard.svelte';
 	import HomeScreen from '#lib/components/HomeScreen.svelte';
 	import ImportWizard from '#lib/components/ImportWizard.svelte';
 	import JobMonitor from '#lib/components/JobMonitor.svelte';
+	import RunOverview from '#lib/components/RunOverview.svelte';
 	import SeriesDetailPanel from '#lib/components/SeriesDetailPanel.svelte';
 	import SeriesList from '#lib/components/SeriesList.svelte';
-	import StatusChip from '#lib/components/StatusChip.svelte';
 	import WeeklyComparison from '#lib/components/WeeklyComparison.svelte';
 	import WorkspacePanel from '#lib/components/WorkspacePanel.svelte';
 	import WorkspacePicker from '#lib/components/WorkspacePicker.svelte';
 	import { formatPercent, formatTimestamp, humanizeToken, shortId } from '#lib/frontend/format.ts';
 	import { createWorkspaceHint, workspaceActionHint } from '#lib/frontend/home.ts';
-	import { resolveLocale, t } from '#lib/frontend/i18n.ts';
+	import { resolveLocale, t, type Locale } from '#lib/frontend/i18n.ts';
 	import {
 		cancelJob,
 		closeWorkspace,
@@ -21,6 +24,7 @@
 		deleteWorkspace,
 		describeError,
 		exportPlanCsv,
+		exportPlanXlsx,
 		fetchJobStatus,
 		fetchJobs,
 		fetchRunsList,
@@ -35,9 +39,11 @@
 		pickCanonicalCsv,
 		pickCsvExport,
 		pickWorkspaceDirectory,
+		pickXlsxExport,
 		queryErrorCode,
 		renameWorkspace,
 		saveOverride,
+		setWorkspaceLocale,
 		startForecast,
 		startImport
 	} from '#lib/frontend/ipc.ts';
@@ -49,12 +55,20 @@
 		selectDisplayRun,
 		sortRunsNewestFirst
 	} from '#lib/frontend/jobs.ts';
-	import { resolveWeeklyStep } from '#lib/frontend/weekly.ts';
-	import { isNoWorkspaceError } from '#lib/frontend/workspace.ts';
+	import { canChangeSelection, selectRunException } from '#lib/frontend/planner.ts';
+	import { isNoWorkspaceError, persistLocaleForWorkspace } from '#lib/frontend/workspace.ts';
 
 	const PAGE_SIZE = 50;
 	const desktop = isTauriRuntime();
 	const queryClient = useQueryClient();
+	let appVersion = $state<string | null>(null);
+
+	onMount(() => {
+		if (!desktop) return;
+		void getVersion()
+			.then((version) => (appVersion = version))
+			.catch(() => (appVersion = 'Unavailable'));
+	});
 
 	let activeJobId = $state<string | null>(null);
 	let activeJobStatus = $state<string | null>(null);
@@ -68,13 +82,13 @@
 	let selectedRunId = $state<string | null>(null);
 	let plannerDirty = $state(false);
 	let plannerSaving = $state(false);
-	let exporting = $state(false);
+	/** The export format currently in flight; both buttons share one guard. */
+	let exportKind = $state<'csv' | 'xlsx' | null>(null);
+	const exporting = $derived(exportKind !== null);
 	let exportNotice = $state<string | null>(null);
+	let localeSaving = $state(false);
 	let seriesScope = '';
 	let wizardOpen = $state(false);
-	let weeklyFlowActive = $state(false);
-	/** Run-scoped imputation method for forecast runs (ADR-0023). */
-	let imputationMethod = $state<string | null>(null);
 	let comparisonOpen = $state(false);
 	/** Home flow with no workspace open: module menu, then the workspace list. */
 	let homeScreen = $state<'home' | 'picker'>('home');
@@ -121,6 +135,10 @@
 	const newestRun = $derived(runs.length > 0 ? sortRunsNewestFirst(runs)[0] : null);
 	const displayRun = $derived(selectDisplayRun(runs, latestRevisionId, selectedRunId));
 	const displayRunId = $derived(displayRun?.id ?? null);
+	/** The run the overview strip and its exception navigation belong to. */
+	const completedRun = $derived(
+		displayRun && displayRun.status === 'completed' ? displayRun : null
+	);
 	const revisionId = $derived(displayRun?.revision_id ?? latestRevisionId);
 
 	const seriesQuery = createQuery(() => ({
@@ -243,30 +261,25 @@
 	function summarizeJob(job: JobInfo): string {
 		if (job.status === 'failed') {
 			return job.error
-				? `${jobKindLabel(job.kind)} failed: ${job.error.message}`
-				: `${jobKindLabel(job.kind)} failed.`;
+				? `${jobKindLabel(job.kind)} could not finish. Review the details or try again.`
+				: `${jobKindLabel(job.kind)} could not finish. Try again.`;
 		}
 		if (job.status === 'cancelled') {
 			return `${jobKindLabel(job.kind)} was cancelled.`;
 		}
 		const importResult = job.import_result;
 		if (job.kind === 'import' && importResult) {
-			const duplicate = importResult.is_duplicate
-				? ' Identical source content was already imported, so the existing revision was reused.'
+			if (importResult.is_duplicate) {
+				return `This sales history is already in the workspace. Reused import #${importResult.revision_id}.`;
+			}
+			const issues = importResult.issue_count > 0
+				? ` ${importResult.issue_count} items need review.`
 				: '';
-			return (
-				`Imported revision ${importResult.revision_id}: ${importResult.series_count} series, ` +
-				`${importResult.observation_count} observations, ${importResult.issue_count} issues; ` +
-				`last week ${importResult.last_week}.${duplicate}`
-			);
+			return `Imported ${importResult.series_count} series and ${importResult.observation_count} weekly records.${issues}`;
 		}
 		const forecastResult = job.forecast_result;
 		if (job.kind === 'forecast' && forecastResult) {
-			return (
-				`Forecast run ${shortId(forecastResult.run_id)} persisted: ` +
-				`${forecastResult.forecast_count} forecast points across ${forecastResult.series_count} series ` +
-				`(${formatPercent(forecastResult.coverage)} coverage).`
-			);
+			return `Forecast complete: ${forecastResult.forecast_count} weekly values for ${forecastResult.series_count} series (${formatPercent(forecastResult.coverage)} series coverage).`;
 		}
 		return `${jobKindLabel(job.kind)} ${jobStatusLabel(job.status).toLowerCase()}.`;
 	}
@@ -278,7 +291,7 @@
 		const forecastResult =
 			job.kind === 'forecast' && job.status === 'completed' ? job.forecast_result : null;
 
-		if (importResult && !keepSelection && !weeklyFlowActive) {
+		if (importResult && !keepSelection) {
 			selectedRunId = null;
 			selectedSeries = null;
 			offset = 0;
@@ -295,43 +308,6 @@
 			queryClient.invalidateQueries({ queryKey: ['series-models'] }),
 			queryClient.invalidateQueries({ queryKey: ['jobs'] })
 		]);
-
-		if (!weeklyFlowActive) return;
-
-		if (importResult && !keepSelection) {
-			await continueWeeklyFlow(importResult.revision_id);
-		} else if (forecastResult) {
-			weeklyFlowActive = false;
-			comparisonOpen = true;
-		} else {
-			// Failed or cancelled steps end the chain without a comparison.
-			weeklyFlowActive = false;
-		}
-	}
-
-	/**
-	 * Continue the weekly chain after a committed import: reuse the revision's
-	 * newest completed run, or forecast the revision when none exists yet
-	 * (ADR-0022). A duplicate import therefore never creates a redundant run.
-	 */
-	async function continueWeeklyFlow(revisionId: number) {
-		try {
-			const revisionRuns = await fetchRunsList(revisionId);
-			const step = resolveWeeklyStep(revisionRuns, revisionId);
-			if (step.kind === 'reuse') {
-				weeklyFlowActive = false;
-				selectedRunId = step.runId;
-				selectedSeries = null;
-				plannerDirty = false;
-				comparisonOpen = true;
-				notice = `${notice ?? ''} Reused an existing completed run for the comparison.`;
-			} else {
-				beginJob(await startForecast(revisionId, imputationMethod));
-			}
-		} catch (error) {
-			weeklyFlowActive = false;
-			actionError = describeError(error);
-		}
 	}
 
 	function beginJob(job: JobInfo) {
@@ -355,7 +331,6 @@
 		exportNotice = null;
 		offset = 0;
 		wizardOpen = false;
-		weeklyFlowActive = false;
 		comparisonOpen = false;
 	}
 
@@ -372,9 +347,7 @@
 	async function handleCreateWorkspace() {
 		actionError = null;
 		try {
-			const path = await pickWorkspaceDirectory();
-			if (!path) return;
-			await createWorkspace(path);
+			await createWorkspace(null);
 			resetWorkspaceScopedState();
 			homeScreen = 'home';
 			await invalidateWorkspaceQueries();
@@ -434,6 +407,34 @@
 		}
 	}
 
+	/**
+	 * Persist the workspace language. Drafts, the selected run, and parsing
+	 * descriptors are untouched: only the workspace query is refreshed, so a
+	 * failure keeps the previous choice visible.
+	 */
+	async function handleLocaleChange(next: Locale) {
+		if (localeSaving || next === locale) return;
+		actionError = null;
+		const workspacePath = workspace?.path;
+		if (!workspacePath) return;
+		localeSaving = true;
+		try {
+			await persistLocaleForWorkspace(
+				workspacePath,
+				next,
+				() => workspace?.path,
+				setWorkspaceLocale,
+				async () => {
+					await queryClient.invalidateQueries({ queryKey: ['workspace'] });
+				}
+			);
+		} catch (error) {
+			actionError = describeError(error);
+		} finally {
+			localeSaving = false;
+		}
+	}
+
 	async function handleForgetWorkspace(path: string) {
 		actionError = null;
 		try {
@@ -487,25 +488,22 @@
 		wizardOpen = false;
 	}
 
-	/** Start the weekly workflow: import with a saved config, forecast, compare. */
-	function handleWeeklyUpdate() {
+	function handleGuidedImport() {
 		if (jobBusy || plannerDirty || plannerSaving || exporting) return;
 		actionError = null;
 		comparisonOpen = false;
-		weeklyFlowActive = true;
 		wizardOpen = true;
 	}
 
 	function handleWizardClose() {
 		wizardOpen = false;
-		if (!jobBusy) weeklyFlowActive = false;
 	}
 
 	function handleCloseComparison() {
 		comparisonOpen = false;
 	}
 
-	async function handleForecast() {
+	async function handleForecast(imputationMethod: string | null) {
 		actionError = null;
 		if (latestRevisionId === null) return;
 		try {
@@ -532,10 +530,37 @@
 	}
 
 	function handleSelectSeries(item: SeriesSummary) {
-		if (plannerDirty || plannerSaving || exporting) return;
+		if (!canChangeSelection({ dirty: plannerDirty, saving: plannerSaving, exporting })) return;
 		if (selectedSeries?.productId === item.product_id && selectedSeries.locationId === item.location_id) return;
 		plannerDirty = false;
 		selectedSeries = { productId: item.product_id, locationId: item.location_id };
+	}
+
+	/**
+	 * Open one run overview exception under the same run it was read from,
+	 * through the same dirty-edit guard as the series list.
+	 */
+	function handleSelectException(productId: string, locationId: string) {
+		if (!completedRun) return;
+		const selection = selectRunException(
+			{
+				dirty: plannerDirty,
+				saving: plannerSaving,
+				exporting,
+				selectedRunId: selectedRunId ?? displayRunId,
+				selectedProductId: selectedSeries?.productId ?? null,
+				selectedLocationId: selectedSeries?.locationId ?? null,
+				comparisonOpen
+			},
+			{ runId: completedRun.id, productId, locationId }
+		);
+		if (!selection) return;
+		// The series detail and the run comparison share the main area, so
+		// the click deliberately leaves the comparison to show the exception.
+		comparisonOpen = selection.comparisonOpen;
+		plannerDirty = false;
+		selectedRunId = selection.runId;
+		selectedSeries = { productId: selection.productId, locationId: selection.locationId };
 	}
 
 	function handleSelectRun(runId: string) {
@@ -569,7 +594,7 @@
 		const run = displayRun;
 		if (!run || plannerDirty || plannerSaving || exporting) return;
 		const workspacePath = workspace?.path;
-		exporting = true;
+		exportKind = 'csv';
 		actionError = null;
 		exportNotice = null;
 		try {
@@ -581,7 +606,29 @@
 		} catch (error) {
 			actionError = describeError(error);
 		} finally {
-			exporting = false;
+			exportKind = null;
+			void queryClient.invalidateQueries({ queryKey: ['jobs'] });
+		}
+	}
+
+	/** The XLSX handoff reuses the same run, dirty guard, and export state. */
+	async function handleExportXlsx() {
+		const run = displayRun;
+		if (!run || plannerDirty || plannerSaving || exporting) return;
+		const workspacePath = workspace?.path;
+		exportKind = 'xlsx';
+		actionError = null;
+		exportNotice = null;
+		try {
+			const path = await pickXlsxExport(run.id);
+			if (!path) return;
+			if (workspace?.path !== workspacePath) throw new Error('The workspace changed. Select the run and export again.');
+			const result = await exportPlanXlsx(run.id, path);
+			exportNotice = t(locale, 'export.xlsxSaved', { rows: result.row_count, path: result.path });
+		} catch (error) {
+			actionError = describeError(error);
+		} finally {
+			exportKind = null;
 			void queryClient.invalidateQueries({ queryKey: ['jobs'] });
 		}
 	}
@@ -590,45 +637,42 @@
 {#if !desktop}
 	<BrowserFallback />
 {:else}
+	<a class="skip-link" href="#main">Skip to main content</a>
 	<div class="app">
 		<header class="topbar">
 			<div class="brand">
-				<span class="brand-name">OpenDemand</span>
-				<span class="brand-tag">SKU demand workspace</span>
+				<h1 class="brand-name" translate="no">OpenDemand</h1>
+				<span class="brand-tag">Explore sales and forecasts</span>
 			</div>
 			{#if workspace}
 				<div class="topbar-meta">
-					<button class="btn btn-secondary" onclick={handleCloseWorkspace} disabled={jobBusy}>
+					<button class="btn btn-secondary" onclick={handleCloseWorkspace} disabled={jobBusy || localeSaving}>
 						Home
 					</button>
-					<span class="path mono" title={workspace.path}>{workspace.path}</span>
-					<StatusChip label="schema {workspace.schema_version}" tone="neutral" />
 				</div>
 			{/if}
 		</header>
 
-		<div class="layout">
-			<aside class="sidebar" aria-label="Workspace controls">
+		{#if workspace}
+			<div class="workspace-context">
 				<WorkspacePanel
 					{workspace}
-					revisionId={latestRevisionId}
-					jobBusy={jobBusy || plannerDirty || plannerSaving || exporting}
-					imputation={imputationMethod}
+					{appVersion}
+					jobBusy={jobBusy || localeSaving || plannerDirty || plannerSaving || exporting}
+					{locale}
+					localeBusy={localeSaving}
 					onSwitch={handleSwitchWorkspace}
 					onImport={handleImport}
+					onGuidedImport={handleGuidedImport}
 					onForecast={handleForecast}
-					onImputationChange={(value) => (imputationMethod = value)}
-					onWeekly={handleWeeklyUpdate}
+					onLocaleChange={handleLocaleChange}
 				/>
-				<JobMonitor
-					job={activeJob}
-					{notice}
-					{recentJobs}
-					onCancel={handleCancel}
-					onDismiss={handleDismissJob}
-					onRefresh={() => void jobsQuery.refetch()}
-				/>
-				{#if workspace && revisionId !== null}
+			</div>
+		{/if}
+
+		<div class="layout" class:single-column={!workspace || revisionId === null}>
+			{#if workspace && revisionId !== null}
+				<aside class="sidebar" aria-label="Series">
 					<SeriesList
 						series={seriesQuery.data ?? []}
 						loading={seriesQuery.isPending && seriesQuery.isFetching}
@@ -646,35 +690,46 @@
 						onNext={() => (offset = offset + PAGE_SIZE)}
 						onRetry={() => void seriesQuery.refetch()}
 					/>
-				{/if}
-			</aside>
+				</aside>
+			{/if}
 
-			<main id="main" class="content">
+			<main id="main" class="content" tabindex="-1">
+				{#if workspace && (activeJob || notice || recentJobs.length > 0)}
+					<JobMonitor
+						job={activeJob}
+						{notice}
+						{recentJobs}
+						onCancel={handleCancel}
+						onDismiss={handleDismissJob}
+						onRefresh={() => void jobsQuery.refetch()}
+					/>
+				{/if}
 				{#if workspace && latestRevisionId !== null}
 					<section class="panel run-controls" aria-label="Forecast run and export">
 						<div class="run-picker">
-							<label class="field-label" for="forecast-run">Forecast run</label>
+							<label class="field-label" for="forecast-run">Forecast to explore</label>
 							<select id="forecast-run" value={displayRunId ?? ''} disabled={runsQuery.isPending || plannerDirty || plannerSaving || exporting} onchange={(event) => handleSelectRun(event.currentTarget.value)}>
-								<option value="">Latest import revision</option>
+								<option value="">Latest imported history</option>
 								{#each sortRunsNewestFirst(runs) as run (run.id)}
-									<option value={run.id}>{formatTimestamp(run.created_at)} | Revision {run.revision_id} | {shortId(run.id, 18)} | {humanizeToken(run.status)}</option>
+									<option value={run.id}>{formatTimestamp(run.created_at)} | Import #{run.revision_id} | {humanizeToken(run.status)}</option>
 								{/each}
 							</select>
 							{#if runsQuery.isPending && runsQuery.isFetching}
-								<p class="muted" role="status">Loading forecast runs...</p>
+								<p class="muted" role="status">Loading forecast runs…</p>
 							{:else if runsQuery.isError}
 								<div class="banner banner-error" role="alert">
 									<p>Could not load runs: {runsQuery.error.message}</p>
 									<button class="btn btn-secondary" onclick={() => void runsQuery.refetch()}>Retry</button>
 								</div>
 							{:else if runs.length === 0}
-								<p class="muted">Generate a forecast to start planning.</p>
+								<p class="muted">Generate a forecast to explore this sales history.</p>
 							{/if}
 						</div>
 						<div class="export-controls">
-							<button class="btn btn-secondary" disabled={!displayRun || displayRun.status !== 'completed' || plannerDirty || plannerSaving || exporting} onclick={handleExport}>{exporting ? 'Exporting CSV...' : 'Export CSV'}</button>
+							<button class="btn btn-secondary" disabled={!displayRun || displayRun.status !== 'completed' || plannerDirty || plannerSaving || exporting} onclick={handleExport}>{exporting && exportKind === 'csv' ? 'Exporting CSV…' : 'Export CSV'}</button>
+							<button class="btn btn-secondary" disabled={!displayRun || displayRun.status !== 'completed' || plannerDirty || plannerSaving || exporting} onclick={handleExportXlsx}>{exporting && exportKind === 'xlsx' ? t(locale, 'export.xlsxBusy') : t(locale, 'export.xlsx')}</button>
 							<button class="btn btn-secondary" disabled={jobBusy || plannerDirty || plannerSaving || exporting || completedRunCount < 2} onclick={() => (comparisonOpen = true)}>Compare runs</button>
-							<p class="muted">{plannerDirty ? 'Save or discard edits before switching series, runs, or exporting.' : 'Exports every series in the selected run. The comparison pairs the latest revision with the immediately previous one.'}</p>
+							<p class="muted">{plannerDirty ? 'Save or discard edits before switching series, runs, or exporting.' : 'Exports all series in the selected forecast. Compare runs to see what changed between recent imports.'}</p>
 						</div>
 					</section>
 				{/if}
@@ -682,12 +737,26 @@
 					<p class="banner banner-success export-notice" role="status">{exportNotice}</p>
 				{/if}
 				{#if actionError}
-					<p class="banner banner-error" role="alert">
-						[{actionError.code}] {actionError.message}
-					</p>
+					<div class="banner banner-error action-error" role="alert">
+						<p>{actionError.message}</p>
+						<details class="error-details">
+							<summary>Technical details</summary>
+							<code>{actionError.code}</code>
+						</details>
+					</div>
 					{#if actionErrorHint}
 						<p class="hint muted">{actionErrorHint}</p>
 					{/if}
+				{/if}
+
+				{#if workspace && completedRun && !wizardOpen}
+					<RunOverview
+						runId={completedRun.id}
+						workspacePath={workspace.path}
+						{locale}
+						selectionBlocked={plannerDirty || plannerSaving || exporting}
+						onSelectSeries={handleSelectException}
+					/>
 				{/if}
 
 				{#if wizardOpen && workspace}
@@ -695,7 +764,7 @@
 						<ImportWizard {locale} onImport={handleWizardImport} onClose={handleWizardClose} />
 					</div>
 				{:else if comparisonOpen && workspace}
-					<WeeklyComparison onClose={handleCloseComparison} />
+					<WeeklyComparison {locale} onClose={handleCloseComparison} />
 				{:else if workspaceQuery.isPending}
 					<p class="muted" role="status">Opening workspace…</p>
 				{:else if workspaceQuery.isError && !isNoWorkspaceError(workspaceQuery.error)}
@@ -730,19 +799,12 @@
 					</div>
 				{:else if revisionId === null}
 					<div class="stack">
-						<CsvFormatCard
-							onImport={handleImport}
-							onGuidedImport={() => {
-								weeklyFlowActive = false;
-								wizardOpen = true;
-							}}
-							guidedLabel={t(locale, 'wizard.title')}
-						/>
+						<CsvFormatCard />
 					</div>
 				{:else if selectedSeries === null}
 					<section class="panel card">
-						<h2>Revision {revisionId} is ready</h2>
-						<p>Select a series on the left to inspect its history and persisted forecast.</p>
+						<h2>Imported history is ready</h2>
+						<p>Select a series on the left to explore its history and forecast.</p>
 						{#if runsQuery.isError}
 							<div class="banner banner-error" role="alert">
 								<p>Could not load runs: {runsQuery.error.message}</p>
@@ -752,13 +814,11 @@
 							</div>
 						{:else if newestRun && !displayRun}
 							<p class="banner banner-warn">
-								The most recent run ({shortId(newestRun.id)}) has status
-								“{humanizeToken(newestRun.status)}”, so no forecast is displayed.
+								The latest forecast attempt did not finish. Choose a completed forecast or generate a new one.
 							</p>
 						{:else if !newestRun}
 							<p class="muted">
-								No forecast run exists for this revision yet. Generate a Naive forecast to persist
-								the 12-week horizon.
+								No forecast exists for this imported history yet. Generate one to explore the next 12 weeks.
 							</p>
 						{/if}
 					</section>
@@ -816,6 +876,7 @@
 	}
 
 	.brand-name {
+		margin: 0;
 		font-weight: 700;
 		font-size: 1.02rem;
 		letter-spacing: -0.01em;
@@ -833,21 +894,21 @@
 		min-width: 0;
 	}
 
-	.path {
-		color: rgba(255, 255, 255, 0.82);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		max-width: 34rem;
+	.workspace-context {
+		padding: 1rem 1.5rem 0;
 	}
 
 	.layout {
 		flex: 1;
 		display: grid;
-		grid-template-columns: minmax(19rem, 21.5rem) 1fr;
-		gap: 1rem;
-		padding: 1rem;
+		grid-template-columns: minmax(15rem, 17rem) minmax(0, 1fr);
+		gap: 1.1rem;
+		padding: 1rem 1.5rem 1.5rem;
 		align-items: start;
+	}
+
+	.layout.single-column {
+		grid-template-columns: minmax(0, 1fr);
 	}
 
 	.sidebar {
@@ -901,6 +962,21 @@
 		overflow-wrap: anywhere;
 	}
 
+	.action-error p {
+		margin-bottom: 0.35rem;
+	}
+
+	.error-details {
+		font-size: 0.82rem;
+	}
+
+	.error-details code {
+		display: block;
+		margin-top: 0.25rem;
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+	}
+
 	.stack {
 		display: flex;
 		flex-direction: column;
@@ -917,11 +993,26 @@
 
 	@media (max-width: 920px) {
 		.layout {
-			grid-template-columns: 1fr;
+			grid-template-columns: minmax(0, 1fr);
 		}
 
-		.path {
-			max-width: 12rem;
+		.workspace-context {
+			padding: 0.8rem 1rem 0;
+		}
+
+		.layout {
+			padding: 0.8rem 1rem 1rem;
+		}
+	}
+
+	@media (max-width: 560px) {
+		.topbar {
+			padding: 0.65rem 0.8rem;
+		}
+
+		.brand {
+			flex-wrap: wrap;
+			gap: 0.15rem 0.55rem;
 		}
 	}
 </style>

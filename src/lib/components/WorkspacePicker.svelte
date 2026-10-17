@@ -39,6 +39,8 @@
 	let deleteEntry = $state<WorkspaceRef | null>(null);
 	let deleteStage = $state<'sure' | 'type'>('sure');
 	let deleteValue = $state('');
+	let managementPending = $state(false);
+	let controlsBusy = $derived(busy || managementPending);
 
 	function startRename(entry: WorkspaceRef) {
 		renamePath = entry.path;
@@ -51,8 +53,13 @@
 	}
 
 	async function submitRename(entry: WorkspaceRef) {
-		if (!isWorkspaceNameValid(renameValue)) return;
-		if (await onRename(entry.path, renameValue.trim())) cancelRename();
+		if (controlsBusy || !isWorkspaceNameValid(renameValue)) return;
+		managementPending = true;
+		try {
+			if (await onRename(entry.path, renameValue.trim())) cancelRename();
+		} finally {
+			managementPending = false;
+		}
 	}
 
 	function startDelete(entry: WorkspaceRef) {
@@ -67,31 +74,36 @@
 	}
 
 	async function submitDelete() {
-		if (deleteEntry === null) return;
+		if (controlsBusy || deleteEntry === null) return;
 		if (!confirmWorkspaceName(deleteValue, deleteEntry.name)) return;
-		if (await onDelete(deleteEntry.path, deleteValue)) cancelDelete();
+		managementPending = true;
+		try {
+			if (await onDelete(deleteEntry.path, deleteValue)) cancelDelete();
+		} finally {
+			managementPending = false;
+		}
 	}
 </script>
 
 <section class="panel card picker" aria-labelledby="picker-heading">
 	<div class="head">
-		<button class="btn btn-secondary" onclick={onBack}>← Home</button>
+		<button class="btn btn-secondary" onclick={onBack} disabled={controlsBusy}>← Home</button>
 		<div class="titles">
 			<h2 id="picker-heading">Forecasting workspaces</h2>
-			<p class="muted">Open a recent workspace, or start a new one in an empty folder.</p>
+			<p class="muted">Open a recent workspace, or create one in the default location.</p>
 		</div>
 	</div>
 
 	<div class="row actions">
-		<button class="btn btn-primary" onclick={onCreate} disabled={busy}>Create workspace…</button>
-		<button class="btn btn-secondary" onclick={onOpenDirectory} disabled={busy}>Open folder…</button>
+		<button class="btn btn-primary" onclick={onCreate} disabled={controlsBusy}>Create workspace</button>
+		<button class="btn btn-secondary" onclick={onOpenDirectory} disabled={controlsBusy}>Open folder…</button>
 	</div>
 
 	{#if loading}
 		<p class="muted" role="status">Loading workspaces…</p>
 	{:else if entries.length === 0}
 		<p class="muted">
-			No workspaces yet. Create one in an empty folder, or open an existing workspace folder.
+			No workspaces yet. Create one in the default location, or open an existing workspace folder.
 		</p>
 	{:else}
 		<ul class="list">
@@ -114,7 +126,7 @@
 								<input
 									type="text"
 									value={renameValue}
-									disabled={busy}
+									disabled={controlsBusy}
 									oninput={(event) => (renameValue = event.currentTarget.value)}
 									onkeydown={(event) => {
 										if (event.key === 'Enter') submitRename(entry);
@@ -124,12 +136,12 @@
 							</label>
 							<button
 								class="btn btn-primary"
-								disabled={busy || !isWorkspaceNameValid(renameValue)}
+								disabled={controlsBusy || !isWorkspaceNameValid(renameValue)}
 								onclick={() => submitRename(entry)}
 							>
 								Rename
 							</button>
-							<button class="btn btn-secondary" disabled={busy} onclick={cancelRename}>Cancel</button>
+							<button class="btn btn-secondary" disabled={controlsBusy} onclick={cancelRename}>Cancel</button>
 						</div>
 					{:else}
 						<div class="row entry-actions">
@@ -140,21 +152,21 @@
 							{/if}
 							<button
 								class="btn btn-primary"
-								disabled={busy || !isWorkspaceOpenable(entry)}
+								disabled={controlsBusy || !isWorkspaceOpenable(entry)}
 								onclick={() => onOpenPath(entry.path)}
 							>
 								Open
 							</button>
 							{#if canManageWorkspace(entry)}
-								<button class="btn btn-secondary" disabled={busy} onclick={() => startRename(entry)}>
+								<button class="btn btn-secondary" disabled={controlsBusy} onclick={() => startRename(entry)}>
 									Rename…
 								</button>
-								<button class="btn btn-secondary" disabled={busy} onclick={() => startDelete(entry)}>
+								<button class="btn btn-secondary" disabled={controlsBusy} onclick={() => startDelete(entry)}>
 									Delete…
 								</button>
 							{/if}
 							{#if isWorkspaceRemovable(entry)}
-								<button class="btn btn-secondary" disabled={busy} onclick={() => onForget(entry.path)}>
+								<button class="btn btn-secondary" disabled={controlsBusy} onclick={() => onForget(entry.path)}>
 									Remove
 								</button>
 							{/if}
@@ -174,10 +186,10 @@
 			</p>
 			{#if deleteStage === 'sure'}
 				<div class="row">
-					<button class="btn btn-danger" disabled={busy} onclick={() => (deleteStage = 'type')}>
+					<button class="btn btn-danger" disabled={controlsBusy} onclick={() => (deleteStage = 'type')}>
 						Yes, delete…
 					</button>
-					<button class="btn btn-secondary" disabled={busy} onclick={cancelDelete}>Cancel</button>
+					<button class="btn btn-secondary" disabled={controlsBusy} onclick={cancelDelete}>Cancel</button>
 				</div>
 			{:else}
 				<label class="confirm-field">
@@ -185,7 +197,7 @@
 					<input
 						type="text"
 						value={deleteValue}
-						disabled={busy}
+						disabled={controlsBusy}
 						oninput={(event) => (deleteValue = event.currentTarget.value)}
 						onkeydown={(event) => {
 							if (event.key === 'Enter') submitDelete();
@@ -196,12 +208,12 @@
 				<div class="row">
 					<button
 						class="btn btn-danger"
-						disabled={busy || !confirmWorkspaceName(deleteValue, deleteEntry.name)}
+						disabled={controlsBusy || !confirmWorkspaceName(deleteValue, deleteEntry.name)}
 						onclick={submitDelete}
 					>
 						Delete permanently
 					</button>
-					<button class="btn btn-secondary" disabled={busy} onclick={cancelDelete}>Cancel</button>
+					<button class="btn btn-secondary" disabled={controlsBusy} onclick={cancelDelete}>Cancel</button>
 				</div>
 			{/if}
 		</div>

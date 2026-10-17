@@ -139,14 +139,16 @@ Rules: import revisions, runs, and overrides are never auto-deleted. Backup file
 
 ## 10. Export Contract
 
-Milestone 2 implements CSV (RFC 4180, UTF-8 with BOM, CRLF records, `.` decimal separator). XLSX remains a later-phase capability with the same planned columns:
+CSV uses RFC 4180, UTF-8 with BOM, CRLF records, and a `.` decimal separator. XLSX uses the same columns in its `Plan` sheet (ADR-0025):
 
 `run_id`, `product_sku`, `product_name`, `location_code`, `week_start`, `horizon`, `baseline`, `override`, `effective`, `value_source` (`model` | `override` | `missing`), `series_status`, `model_id`.
 
 - One row per series × week for all series in the run scope (eligible and ineligible), so coverage is visible.
 - Missing forecasts: `effective` is blank and `series_status` carries the reason; never zero-filled.
-- Each successful CSV export retains a workspace copy under `exports/` and an `export_record` with row count and coverage metadata. Export reads one saved run snapshot; existing files are never overwritten.
+- Each successful CSV or XLSX export retains a workspace copy under `exports/` and an `export_record` with row count and coverage metadata. Export reads one saved run snapshot; existing files are never overwritten. The existing format constraint already permits XLSX; no migration is needed.
 - Coverage = share of series with outcome `ok` or `fallback_naive`; reported in the XLSX Summary sheet with outcome counts and champion distribution.
+- XLSX dates and quantities are typed cells. Missing values remain blank, including after the latest override revision clears a manual-only value. Product identifiers are literal text, never formulas. Summary champion counts use `series_model_evaluation.is_champion`, not the selected production fallback model.
+- The run overview uses the same derived coverage aggregate, includes all five outcome counts, and pages exceptions separately from its full-run totals. It is not a portfolio accuracy score and adds no stored state.
 
 ## 11. Weekly Planning Comparison (derived)
 
@@ -158,6 +160,7 @@ The weekly workflow (ADR-0022) adds no entities. Everything is derived at read t
 - Forecast deltas compare immutable baselines of the two runs: a common week changes only when values differ; a week inside the other run's horizon without a value counts as an availability change (no numeric delta); a week outside the other horizon is a non-comparable edge and counts as no change.
 - The current run's effective plan (latest override ?? baseline) is displayed separately; overrides are never carried into a delta.
 - The wizard's configuration suggestion is derived by exact string equality between a saved configuration's descriptor JSON and the latest preprocessed revision's frozen `descriptor_json`; zero or multiple matches suggest nothing.
+- The changed-series list can filter demand changes, forecast changes, or series presence changes. Filters combine with search before pagination and keep the original SKU/location ordering; no comparison policy or persisted state changes.
 
 ## Related Documents
 

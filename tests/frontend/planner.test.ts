@@ -4,11 +4,13 @@ import {
 	authoritativeInput,
 	buildClearEdit,
 	buildOverrideEdit,
+	canChangeSelection,
 	classifySaveFailure,
 	createDraftState,
 	dropDraft,
 	isDraftDirty,
 	isPlannerDirty,
+	selectRunException,
 	planningIdentity,
 	rebaseDraft,
 	rebaseDrafts,
@@ -195,4 +197,100 @@ test('rebaseDraft updates one surviving draft after an explicit write', () => {
 
 	assert.equal(rebaseDraft(rebased, '2026-03-02', 2), rebased, 'same revision is a no-op');
 	assert.equal(rebaseDraft(rebased, '2026-04-06', 5), rebased, 'a week without a draft is a no-op');
+});
+
+test('selection changes are refused while a draft, save, or export is in flight', () => {
+	assert.equal(canChangeSelection({ dirty: false, saving: false, exporting: false }), true);
+	assert.equal(canChangeSelection({ dirty: true, saving: false, exporting: false }), false);
+	assert.equal(canChangeSelection({ dirty: false, saving: true, exporting: false }), false);
+	assert.equal(canChangeSelection({ dirty: false, saving: false, exporting: true }), false);
+	assert.equal(canChangeSelection({ dirty: true, saving: true, exporting: true }), false);
+});
+
+test('selecting a run exception opens its series and closes the competing comparison panel', () => {
+	const next = selectRunException(
+		{
+			dirty: false,
+			saving: false,
+			exporting: false,
+			selectedRunId: 'run-current',
+			selectedProductId: 'product-a',
+			selectedLocationId: 'location-a',
+			comparisonOpen: true
+		},
+		{ runId: 'run-current', productId: 'product-a', locationId: 'location-a' }
+	);
+
+	assert.deepEqual(
+		next,
+		{
+			runId: 'run-current',
+			productId: 'product-a',
+			locationId: 'location-a',
+			comparisonOpen: false
+		},
+		'a repeat click on the selected series must still leave comparison mode and reveal its detail'
+	);
+});
+
+test('selecting an exception switches the selected run and series together', () => {
+	const next = selectRunException(
+		{
+			dirty: false,
+			saving: false,
+			exporting: false,
+			selectedRunId: 'run-previous',
+			selectedProductId: 'product-a',
+			selectedLocationId: 'location-a',
+			comparisonOpen: false
+		},
+		{ runId: 'run-current', productId: 'product-b', locationId: 'location-b' }
+	);
+
+	assert.deepEqual(next, {
+		runId: 'run-current',
+		productId: 'product-b',
+		locationId: 'location-b',
+		comparisonOpen: false
+	});
+});
+
+test('exception navigation preserves the current selection while planning state blocks it', () => {
+	const current = {
+		selectedRunId: 'run-previous',
+		selectedProductId: 'product-a',
+		selectedLocationId: 'location-a',
+		comparisonOpen: true
+	};
+	const target = { runId: 'run-current', productId: 'product-b', locationId: 'location-b' };
+
+	for (const blocked of [
+		{ dirty: true, saving: false, exporting: false },
+		{ dirty: false, saving: true, exporting: false },
+		{ dirty: false, saving: false, exporting: true }
+	]) {
+		assert.equal(
+			selectRunException({ ...blocked, ...current }, target),
+			null,
+			'exception selection must not discard an unsaved draft or interrupt an operation'
+		);
+	}
+});
+
+test('exception selection is a no-op when the same series and run are already open', () => {
+	assert.equal(
+		selectRunException(
+			{
+				dirty: false,
+				saving: false,
+				exporting: false,
+				selectedRunId: 'run-current',
+				selectedProductId: 'product-a',
+				selectedLocationId: 'location-a',
+				comparisonOpen: false
+			},
+			{ runId: 'run-current', productId: 'product-a', locationId: 'location-a' }
+		),
+		null
+	);
 });

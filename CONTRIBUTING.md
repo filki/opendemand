@@ -13,10 +13,12 @@ Early testers are welcome; starter tasks are labeled `good first issue` and `hel
 
 The published installers are **not code-signed**. Windows SmartScreen can warn about an unknown publisher, and macOS Gatekeeper blocks the first launch until you allow it (right-click the app, then Open, or use System Settings → Privacy & Security). Those warnings are expected in this preview — they are not a sign of a corrupt download. Get installers from the [Releases](https://github.com/filki/opendemand/releases) page and report findings with the bug report template.
 
+A fast way to see the whole workflow is the two-file sample in [`examples/quickstart/`](examples/quickstart/): the [First forecast](README.md#first-forecast) walkthrough takes you from a guided import through a first forecast, a weekly comparison, one override, and a CSV export without real data.
+
 ## Project rules every change must respect
 
 - **Preserve the approved stack** (accepted ADRs in `docs/architecture/adr/`): Tauri v2 + static SvelteKit frontend, Rust as the sole SQLite owner, the Python sidecar as a separate per-job process that never opens the database.
-- **Stay within the current milestone.** The scope in `AGENTS.md` covers the weekly planning workflow, run comparison, run-scoped overrides, and full-run CSV export. MCP, XLSX export, scheduled imports, periodic backups and restore, and the true monthly forecasting mode remain deferred until separately approved.
+- **Stay within the current milestone.** The scope in `AGENTS.md` covers raw-source import, on-demand forecasts, run comparison, run-scoped overrides, and full-run CSV/XLSX export. Weekly import-and-forecast orchestration belongs to Pipelines (ADR-0026). MCP, scheduled imports, periodic backups and restore, and the true monthly forecasting mode remain deferred until separately approved.
 - **Schema freeze.** `docs/architecture/schema/001_init.sql` is frozen; its SHA-256 is recorded in `001_init.sha256`. Never edit it. Schema changes arrive as new numbered migrations with a verified backup.
 - **Change decisions with new ADRs.** Accepted ADRs are historical records; write a new ADR that supersedes the old one instead of editing it.
 - **No secrets or local absolute paths** in code, docs, or configuration.

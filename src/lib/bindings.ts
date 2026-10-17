@@ -9,6 +9,7 @@ export const commands = {
 	workspaceOpen: (path: string) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_open", { path })),
 	workspaceClose: () => typedError<null, AppError>(__TAURI_INVOKE("workspace_close")),
 	workspaceInfo: () => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_info")),
+	workspaceSetLocale: (locale: string) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_set_locale", { locale })),
 	/**
 	 *  The home screen's workspace list: recent workspaces plus the default
 	 *  application-data workspace when it exists. The exists flag reflects the
@@ -77,7 +78,7 @@ export const commands = {
 	importConfigDelete: (id: number) => typedError<null, AppError>(__TAURI_INVOKE("import_config_delete", { id })),
 	importConfigSuggestion: () => typedError<number | null, AppError>(__TAURI_INVOKE("import_config_suggestion")),
 	weeklyComparisonContext: () => typedError<WeeklyComparisonContext, AppError>(__TAURI_INVOKE("weekly_comparison_context")),
-	weeklyComparisonSeriesList: (currentRunId: string, previousRunId: string, search: string, offset: number, limit: number) => typedError<SeriesChangeSummary[], AppError>(__TAURI_INVOKE("weekly_comparison_series_list", { currentRunId, previousRunId, search, offset, limit })),
+	weeklyComparisonSeriesList: (currentRunId: string, previousRunId: string, search: string, filter: WeeklyChangeFilter, offset: number, limit: number) => typedError<SeriesChangeSummary[], AppError>(__TAURI_INVOKE("weekly_comparison_series_list", { currentRunId, previousRunId, search, filter, offset, limit })),
 	weeklyComparisonSeriesDetail: (currentRunId: string, previousRunId: string, productId: string, locationId: string) => typedError<SeriesComparisonDetail, AppError>(__TAURI_INVOKE("weekly_comparison_series_detail", { currentRunId, previousRunId, productId, locationId })),
 	forecastStart: (revisionId: number, imputation: string | null) => typedError<JobInfo, AppError>(__TAURI_INVOKE("forecast_start", { revisionId, imputation })),
 	jobStatus: (jobId: string) => typedError<JobInfo, AppError>(__TAURI_INVOKE("job_status", { jobId })),
@@ -87,8 +88,10 @@ export const commands = {
 	seriesDetail: (revisionId: number, productId: string, locationId: string, runId: string | null) => typedError<SeriesDetail, AppError>(__TAURI_INVOKE("series_detail", { revisionId, productId, locationId, runId })),
 	seriesModels: (runId: string, productId: string, locationId: string) => typedError<SeriesModelComparison[], AppError>(__TAURI_INVOKE("series_models", { runId, productId, locationId })),
 	runsList: (revisionId: number | null) => typedError<RunSummary[], AppError>(__TAURI_INVOKE("runs_list", { revisionId })),
+	runOverview: (runId: string, offset: number, limit: number) => typedError<RunOverview, AppError>(__TAURI_INVOKE("run_overview", { runId, offset, limit })),
 	overrideAppend: (edit: OverrideEdit) => typedError<OverrideRevision, AppError>(__TAURI_INVOKE("override_append", { edit })),
 	exportCsv: (runId: string, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_csv", { runId, path })),
+	exportXlsx: (runId: string, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_xlsx", { runId, path })),
 };
 
 /** Events */
@@ -276,6 +279,25 @@ export type PreviewFinding = {
 	row_ref: string | null,
 };
 
+export type RunException = {
+	product_id: string,
+	location_id: string,
+	series_key: string,
+	location_code: string,
+	outcome: string,
+	reason: string | null,
+};
+
+/**  Persisted model coverage, not accuracy or manual-plan completeness. */
+export type RunOverview = {
+	series_count: number,
+	covered_series: number,
+	coverage: number | null,
+	outcomes: { [key in string]: number },
+	exception_count: number,
+	exceptions: RunException[],
+};
+
 export type RunSummary = {
 	id: string,
 	revision_id: number,
@@ -370,6 +392,8 @@ export type SeriesSummary = {
 	h_length: number,
 	qualification_status: string,
 };
+
+export type WeeklyChangeFilter = "all" | "demand" | "forecast" | "presence";
 
 /**
  *  The default weekly comparison pair (ADR-0022): the newest completed run of
