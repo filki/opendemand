@@ -39,6 +39,30 @@ async fn raw_pool(database: &Path) -> sqlx::SqlitePool {
 /// to 002 objects, forget their migration records, and reset the settings
 /// version.
 async fn downgrade_to_version_one(pool: &sqlx::SqlitePool) {
+    sqlx::query("DROP TABLE inventory_source_file")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE inventory_policy")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE inventory_receipt")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE inventory_stock")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE inventory_snapshot")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE export_record DROP COLUMN inventory_snapshot_id")
+        .execute(pool)
+        .await
+        .unwrap();
     sqlx::query("DROP TABLE actuals_confirmation")
         .execute(pool)
         .await
@@ -103,7 +127,7 @@ async fn downgrade_to_version_one(pool: &sqlx::SqlitePool) {
         .execute(pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (2, 3, 4, 5, 6, 7)")
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8)")
         .execute(pool)
         .await
         .unwrap();
@@ -128,7 +152,7 @@ async fn opening_a_version_one_workspace_backs_up_then_migrates() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("workspace");
     let workspace = Workspace::create(root.clone()).await.unwrap();
-    assert_eq!(workspace.info().await.unwrap().schema_version, "7");
+    assert_eq!(workspace.info().await.unwrap().schema_version, "8");
     workspace
         .import_csv(&fixture("demo.csv"), &AtomicBool::new(false))
         .await
@@ -138,7 +162,7 @@ async fn opening_a_version_one_workspace_backs_up_then_migrates() {
 
     let reopened = Workspace::open(root.clone()).await.unwrap();
     let info = reopened.info().await.unwrap();
-    assert_eq!(info.schema_version, "7");
+    assert_eq!(info.schema_version, "8");
     // The upgrade preserved existing data.
     assert_eq!(info.latest_revision_id, Some(1));
     reopened.pool.close().await;
@@ -163,7 +187,7 @@ async fn opening_a_version_one_workspace_backs_up_then_migrates() {
     .unwrap();
     assert_eq!(manifest["scope"], "database");
     assert_eq!(manifest["schema_version_before"], "1");
-    assert_eq!(manifest["schema_version_after"], "7");
+    assert_eq!(manifest["schema_version_after"], "8");
     assert_eq!(manifest["app_version"], env!("CARGO_PKG_VERSION"));
     let bytes = std::fs::read(root.join("backups").join(&backup_file)).unwrap();
     let digest = {
@@ -292,7 +316,7 @@ async fn a_newer_schema_version_is_refused() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("workspace");
     let workspace = Workspace::create(root.clone()).await.unwrap();
-    sqlx::query("UPDATE workspace_settings SET schema_version = '8'")
+    sqlx::query("UPDATE workspace_settings SET schema_version = '9'")
         .execute(&workspace.pool)
         .await
         .unwrap();

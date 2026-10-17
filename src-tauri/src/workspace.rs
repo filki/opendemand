@@ -16,10 +16,12 @@ use crate::{
         ActualsConfirmation, ActualsConfirmationEdit, DemandChangePoint, ExceptionInbox,
         ExportResult, ForecastChangePoint, ForecastInput, ForecastPoint, FvaExclusions, FvaPoint,
         FvaReport, FvaSeriesMeasures, HistoryPoint, ImportResult, InboxItem, InboxPolicy,
-        InboxPolicyEdit, InputSeries, ModelOriginRow, ObservationRecord, OverrideEdit,
-        OverrideRevision, PlanPublication, PlanningPoint, PublicationEdit, PublicationFva,
-        PublicationFvaPoints, PublicationSeriesDetail, ReviewActionEdit, RunException, RunOverview,
-        RunSummary, SeriesChangeSummary, SeriesComparisonDetail, SeriesDetail, SeriesFvaRow,
+        InboxPolicyEdit, InputSeries, InventoryFinding, InventoryImportEdit, InventoryPreview,
+        InventorySnapshot, ModelOriginRow, ObservationRecord, OverrideEdit, OverrideRevision,
+        PlanPublication, PlanningPoint, PublicationEdit, PublicationFva, PublicationFvaPoints,
+        PublicationSeriesDetail, ReplenishmentEdit, ReplenishmentPlan, ReplenishmentRow,
+        ReplenishmentWeek, ReviewActionEdit, RunException, RunOverview, RunSummary,
+        SeriesChangeSummary, SeriesComparisonDetail, SeriesDetail, SeriesFvaRow,
         SeriesModelComparison, SeriesNote, SeriesNoteEdit, SeriesReviewInfo, SeriesSummary,
         WeeklyChangeFilter, WeeklyComparisonContext, WorkspaceInfo,
     },
@@ -51,8 +53,8 @@ use uuid::Uuid;
 /// SQLx is what `open` verifies against.
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../docs/architecture/schema");
 
-const SCHEMA_VERSION: i64 = 7;
-const SCHEMA_VERSION_TEXT: &str = "7";
+const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION_TEXT: &str = "8";
 const CONTRACT_VERSION: &str = "canonical/1";
 /// Contract version of revisions produced by the preprocessing layer.
 const PREPROCESS_CONTRACT: &str = "preprocess/1";
@@ -128,6 +130,22 @@ enum PlanSelection {
 /// Policy label recorded with every publication; bump it when the pinned
 /// semantics change.
 const PUBLICATION_CONTEXT: &str = "publication/1";
+/// Contract label of the local inventory batch (ADR-0031).
+const INVENTORY_CONTEXT: &str = "inventory/1";
+/// Calculation label recorded with replenishment exports.
+const REPLENISHMENT_CONTEXT: &str = "replenishment/1";
+/// Exact inventory/1 headers; the contract pins them like canonical/1 does.
+const STOCK_HEADERS: [&str; 3] = ["sku", "stock", "as_of"];
+const RECEIPT_HEADERS: [&str; 4] = ["receipt_id", "sku", "quantity", "available_week"];
+const POLICY_HEADERS: [&str; 7] = [
+    "sku",
+    "unit",
+    "lead_weeks",
+    "review_weeks",
+    "safety_stock",
+    "moq",
+    "pack_size",
+];
 /// Upper bound on the number of dense weekly points materialised for a single
 /// series, protecting memory against a corrupted or absurd date span.
 const MAX_HISTORY_WEEKS: i64 = 5_200;
@@ -2657,6 +2675,883 @@ impl Workspace {
         })
     }
 
+    /// Read-only inventory preview (ADR-0031): parse and validate the batch,
+    /// including unknown SKUs against the latest import; writes nothing.
+    pub async fn inventory_preview(
+        &self,
+        edit: InventoryImportEdit,
+    ) -> AppResult<InventoryPreview> {
+        let mut parsed = read_inventory_batch(&edit)?;
+        let (_profile_id, _location, known) = inventory_known_skus(&self.pool).await?;
+        let mut flagged: HashSet<String> = HashSet::new();
+        let skus: BTreeSet<String> = parsed
+            .stock
+            .keys()
+            .chain(parsed.policy.keys())
+            .cloned()
+            .collect();
+        for sku in &skus {
+            if !known.contains_key(sku) && flagged.insert(sku.clone()) {
+                parsed.block(
+                    "inventory_unknown_sku",
+                    format!("SKU '{sku}' has no series in the latest import; inventory never creates products."),
+                    None,
+                );
+            }
+        }
+        Ok(inventory_preview_from(&parsed))
+    }
+
+    /// Import one immutable inventory batch (ADR-0031). Identical content under
+    /// the same contract is a no-op; raw files are retained content-addressed
+    /// before any row commits.
+    pub async fn inventory_import(
+        &self,
+        edit: InventoryImportEdit,
+    ) -> AppResult<InventorySnapshot> {
+        let mut parsed = read_inventory_batch(&edit)?;
+        let (profile_id, location, known) = inventory_known_skus(&self.pool).await?;
+        let mut flagged: HashSet<String> = HashSet::new();
+        let skus: BTreeSet<String> = parsed
+            .stock
+            .keys()
+            .chain(parsed.policy.keys())
+            .cloned()
+            .collect();
+        for sku in &skus {
+            if !known.contains_key(sku) && flagged.insert(sku.clone()) {
+                parsed.block(
+                    "inventory_unknown_sku",
+                    format!("SKU '{sku}' has no series in the latest import; inventory never creates products."),
+                    None,
+                );
+            }
+        }
+        if parsed.has_blocking() {
+            return Err(err(
+                "inventory_invalid",
+                "The inventory batch has blocking findings; preview it and fix them first.",
+            ));
+        }
+        let as_of_week = parsed.as_of_week.clone().ok_or_else(|| {
+            err(
+                "inventory_invalid_as_of",
+                "The stock table has no as-of Monday.",
+            )
+        })?;
+        // Content hash over role-tagged file hashes: identical content under
+        // the same contract resolves to the existing snapshot.
+        let mut sources: Vec<(&'static str, PathBuf, String, i64)> = Vec::new();
+        let mut push_source = |role: &'static str, path: &str| -> AppResult<()> {
+            let path = PathBuf::from(path);
+            let bytes = std::fs::read(&path)?;
+            let size = i64::try_from(bytes.len())
+                .map_err(|_| err("inventory_unreadable", "The inventory file is too large."))?;
+            sources.push((role, path, hex(&Sha256::digest(&bytes)), size));
+            Ok(())
+        };
+        match (
+            edit.workbook_path.as_deref(),
+            edit.stock_path.as_deref(),
+            edit.receipts_path.as_deref(),
+            edit.policy_path.as_deref(),
+        ) {
+            (Some(workbook), _, _, _) => push_source("workbook", workbook)?,
+            (None, Some(stock), receipts, Some(policy)) => {
+                push_source("stock", stock)?;
+                if let Some(receipts) = receipts {
+                    push_source("receipts", receipts)?;
+                }
+                push_source("policy", policy)?;
+            }
+            _ => {
+                return Err(err(
+                    "inventory_files",
+                    "Choose one workbook or a stock file, a policy file, and optionally a receipts file.",
+                ));
+            }
+        }
+        let mut content = String::new();
+        for (role, _, sha, _) in &sources {
+            content.push_str(role);
+            content.push(':');
+            content.push_str(sha);
+            content.push('\n');
+        }
+        let content_hash = hex(&Sha256::digest(
+            format!("{INVENTORY_CONTEXT}\n{as_of_week}\n{content}").as_bytes(),
+        ));
+        let existing: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM inventory_snapshot WHERE profile_id = ? AND content_hash = ? AND contract_version = ?",
+        )
+        .bind(profile_id)
+        .bind(content_hash.as_str())
+        .bind(INVENTORY_CONTEXT)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some(snapshot_id) = existing {
+            return self.inventory_snapshot_result(snapshot_id, true).await;
+        }
+        // Retain the raw files first (content-addressed), then commit rows.
+        let relative_dir = format!("sources/inventory/{content_hash}");
+        let directory = self.path.join(&relative_dir);
+        std::fs::create_dir_all(&directory)?;
+        let mut retained: Vec<(&'static str, String, String, i64)> = Vec::new();
+        for (role, path, sha, size) in &sources {
+            let extension = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|value| value.to_ascii_lowercase())
+                .unwrap_or_else(|| "dat".to_string());
+            let relative = format!("{relative_dir}/{role}.{extension}");
+            let target = self.path.join(&relative);
+            if !target.exists() {
+                let bytes = std::fs::read(path)?;
+                let mut temporary = tempfile::Builder::new()
+                    .prefix(".opendemand-inventory-")
+                    .tempfile_in(&directory)?;
+                temporary.write_all(&bytes)?;
+                temporary.as_file().sync_all()?;
+                temporary
+                    .persist_noclobber(&target)
+                    .map_err(|error| AppError::from(error.error))?;
+            }
+            retained.push((role, relative, sha.clone(), *size));
+        }
+        fsync_dir(&directory);
+        fsync_dir(&self.path.join("sources"));
+        let _writer = self.writer.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let imported_at = now_iso();
+        let snapshot_id = sqlx::query(
+            "INSERT INTO inventory_snapshot
+             (profile_id, location_id, as_of_week, contract_version, content_hash, unit_confirmed, receipts_empty_confirmed, imported_at)
+             VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+        )
+        .bind(profile_id)
+        .bind(location.as_slice())
+        .bind(as_of_week.as_str())
+        .bind(INVENTORY_CONTEXT)
+        .bind(content_hash.as_str())
+        .bind(i64::from(edit.receipts_empty_confirmed))
+        .bind(imported_at.as_str())
+        .execute(&mut *transaction)
+        .await?
+        .last_insert_rowid();
+        for (sku, quantity) in &parsed.stock {
+            let product_id = known
+                .get(sku)
+                .ok_or_else(|| err("inventory_unknown_sku", format!("SKU '{sku}' is unknown.")))?;
+            sqlx::query(
+                "INSERT INTO inventory_stock (snapshot_id, product_id, quantity) VALUES (?, ?, ?)",
+            )
+            .bind(snapshot_id)
+            .bind(product_id.as_bytes().as_slice())
+            .bind(quantity)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        for receipt in &parsed.receipts {
+            let product_id = known.get(&receipt.sku).ok_or_else(|| {
+                err(
+                    "inventory_unknown_sku",
+                    format!("SKU '{}' is unknown.", receipt.sku),
+                )
+            })?;
+            sqlx::query(
+                "INSERT INTO inventory_receipt (snapshot_id, receipt_key, product_id, quantity, available_week, state)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(snapshot_id)
+            .bind(receipt.key.as_str())
+            .bind(product_id.as_bytes().as_slice())
+            .bind(receipt.quantity)
+            .bind(receipt.available_week.as_str())
+            .bind(receipt.state)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        for (sku, policy) in &parsed.policy {
+            let product_id = known
+                .get(sku)
+                .ok_or_else(|| err("inventory_unknown_sku", format!("SKU '{sku}' is unknown.")))?;
+            sqlx::query(
+                "INSERT INTO inventory_policy (snapshot_id, product_id, unit, lead_weeks, review_weeks, safety_stock, moq, pack_size)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(snapshot_id)
+            .bind(product_id.as_bytes().as_slice())
+            .bind(policy.unit.as_str())
+            .bind(policy.lead_weeks)
+            .bind(policy.review_weeks)
+            .bind(policy.safety_stock)
+            .bind(policy.moq)
+            .bind(policy.pack_size)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        for (role, relative, sha, size) in &retained {
+            sqlx::query(
+                "INSERT INTO inventory_source_file (snapshot_id, role, relative_path, sha256, byte_size)
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(snapshot_id)
+            .bind(*role)
+            .bind(relative.as_str())
+            .bind(sha.as_str())
+            .bind(*size)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        self.inventory_snapshot_result(snapshot_id, false).await
+    }
+
+    async fn inventory_snapshot_result(
+        &self,
+        snapshot_id: i64,
+        is_duplicate: bool,
+    ) -> AppResult<InventorySnapshot> {
+        let row = sqlx::query(
+            "SELECT snap.as_of_week AS as_of_week, snap.imported_at AS imported_at,
+                    (SELECT COUNT(*) FROM inventory_stock s WHERE s.snapshot_id = snap.id) AS sku_count,
+                    (SELECT COUNT(*) FROM inventory_receipt r WHERE r.snapshot_id = snap.id) AS receipt_count,
+                    (SELECT COUNT(*) FROM inventory_receipt r WHERE r.snapshot_id = snap.id AND r.state = 'overdue') AS overdue_receipts
+             FROM inventory_snapshot snap WHERE snap.id = ?",
+        )
+        .bind(snapshot_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(InventorySnapshot {
+            id: i32::try_from(snapshot_id)
+                .map_err(|_| err("contract_violation", "The snapshot id is unsupported."))?,
+            as_of_week: row.get("as_of_week"),
+            imported_at: row.get("imported_at"),
+            sku_count: u32::try_from(row.get::<i64, _>("sku_count"))
+                .map_err(|_| err("contract_violation", "The SKU count is unsupported."))?,
+            receipt_count: u32::try_from(row.get::<i64, _>("receipt_count"))
+                .map_err(|_| err("contract_violation", "The receipt count is unsupported."))?,
+            overdue_receipts: u32::try_from(row.get::<i64, _>("overdue_receipts"))
+                .map_err(|_| err("contract_violation", "The receipt count is unsupported."))?,
+            is_duplicate,
+        })
+    }
+
+    /// Inventory snapshots of the active profile, newest first (ADR-0031).
+    pub async fn inventory_snapshots_list(&self) -> AppResult<Vec<InventorySnapshot>> {
+        let profile_id = active_profile_id(&self.pool).await?;
+        let rows = sqlx::query(
+            "SELECT snap.id AS id, snap.as_of_week AS as_of_week, snap.imported_at AS imported_at,
+                    (SELECT COUNT(*) FROM inventory_stock s WHERE s.snapshot_id = snap.id) AS sku_count,
+                    (SELECT COUNT(*) FROM inventory_receipt r WHERE r.snapshot_id = snap.id) AS receipt_count,
+                    (SELECT COUNT(*) FROM inventory_receipt r WHERE r.snapshot_id = snap.id AND r.state = 'overdue') AS overdue_receipts
+             FROM inventory_snapshot snap WHERE snap.profile_id = ?
+             ORDER BY snap.imported_at DESC, snap.id DESC LIMIT 100",
+        )
+        .bind(profile_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut snapshots = Vec::with_capacity(rows.len());
+        for row in &rows {
+            snapshots.push(InventorySnapshot {
+                id: i32::try_from(row.get::<i64, _>("id"))
+                    .map_err(|_| err("contract_violation", "The snapshot id is unsupported."))?,
+                as_of_week: row.get("as_of_week"),
+                imported_at: row.get("imported_at"),
+                sku_count: u32::try_from(row.get::<i64, _>("sku_count"))
+                    .map_err(|_| err("contract_violation", "The SKU count is unsupported."))?,
+                receipt_count: u32::try_from(row.get::<i64, _>("receipt_count"))
+                    .map_err(|_| err("contract_violation", "The receipt count is unsupported."))?,
+                overdue_receipts: u32::try_from(row.get::<i64, _>("overdue_receipts"))
+                    .map_err(|_| err("contract_violation", "The receipt count is unsupported."))?,
+                is_duplicate: false,
+            });
+        }
+        Ok(snapshots)
+    }
+
+    /// Derived replenishment plan for one publication and inventory snapshot
+    /// (ADR-0031): transparent weekly arithmetic in the series' own unit, with
+    /// explicit blocking reasons and disclosed limitations. Nothing is stored.
+    pub async fn replenishment_plan(
+        &self,
+        edit: ReplenishmentEdit,
+        search: &str,
+        offset: u32,
+        limit: u32,
+    ) -> AppResult<ReplenishmentPlan> {
+        let limit = limit.clamp(1, LIST_LIMIT_MAX);
+        let (header, mut rows) = self.replenishment_rows_internal(&edit).await?;
+        let needle = search.trim().to_lowercase();
+        if !needle.is_empty() {
+            rows.retain(|row| {
+                row.series_key.to_lowercase().contains(&needle)
+                    || row.location_code.to_lowercase().contains(&needle)
+            });
+        }
+        let total = u32::try_from(rows.len())
+            .map_err(|_| err("contract_violation", "The plan is too large."))?;
+        let rows = rows
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect();
+        Ok(ReplenishmentPlan {
+            publication_id: edit.publication_id,
+            snapshot_id: edit.snapshot_id,
+            anchor_week: header.anchor_week,
+            cutoff_week: header.cutoff_week,
+            horizon_start_week: header.horizon_start_week,
+            low_multiplier: header.low_multiplier,
+            high_multiplier: header.high_multiplier,
+            total,
+            rows,
+        })
+    }
+
+    async fn replenishment_rows_internal(
+        &self,
+        edit: &ReplenishmentEdit,
+    ) -> AppResult<(ReplenishmentHeader, Vec<ReplenishmentRow>)> {
+        let low = parse_multiplier(edit.low_multiplier.as_deref(), "low", 0.0, 1.0)?;
+        let high = parse_multiplier(edit.high_multiplier.as_deref(), "high", 1.0, f64::MAX)?;
+        let mut connection = self.pool.acquire().await?;
+        let publication = sqlx::query(
+            "SELECT run_id, cutoff_week, horizon_start_week, profile_id
+             FROM plan_publication WHERE id = ?",
+        )
+        .bind(i64::from(edit.publication_id))
+        .fetch_optional(&mut *connection)
+        .await?
+        .ok_or_else(|| {
+            err(
+                "unknown_publication",
+                "The publication does not exist in this workspace.",
+            )
+        })?;
+        let run_bytes: Vec<u8> = publication.get("run_id");
+        let cutoff_week: String = publication.get("cutoff_week");
+        let horizon_start_week: String = publication.get("horizon_start_week");
+        let profile_id: i64 = publication.get("profile_id");
+        let snapshot =
+            sqlx::query("SELECT profile_id, as_of_week FROM inventory_snapshot WHERE id = ?")
+                .bind(i64::from(edit.snapshot_id))
+                .fetch_optional(&mut *connection)
+                .await?
+                .ok_or_else(|| {
+                    err(
+                        "unknown_snapshot",
+                        "The inventory snapshot does not exist in this workspace.",
+                    )
+                })?;
+        if snapshot.get::<i64, _>("profile_id") != profile_id {
+            return Err(err(
+                "inventory_mismatch",
+                "The inventory snapshot and the publication belong to different profiles.",
+            ));
+        }
+        let anchor_week: String = snapshot.get("as_of_week");
+        let location_bytes: Vec<u8> =
+            sqlx::query_scalar("SELECT location_id FROM inventory_snapshot WHERE id = ?")
+                .bind(i64::from(edit.snapshot_id))
+                .fetch_one(&mut *connection)
+                .await?;
+
+        // Published week values for every series of the pinned run.
+        let mut series: HashMap<SeriesKey, SeriesPlanData> = HashMap::new();
+        let mut after = (Vec::<u8>::new(), Vec::<u8>::new());
+        loop {
+            let rows = load_planning_rows(
+                &mut connection,
+                PlanSource::Publication {
+                    run: &run_bytes,
+                    publication_id: i64::from(edit.publication_id),
+                },
+                None,
+                None,
+                (&after.0, &after.1),
+                64,
+            )
+            .await?;
+            let Some(last) = rows.last() else {
+                break;
+            };
+            after = (last.get("product_id"), last.get("location_id"));
+            for row in &rows {
+                let key: SeriesKey = (row.get("product_id"), row.get("location_id"));
+                let entry = series.entry(key).or_insert_with(|| SeriesPlanData {
+                    imputed_input: false,
+                    weeks: BTreeMap::new(),
+                });
+                let point = planning_point(row);
+                entry.weeks.insert(point.week_start, point.effective);
+            }
+        }
+        let imputed_rows = sqlx::query(
+            "SELECT product_id, location_id, imputed_weeks FROM forecast_series_status WHERE run_id = ?",
+        )
+        .bind(run_bytes.as_slice())
+        .fetch_all(&mut *connection)
+        .await?;
+        for row in &imputed_rows {
+            let key: SeriesKey = (row.get("product_id"), row.get("location_id"));
+            if let Some(entry) = series.get_mut(&key) {
+                entry.imputed_input = row.get::<i64, _>("imputed_weeks") > 0;
+            }
+        }
+
+        let stock_rows = sqlx::query(
+            "SELECT s.product_id AS product_id, s.quantity AS quantity,
+                    p.sku AS series_key, l.code AS location_code
+             FROM inventory_stock s
+             JOIN product p ON p.id = s.product_id
+             JOIN location l ON l.id = (SELECT location_id FROM inventory_snapshot WHERE id = s.snapshot_id)
+             WHERE s.snapshot_id = ? ORDER BY p.sku, l.code",
+        )
+        .bind(i64::from(edit.snapshot_id))
+        .fetch_all(&mut *connection)
+        .await?;
+        let policy_rows = sqlx::query(
+            "SELECT product_id, unit, lead_weeks, review_weeks, safety_stock, moq, pack_size
+             FROM inventory_policy WHERE snapshot_id = ?",
+        )
+        .bind(i64::from(edit.snapshot_id))
+        .fetch_all(&mut *connection)
+        .await?;
+        let mut policies: HashMap<SeriesKey, ReplenishmentPolicyRow> = HashMap::new();
+        for row in &policy_rows {
+            policies.insert(
+                (row.get("product_id"), location_bytes.clone()),
+                ReplenishmentPolicyRow {
+                    unit: row.get("unit"),
+                    lead_weeks: row.get("lead_weeks"),
+                    review_weeks: row.get("review_weeks"),
+                    safety_stock: row.get("safety_stock"),
+                    moq: row.get("moq"),
+                    pack_size: row.get("pack_size"),
+                },
+            );
+        }
+        let receipt_rows = sqlx::query(
+            "SELECT receipt_key, product_id, quantity, available_week, state
+             FROM inventory_receipt WHERE snapshot_id = ? ORDER BY available_week, receipt_key",
+        )
+        .bind(i64::from(edit.snapshot_id))
+        .fetch_all(&mut *connection)
+        .await?;
+
+        let anchor_date = NaiveDate::parse_from_str(&anchor_week, "%Y-%m-%d")
+            .map_err(|_| err("contract_violation", "The snapshot as-of week is invalid."))?;
+        let horizon_end = (NaiveDate::parse_from_str(&horizon_start_week, "%Y-%m-%d")
+            .map_err(|_| err("contract_violation", "The run horizon start is invalid."))?
+            + ChronoDuration::weeks(11))
+        .format("%Y-%m-%d")
+        .to_string();
+
+        let mut rows_out = Vec::with_capacity(stock_rows.len());
+        for stock in &stock_rows {
+            let product: Vec<u8> = stock.get("product_id");
+            let key: SeriesKey = (product.clone(), location_bytes.clone());
+            let series_key: String = stock.get("series_key");
+            let location_code: String = stock.get("location_code");
+            let opening_stock: f64 = stock.get("quantity");
+            let mut blocked: Vec<InventoryFinding> = Vec::new();
+            let mut warnings: Vec<InventoryFinding> = Vec::new();
+            let Some(plan_data) = series.get(&key) else {
+                blocked.push(inventory_finding(
+                    "blocking",
+                    "not_in_publication",
+                    "This SKU is not part of the selected publication's run.".into(),
+                    None,
+                ));
+                rows_out.push(ReplenishmentRow {
+                    product_id: uuid_from_bytes(&product)?.to_string(),
+                    location_id: uuid_from_bytes(&location_bytes)?.to_string(),
+                    series_key,
+                    location_code,
+                    unit: String::new(),
+                    lead_weeks: 0,
+                    review_weeks: 0,
+                    protection_weeks: 0,
+                    safety_stock: 0.0,
+                    moq: 0.0,
+                    pack_size: 1.0,
+                    opening_stock,
+                    inbound_in_window: 0.0,
+                    demand_window: None,
+                    raw_need: None,
+                    order_base: None,
+                    order_low: None,
+                    order_high: None,
+                    blocked,
+                    warnings,
+                    weeks: Vec::new(),
+                });
+                continue;
+            };
+            let Some(policy) = policies.get(&key) else {
+                blocked.push(inventory_finding(
+                    "blocking",
+                    "missing_policy",
+                    "The snapshot has no policy row for this SKU.".into(),
+                    None,
+                ));
+                continue;
+            };
+            let protection_weeks = (policy.lead_weeks + policy.review_weeks) as u32;
+            let mut sku_receipts: Vec<(String, f64, String, String)> = Vec::new();
+            for receipt in &receipt_rows {
+                if receipt.get::<Vec<u8>, _>("product_id") == product {
+                    sku_receipts.push((
+                        receipt.get("available_week"),
+                        receipt.get("quantity"),
+                        receipt.get("state"),
+                        receipt.get("receipt_key"),
+                    ));
+                }
+            }
+            if sku_receipts
+                .iter()
+                .any(|(_, _, state, _)| state == "overdue")
+            {
+                blocked.push(inventory_finding(
+                    "blocking",
+                    "overdue_receipt",
+                    "An open receipt is dated before the snapshot; import a corrected snapshot before ordering.".into(),
+                    None,
+                ));
+            }
+            if anchor_week.as_str() < horizon_start_week.as_str() {
+                blocked.push(inventory_finding(
+                    "blocking",
+                    "anchor_before_horizon",
+                    "The snapshot is older than the published plan's first week; stock cannot predate the horizon.".into(),
+                    None,
+                ));
+            }
+            if protection_weeks > 12 {
+                blocked.push(inventory_finding(
+                    "blocking",
+                    "protection_too_long",
+                    format!("Lead time + review interval ({protection_weeks} weeks) exceed the 12-week forecast."),
+                    None,
+                ));
+            }
+            if plan_data.imputed_input {
+                warnings.push(inventory_finding(
+                    "warning",
+                    "imputed_input",
+                    "This run filled missing weeks in the model input; the baseline is disclosed, not corrected.".into(),
+                    None,
+                ));
+            }
+            let mut window_weeks: Vec<String> = Vec::new();
+            let mut demand_window: Option<f64> = None;
+            let mut inbound_in_window = 0.0;
+            if (1..=12).contains(&protection_weeks) {
+                let mut demand = 0.0;
+                let mut complete = true;
+                for index in 0..protection_weeks {
+                    let week = (anchor_date + ChronoDuration::weeks(i64::from(index)))
+                        .format("%Y-%m-%d")
+                        .to_string();
+                    window_weeks.push(week.clone());
+                    match plan_data.weeks.get(&week).copied().flatten() {
+                        Some(value) => demand += value,
+                        None => {
+                            complete = false;
+                            blocked.push(inventory_finding(
+                                "blocking",
+                                "missing_forecast",
+                                format!("The published plan has no value for {week}."),
+                                Some(week.clone()),
+                            ));
+                            break;
+                        }
+                    }
+                    for (available, quantity, state, _) in &sku_receipts {
+                        if state == "open" && available == &week {
+                            inbound_in_window += quantity;
+                        }
+                    }
+                }
+                if complete {
+                    demand_window = Some(demand);
+                }
+            }
+            let raw_base = demand_window.map(|demand| {
+                (demand + policy.safety_stock - opening_stock - inbound_in_window).max(0.0)
+            });
+            let round_order = |raw: f64| {
+                if raw <= 0.0 {
+                    return 0.0;
+                }
+                let target = raw.max(policy.moq);
+                let packs = ((target / policy.pack_size) - 1e-9).ceil().max(1.0);
+                packs * policy.pack_size
+            };
+            let any_blocking = !blocked.is_empty();
+            let order_base = raw_base.filter(|_| !any_blocking).map(round_order);
+            let order_low = raw_base
+                .filter(|_| !any_blocking)
+                .and_then(|_| demand_window.zip(low))
+                .map(|(demand, multiplier)| {
+                    round_order(
+                        (demand * multiplier + policy.safety_stock
+                            - opening_stock
+                            - inbound_in_window)
+                            .max(0.0),
+                    )
+                });
+            let order_high = raw_base
+                .filter(|_| !any_blocking)
+                .and_then(|_| demand_window.zip(high))
+                .map(|(demand, multiplier)| {
+                    round_order(
+                        (demand * multiplier + policy.safety_stock
+                            - opening_stock
+                            - inbound_in_window)
+                            .max(0.0),
+                    )
+                });
+            // Weekly projection: receipts arrive at the beginning of their
+            // availability week, demand consumes during the week, and the
+            // suggested order arrives `lead_weeks` weeks after the anchor.
+            let order_arrival_index = u32::try_from(policy.lead_weeks)
+                .unwrap_or(12)
+                .saturating_add(1);
+            let mut weeks: Vec<ReplenishmentWeek> = Vec::new();
+            let mut balance = Some(opening_stock);
+            let mut shortage_before_arrival = false;
+            let mut first_shortage: Option<String> = None;
+            for index in 1..=12u32 {
+                let week = (anchor_date + ChronoDuration::weeks(i64::from(index) - 1))
+                    .format("%Y-%m-%d")
+                    .to_string();
+                let demand = plan_data.weeks.get(&week).copied().flatten();
+                let receipt: f64 = sku_receipts
+                    .iter()
+                    .filter(|(available, _, state, _)| state == "open" && available == &week)
+                    .map(|(_, quantity, _, _)| quantity)
+                    .sum();
+                let order_arrival =
+                    order_base.is_some_and(|order| order > 0.0) && index == order_arrival_index;
+                balance = match (balance, demand) {
+                    (Some(balance), Some(demand)) => {
+                        let next = balance + receipt - demand;
+                        if next < 0.0
+                            && (order_base
+                                .map(|order| order <= 0.0)
+                                .unwrap_or(order_base.is_none())
+                                || index < order_arrival_index)
+                        {
+                            shortage_before_arrival = true;
+                            if first_shortage.is_none() {
+                                first_shortage = Some(week.clone());
+                            }
+                        }
+                        Some(next)
+                    }
+                    _ => None,
+                };
+                weeks.push(ReplenishmentWeek {
+                    index,
+                    week_start: week,
+                    demand,
+                    receipt,
+                    closing: balance,
+                    order_arrival,
+                });
+            }
+            let beyond_window: u32 = sku_receipts
+                .iter()
+                .filter(|(available, _, state, _)| {
+                    state == "open" && available.as_str() > horizon_end.as_str()
+                })
+                .count()
+                .try_into()
+                .unwrap_or(0);
+            if beyond_window > 0 {
+                warnings.push(inventory_finding(
+                    "warning",
+                    "beyond_horizon_receipt",
+                    format!("{beyond_window} receipt(s) arrive after the published horizon; they are disclosed but never counted in the protection window."),
+                    None,
+                ));
+            }
+            if shortage_before_arrival {
+                let shortage_detail = first_shortage
+                    .as_deref()
+                    .map(|week| format!(" (from {week})"))
+                    .unwrap_or_default();
+                warnings.push(inventory_finding(
+                    "warning",
+                    "early_shortage",
+                    format!(
+                        "Projected balance turns negative before the suggested order can arrive{shortage_detail}; a later order cannot repair an earlier service failure."
+                    ),
+                    first_shortage,
+                ));
+            }
+            let location_bytes_for_row = location_bytes.clone();
+            rows_out.push(ReplenishmentRow {
+                product_id: uuid_from_bytes(&product)?.to_string(),
+                location_id: uuid_from_bytes(&location_bytes_for_row)?.to_string(),
+                series_key: series_key.clone(),
+                location_code,
+                unit: policy.unit.clone(),
+                lead_weeks: u32::try_from(policy.lead_weeks).unwrap_or(0),
+                review_weeks: u32::try_from(policy.review_weeks).unwrap_or(0),
+                protection_weeks,
+                safety_stock: policy.safety_stock,
+                moq: policy.moq,
+                pack_size: policy.pack_size,
+                opening_stock,
+                inbound_in_window,
+                demand_window,
+                raw_need: raw_base,
+                order_base,
+                order_low,
+                order_high,
+                blocked,
+                warnings,
+                weeks,
+            });
+        }
+        rows_out.sort_by(|left, right| {
+            left.series_key
+                .cmp(&right.series_key)
+                .then_with(|| left.location_code.cmp(&right.location_code))
+                .then_with(|| left.product_id.cmp(&right.product_id))
+        });
+        Ok((
+            ReplenishmentHeader {
+                anchor_week,
+                cutoff_week,
+                horizon_start_week,
+                low_multiplier: low,
+                high_multiplier: high,
+            },
+            rows_out,
+        ))
+    }
+
+    /// Export the full derived replenishment plan as one XLSX workbook with
+    /// Recommendations, Projection, and Summary sheets (ADR-0031); the export
+    /// record links the publication and the inventory snapshot.
+    pub async fn export_replenishment_xlsx(
+        &self,
+        edit: ReplenishmentEdit,
+        target: &Path,
+    ) -> AppResult<ExportResult> {
+        let parent = self.validate_export_target(target, "xlsx")?;
+        let (header, rows) = self.replenishment_rows_internal(&edit).await?;
+        let job_id = {
+            let _writer = self.writer.lock().await;
+            sqlx::query("INSERT INTO job (kind, status, created_at, started_at) VALUES ('export', 'running', ?, ?)")
+                .bind(now_iso())
+                .bind(now_iso())
+                .execute(&self.pool)
+                .await?
+                .last_insert_rowid()
+        };
+        let result = async {
+            let run_bytes: Vec<u8> = sqlx::query_scalar("SELECT run_id FROM plan_publication WHERE id = ?")
+                .bind(i64::from(edit.publication_id))
+                .fetch_one(&self.pool)
+                .await?;
+            let mut temporary = tempfile::Builder::new()
+                .prefix(".opendemand-export-")
+                .tempfile_in(&parent)?;
+            let row_count = write_replenishment_workbook(
+                &mut temporary,
+                &header,
+                &rows,
+                edit.publication_id,
+                edit.snapshot_id,
+            )?;
+            temporary.as_file().sync_all()?;
+            let exports = self.path.join("exports");
+            std::fs::create_dir_all(&exports)?;
+            let relative_path = format!("exports/{}.xlsx", Uuid::now_v7());
+            let archive_path = self.path.join(&relative_path);
+            let archive = tempfile::Builder::new()
+                .prefix(".opendemand-export-")
+                .tempfile_in(&exports)?;
+            std::fs::copy(temporary.path(), archive.path())?;
+            archive.as_file().sync_all()?;
+            let _writer = self.writer.lock().await;
+            let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+            let blocked_count = rows
+                .iter()
+                .filter(|row| !row.blocked.is_empty())
+                .count();
+            let coverage = serde_json::json!({
+                "calculation": REPLENISHMENT_CONTEXT,
+                "anchor_week": header.anchor_week,
+                "blocked": blocked_count,
+                "rows": rows.len(),
+            })
+            .to_string();
+            let export_id = sqlx::query(
+                "INSERT INTO export_record (run_id, format, relative_path, created_at, row_count, coverage_json, publication_id, inventory_snapshot_id)
+                 VALUES (?, 'xlsx', ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(run_bytes.as_slice())
+            .bind(&relative_path)
+            .bind(now_iso())
+            .bind(row_count)
+            .bind(coverage)
+            .bind(i64::from(edit.publication_id))
+            .bind(i64::from(edit.snapshot_id))
+            .execute(&mut *transaction)
+            .await?
+            .last_insert_rowid();
+            sqlx::query("UPDATE job SET status = 'completed', finished_at = ? WHERE id = ?")
+                .bind(now_iso())
+                .bind(job_id)
+                .execute(&mut *transaction)
+                .await?;
+            archive
+                .persist_noclobber(&archive_path)
+                .map_err(|error| AppError::from(error.error))?;
+            if let Err(error) = temporary.persist_noclobber(target) {
+                let _ = std::fs::remove_file(&archive_path);
+                return Err(if error.error.kind() == std::io::ErrorKind::AlreadyExists {
+                    err(
+                        "export_exists",
+                        "A file appeared at this destination. Choose a new filename.",
+                    )
+                } else {
+                    AppError::from(error.error)
+                });
+            }
+            fsync_dir(&exports);
+            fsync_dir(&parent);
+            if let Err(error) = transaction.commit().await {
+                let _ = std::fs::remove_file(target);
+                let _ = std::fs::remove_file(&archive_path);
+                return Err(AppError::from(error));
+            }
+            Ok(ExportResult {
+                export_id: export_id.to_string(),
+                path: target.display().to_string(),
+                row_count: row_count as u32,
+            })
+        }
+        .await;
+        if let Err(error) = &result {
+            let _writer = self.writer.lock().await;
+            let _ = sqlx::query("UPDATE job SET status = 'failed', finished_at = ? WHERE id = ?")
+                .bind(now_iso())
+                .bind(job_id)
+                .execute(&self.pool)
+                .await;
+            let _ = error;
+        }
+        result
+    }
+
     /// Export a consistent full-run plan in bounded batches. The workspace copy
     /// gives export_record a durable relative path; the selected file is a copy.
     /// Neither publication may overwrite existing data.
@@ -2700,16 +3595,9 @@ impl Workspace {
         .await
     }
 
-    async fn export_plan(
-        &self,
-        selection: PlanSelection,
-        target: &Path,
-        format: ExportFormat,
-    ) -> AppResult<ExportResult> {
-        let extension = match format {
-            ExportFormat::Csv => "csv",
-            ExportFormat::Xlsx => "xlsx",
-        };
+    /// Shared export destination rules: absolute, matching extension, outside
+    /// the workspace data except its exports folder, and never overwriting.
+    fn validate_export_target(&self, target: &Path, extension: &str) -> AppResult<PathBuf> {
         if !target.is_absolute()
             || !target
                 .extension()
@@ -2734,7 +3622,20 @@ impl Workspace {
         if target.symlink_metadata().is_ok() {
             return Err(err("export_exists", "A file already exists here. Choose a new filename; exports never overwrite existing files."));
         }
+        Ok(parent)
+    }
 
+    async fn export_plan(
+        &self,
+        selection: PlanSelection,
+        target: &Path,
+        format: ExportFormat,
+    ) -> AppResult<ExportResult> {
+        let extension = match format {
+            ExportFormat::Csv => "csv",
+            ExportFormat::Xlsx => "xlsx",
+        };
+        let parent = self.validate_export_target(target, extension)?;
         let job_id = {
             let _writer = self.writer.lock().await;
             sqlx::query("INSERT INTO job (kind, status, created_at, started_at) VALUES ('export', 'running', ?, ?)")
@@ -5255,6 +6156,774 @@ async fn persistent_bias_map(
     }
     Ok(evidence)
 }
+
+// ---------------------------------------------------------------------------
+// Inventory/1 parsing and validation (ADR-0031)
+// ---------------------------------------------------------------------------
+
+fn inventory_finding(
+    severity: &str,
+    code: &str,
+    detail: String,
+    row_ref: Option<String>,
+) -> InventoryFinding {
+    InventoryFinding {
+        severity: severity.to_string(),
+        code: code.to_string(),
+        detail,
+        row_ref,
+    }
+}
+
+struct ParsedReceipt {
+    key: String,
+    sku: String,
+    quantity: f64,
+    available_week: String,
+    state: &'static str,
+}
+
+struct ParsedPolicy {
+    unit: String,
+    lead_weeks: i64,
+    review_weeks: i64,
+    safety_stock: f64,
+    moq: f64,
+    pack_size: f64,
+}
+
+#[derive(Default)]
+struct ParsedInventory {
+    as_of_week: Option<String>,
+    stock: BTreeMap<String, f64>,
+    receipts: Vec<ParsedReceipt>,
+    policy: BTreeMap<String, ParsedPolicy>,
+    findings: Vec<InventoryFinding>,
+    overdue: u32,
+    beyond_horizon: u32,
+}
+
+impl ParsedInventory {
+    fn block(&mut self, code: &str, detail: String, row_ref: Option<String>) {
+        self.findings
+            .push(inventory_finding("blocking", code, detail, row_ref));
+    }
+
+    fn warn(&mut self, code: &str, detail: String, row_ref: Option<String>) {
+        self.findings
+            .push(inventory_finding("warning", code, detail, row_ref));
+    }
+
+    fn has_blocking(&self) -> bool {
+        self.findings
+            .iter()
+            .any(|finding| finding.severity == "blocking")
+    }
+}
+
+fn inventory_csv_rows(path: &Path, headers: &[&str]) -> AppResult<Vec<Vec<String>>> {
+    let bytes = std::fs::read(path)?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| err("inventory_unreadable", "Inventory CSVs must be UTF-8."))?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .flexible(false)
+        .from_reader(text.as_bytes());
+    let actual: Vec<String> = reader
+        .headers()
+        .map_err(|_| {
+            err(
+                "inventory_unreadable",
+                "The inventory CSV header is unreadable.",
+            )
+        })?
+        .iter()
+        .map(|cell| cell.trim().to_string())
+        .collect();
+    if actual != headers {
+        return Err(err(
+            "inventory_schema",
+            format!("The header must be exactly {}.", headers.join(",")),
+        ));
+    }
+    let mut rows = Vec::new();
+    for record in reader.records() {
+        let record = record.map_err(|_| {
+            err(
+                "inventory_unreadable",
+                "An inventory CSV row is unreadable.",
+            )
+        })?;
+        rows.push(record.iter().map(|cell| cell.trim().to_string()).collect());
+    }
+    Ok(rows)
+}
+
+fn inventory_sheet_rows(
+    workbook: &mut calamine::Sheets<std::io::BufReader<std::fs::File>>,
+    name: &str,
+    headers: &[&str],
+) -> AppResult<Vec<Vec<String>>> {
+    use calamine::Reader;
+    let range = workbook.worksheet_range(name).map_err(|_| {
+        err(
+            "inventory_schema",
+            format!("The workbook must contain a '{name}' sheet."),
+        )
+    })?;
+    let mut rows = Vec::new();
+    for (index, row) in range.rows().enumerate() {
+        let cells: Vec<String> = row
+            .iter()
+            .map(|cell| match cell {
+                calamine::Data::String(value) => value.trim().to_string(),
+                calamine::Data::Int(value) => value.to_string(),
+                calamine::Data::Float(value) => value.to_string(),
+                calamine::Data::DateTime(value) => value
+                    .as_datetime()
+                    .map(|moment| moment.date().format("%Y-%m-%d").to_string())
+                    .unwrap_or_default(),
+                calamine::Data::DateTimeIso(value) => {
+                    value.get(..10).map(str::to_string).unwrap_or_default()
+                }
+                _ => String::new(),
+            })
+            .collect();
+        if index == 0 {
+            let actual: Vec<String> = cells.clone();
+            if actual != headers {
+                return Err(err(
+                    "inventory_schema",
+                    format!(
+                        "The {name} sheet header must be exactly {}.",
+                        headers.join(",")
+                    ),
+                ));
+            }
+            continue;
+        }
+        if cells.iter().all(|cell| cell.is_empty()) {
+            continue;
+        }
+        rows.push(cells);
+    }
+    Ok(rows)
+}
+
+fn parse_monday(text: &str) -> Option<String> {
+    NaiveDate::parse_from_str(text, "%Y-%m-%d")
+        .ok()
+        .filter(|date| date.weekday() == Weekday::Mon && date.to_string() == text)
+        .map(|date| date.format("%Y-%m-%d").to_string())
+}
+
+fn parse_inventory_amount(text: &str, minimum: f64, code: &str) -> AppResult<f64> {
+    text.parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite() && *value >= minimum)
+        .ok_or_else(|| err(code, format!("'{text}' is not a valid quantity.")))
+}
+
+fn read_inventory_batch(edit: &InventoryImportEdit) -> AppResult<ParsedInventory> {
+    let mut parsed = ParsedInventory::default();
+    let (stock_rows, receipt_rows, policy_rows) = match (
+        edit.workbook_path.as_deref(),
+        edit.stock_path.as_deref(),
+        edit.receipts_path.as_deref(),
+        edit.policy_path.as_deref(),
+    ) {
+        (Some(workbook), None, None, None) => {
+            let mut sheets = calamine::open_workbook_auto(Path::new(workbook)).map_err(|_| {
+                err(
+                    "inventory_unreadable",
+                    "The inventory workbook could not be opened.",
+                )
+            })?;
+            (
+                inventory_sheet_rows(&mut sheets, "Stock", &STOCK_HEADERS)?,
+                inventory_sheet_rows(&mut sheets, "Receipts", &RECEIPT_HEADERS)?,
+                inventory_sheet_rows(&mut sheets, "Policy", &POLICY_HEADERS)?,
+            )
+        }
+        (Some(_), _, _, _) => {
+            return Err(err(
+                "inventory_files",
+                "Choose either one workbook or the three CSV files, not both.",
+            ));
+        }
+        (None, Some(stock), Some(receipts), Some(policy)) => (
+            inventory_csv_rows(Path::new(stock), &STOCK_HEADERS)?,
+            inventory_csv_rows(Path::new(receipts), &RECEIPT_HEADERS)?,
+            inventory_csv_rows(Path::new(policy), &POLICY_HEADERS)?,
+        ),
+        (None, Some(stock), None, Some(policy)) => (
+            inventory_csv_rows(Path::new(stock), &STOCK_HEADERS)?,
+            Vec::new(),
+            inventory_csv_rows(Path::new(policy), &POLICY_HEADERS)?,
+        ),
+        _ => {
+            return Err(err(
+                "inventory_files",
+                "Choose one workbook or a stock file, a policy file, and optionally a receipts file.",
+            ));
+        }
+    };
+
+    for (index, row) in stock_rows.iter().enumerate() {
+        let row_ref = Some(format!("stock:{}", index + 2));
+        let (sku, quantity, as_of) = (&row[0], row[1].as_str(), row[2].as_str());
+        if sku.is_empty() {
+            parsed.block(
+                "inventory_invalid_row",
+                "The stock row has no SKU.".into(),
+                row_ref,
+            );
+            continue;
+        }
+        let Some(week) = parse_monday(as_of) else {
+            parsed.block(
+                "inventory_invalid_row",
+                format!("'{as_of}' is not a Monday date (YYYY-MM-DD)."),
+                row_ref,
+            );
+            continue;
+        };
+        match &parsed.as_of_week {
+            None => parsed.as_of_week = Some(week),
+            Some(existing) if existing != &week => {
+                parsed.block(
+                    "inventory_invalid_as_of",
+                    "All stock rows must carry the same Monday as-of date.".into(),
+                    row_ref,
+                );
+                continue;
+            }
+            _ => {}
+        }
+        let quantity = match parse_inventory_amount(quantity, 0.0, "inventory_invalid_row") {
+            Ok(value) => value,
+            Err(_) => {
+                parsed.block(
+                    "inventory_invalid_row",
+                    format!("'{quantity}' is not a finite non-negative stock quantity."),
+                    row_ref,
+                );
+                continue;
+            }
+        };
+        if parsed.stock.insert(sku.to_string(), quantity).is_some() {
+            parsed.block(
+                "inventory_duplicate",
+                format!("Stock for '{sku}' appears more than once."),
+                row_ref,
+            );
+        }
+    }
+    if parsed.stock.is_empty() {
+        parsed.block(
+            "inventory_empty",
+            "The stock table has no rows.".into(),
+            None,
+        );
+    }
+    if parsed.as_of_week.is_none() {
+        parsed.block(
+            "inventory_invalid_as_of",
+            "No valid as-of Monday was found in the stock table.".into(),
+            None,
+        );
+    }
+
+    let mut receipt_keys: HashSet<String> = HashSet::new();
+    for (index, row) in receipt_rows.iter().enumerate() {
+        let row_ref = Some(format!("receipts:{}", index + 2));
+        let (key, sku, quantity, week) = (&row[0], &row[1], row[2].as_str(), row[3].as_str());
+        if key.is_empty() || sku.is_empty() {
+            parsed.block(
+                "inventory_invalid_row",
+                "A receipt row needs a receipt_id and a SKU.".into(),
+                row_ref,
+            );
+            continue;
+        }
+        if !receipt_keys.insert(key.clone()) {
+            parsed.block(
+                "inventory_duplicate",
+                format!("Receipt '{key}' appears more than once."),
+                row_ref,
+            );
+            continue;
+        }
+        let quantity =
+            match parse_inventory_amount(quantity, f64::MIN_POSITIVE, "inventory_invalid_row") {
+                Ok(value) if value > 0.0 => value,
+                _ => {
+                    parsed.block(
+                        "inventory_invalid_row",
+                        format!("'{quantity}' is not a finite positive receipt quantity."),
+                        row_ref,
+                    );
+                    continue;
+                }
+            };
+        let Some(week) = parse_monday(week) else {
+            parsed.block(
+                "inventory_invalid_row",
+                format!("'{week}' is not a Monday availability date."),
+                row_ref,
+            );
+            continue;
+        };
+        let state = match &parsed.as_of_week {
+            Some(as_of) if week.as_str() < as_of.as_str() => {
+                parsed.overdue += 1;
+                parsed.warn(
+                    "inventory_overdue_receipt",
+                    format!("Receipt '{key}' is dated before the snapshot; recommendations will block until a corrected snapshot arrives."),
+                    row_ref,
+                );
+                "overdue"
+            }
+            _ => "open",
+        };
+        parsed.receipts.push(ParsedReceipt {
+            key: key.clone(),
+            sku: sku.clone(),
+            quantity,
+            available_week: week,
+            state,
+        });
+    }
+    if parsed.receipts.is_empty() && !edit.receipts_empty_confirmed {
+        parsed.block(
+            "inventory_receipts_unconfirmed",
+            "An empty receipts table needs explicit confirmation that there are no open inbound receipts in scope.".into(),
+            None,
+        );
+    }
+
+    for (index, row) in policy_rows.iter().enumerate() {
+        let row_ref = Some(format!("policy:{}", index + 2));
+        let sku = &row[0];
+        if sku.is_empty() {
+            parsed.block(
+                "inventory_invalid_row",
+                "The policy row has no SKU.".into(),
+                row_ref,
+            );
+            continue;
+        }
+        let unit = &row[1];
+        if unit.is_empty() {
+            parsed.block(
+                "inventory_invalid_row",
+                "The policy row needs a unit code.".into(),
+                row_ref,
+            );
+            continue;
+        }
+        let lead = row[2].parse::<i64>().ok().filter(|value| *value >= 0);
+        let review = row[3].parse::<i64>().ok().filter(|value| *value >= 1);
+        let (Some(lead), Some(review)) = (lead, review) else {
+            parsed.block(
+                "inventory_invalid_row",
+                "lead_weeks must be a whole number >= 0 and review_weeks a whole number >= 1."
+                    .into(),
+                row_ref,
+            );
+            continue;
+        };
+        let safety = parse_inventory_amount(&row[4], 0.0, "inventory_invalid_row");
+        let moq = parse_inventory_amount(&row[5], 0.0, "inventory_invalid_row");
+        let pack = parse_inventory_amount(&row[6], f64::MIN_POSITIVE, "inventory_invalid_row");
+        let (Ok(safety), Ok(moq), Ok(pack)) = (safety, moq, pack) else {
+            parsed.block(
+                "inventory_invalid_row",
+                "safety_stock and moq must be >= 0 and pack_size must be > 0.".into(),
+                row_ref,
+            );
+            continue;
+        };
+        if pack <= 0.0 {
+            parsed.block(
+                "inventory_invalid_row",
+                "pack_size must be greater than zero.".into(),
+                row_ref,
+            );
+            continue;
+        }
+        if parsed
+            .policy
+            .insert(
+                sku.clone(),
+                ParsedPolicy {
+                    unit: unit.clone(),
+                    lead_weeks: lead,
+                    review_weeks: review,
+                    safety_stock: safety,
+                    moq,
+                    pack_size: pack,
+                },
+            )
+            .is_some()
+        {
+            parsed.block(
+                "inventory_duplicate",
+                format!("Policy for '{sku}' appears more than once."),
+                row_ref,
+            );
+        }
+    }
+    if parsed.policy.is_empty() {
+        parsed.block(
+            "inventory_empty",
+            "The policy table has no rows.".into(),
+            None,
+        );
+    }
+
+    // Scope equality: stock and policy must describe exactly the same SKUs;
+    // receipts must be inside that scope. Missing is never zero.
+    let missing_policy: Vec<String> = parsed
+        .stock
+        .keys()
+        .filter(|sku| !parsed.policy.contains_key(*sku))
+        .cloned()
+        .collect();
+    for sku in missing_policy {
+        parsed.block(
+            "inventory_missing_policy",
+            format!("Stock for '{sku}' has no policy row."),
+            None,
+        );
+    }
+    let missing_stock: Vec<String> = parsed
+        .policy
+        .keys()
+        .filter(|sku| !parsed.stock.contains_key(*sku))
+        .cloned()
+        .collect();
+    for sku in missing_stock {
+        parsed.block(
+            "inventory_missing_stock",
+            format!("Policy for '{sku}' has no stock row; missing stock is not zero."),
+            None,
+        );
+    }
+    let receipt_skus: Vec<(String, String)> = parsed
+        .receipts
+        .iter()
+        .map(|receipt| (receipt.key.clone(), receipt.sku.clone()))
+        .collect();
+    for (key, sku) in &receipt_skus {
+        if !parsed.stock.contains_key(sku) {
+            parsed.block(
+                "inventory_unknown_sku",
+                format!("Receipt '{key}' names SKU '{sku}', which has no stock row."),
+                None,
+            );
+        }
+    }
+    if !edit.unit_confirmed {
+        parsed.block(
+            "inventory_unit_confirmation",
+            "Confirm that stock and receipts use the declared unit and that the forecast uses the same unit.".into(),
+            None,
+        );
+    }
+    if let Some(as_of) = parsed.as_of_week.clone() {
+        let as_of_date = NaiveDate::parse_from_str(&as_of, "%Y-%m-%d")
+            .map_err(|_| err("inventory_invalid_as_of", "The as-of week is invalid."))?;
+        let horizon_end = as_of_date + ChronoDuration::weeks(12);
+        for receipt in &parsed.receipts {
+            if let Ok(week) = NaiveDate::parse_from_str(&receipt.available_week, "%Y-%m-%d") {
+                if week > horizon_end {
+                    parsed.beyond_horizon += 1;
+                }
+            }
+        }
+        if parsed.beyond_horizon > 0 {
+            parsed.warn(
+                "inventory_beyond_horizon",
+                format!(
+                    "{} receipt(s) arrive after the 12-week horizon; they are retained and disclosed but never counted inside the protection window.",
+                    parsed.beyond_horizon
+                ),
+                None,
+            );
+        }
+    }
+    Ok(parsed)
+}
+
+fn inventory_preview_from(parsed: &ParsedInventory) -> InventoryPreview {
+    InventoryPreview {
+        as_of_week: parsed.as_of_week.clone(),
+        sku_count: parsed.stock.len() as u32,
+        stock_count: parsed.stock.len() as u32,
+        receipt_count: parsed.receipts.len() as u32,
+        policy_count: parsed.policy.len() as u32,
+        overdue_receipts: parsed.overdue,
+        beyond_horizon_receipts: parsed.beyond_horizon,
+        findings: parsed.findings.clone(),
+        can_import: !parsed.has_blocking(),
+    }
+}
+
+/// Known SKUs of the active profile's latest revision at the default location:
+/// inventory never creates products and never guesses names.
+async fn inventory_known_skus(
+    pool: &SqlitePool,
+) -> AppResult<(i64, Vec<u8>, BTreeMap<String, Uuid>)> {
+    let profile_id = active_profile_id(pool).await?;
+    let latest: Option<i64> =
+        sqlx::query_scalar("SELECT MAX(id) FROM import_revision WHERE profile_id = ?")
+            .bind(profile_id)
+            .fetch_one(pool)
+            .await?;
+    let Some(revision_id) = latest else {
+        return Err(err(
+            "inventory_no_history",
+            "Import sales history before importing inventory.",
+        ));
+    };
+    let location: Vec<u8> = sqlx::query_scalar("SELECT id FROM location WHERE code = ? LIMIT 1")
+        .bind(DEFAULT_LOCATION_CODE)
+        .fetch_one(pool)
+        .await?;
+    let rows = sqlx::query(
+        "SELECT p.id AS product_id, p.sku AS sku FROM series_qualification q
+         JOIN product p ON p.id = q.product_id
+         WHERE q.revision_id = ? AND q.location_id = ?",
+    )
+    .bind(revision_id)
+    .bind(location.as_slice())
+    .fetch_all(pool)
+    .await?;
+    let mut known = BTreeMap::new();
+    for row in &rows {
+        let bytes: Vec<u8> = row.get("product_id");
+        known.insert(row.get("sku"), uuid_from_bytes(&bytes)?);
+    }
+    Ok((profile_id, location, known))
+}
+
+// ---------------------------------------------------------------------------
+// Replenishment computation types (ADR-0031)
+// ---------------------------------------------------------------------------
+
+struct ReplenishmentHeader {
+    anchor_week: String,
+    cutoff_week: String,
+    horizon_start_week: String,
+    low_multiplier: Option<f64>,
+    high_multiplier: Option<f64>,
+}
+
+struct SeriesPlanData {
+    imputed_input: bool,
+    weeks: BTreeMap<String, Option<f64>>,
+}
+
+struct ReplenishmentPolicyRow {
+    unit: String,
+    lead_weeks: i64,
+    review_weeks: i64,
+    safety_stock: f64,
+    moq: f64,
+    pack_size: f64,
+}
+
+fn parse_multiplier(
+    text: Option<&str>,
+    label: &str,
+    minimum: f64,
+    maximum: f64,
+) -> AppResult<Option<f64>> {
+    match text.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(text) => {
+            let value = text
+                .parse::<f64>()
+                .ok()
+                .filter(|value| value.is_finite() && *value >= minimum && *value <= maximum)
+                .ok_or_else(|| {
+                    err(
+                        "invalid_multiplier",
+                        format!("The {label} multiplier must be between {minimum} and {maximum}."),
+                    )
+                })?;
+            Ok(Some(value))
+        }
+        None => Ok(None),
+    }
+}
+
+fn write_replenishment_workbook(
+    temporary: &mut tempfile::NamedTempFile,
+    header: &ReplenishmentHeader,
+    rows: &[ReplenishmentRow],
+    publication_id: i32,
+    snapshot_id: i32,
+) -> AppResult<i64> {
+    let mut workbook = Workbook::new();
+    {
+        let sheet = workbook.add_worksheet();
+        sheet.set_name("Recommendations")?;
+        for (column, title) in [
+            "product_sku",
+            "location_code",
+            "unit",
+            "lead_weeks",
+            "review_weeks",
+            "protection_weeks",
+            "safety_stock",
+            "moq",
+            "pack_size",
+            "opening_stock",
+            "inbound_in_window",
+            "demand_window",
+            "raw_need",
+            "order_base",
+            "order_low",
+            "order_high",
+            "blocked",
+            "warnings",
+        ]
+        .iter()
+        .enumerate()
+        {
+            sheet.write_string(0, column as u16, *title)?;
+        }
+        for (index, row) in rows.iter().enumerate() {
+            let line = index as u32 + 1;
+            for (column, text) in [
+                row.series_key.as_str(),
+                row.location_code.as_str(),
+                row.unit.as_str(),
+            ]
+            .iter()
+            .enumerate()
+            {
+                sheet.write_string(line, column as u16, *text)?;
+            }
+            sheet.write_number(line, 3, f64::from(row.lead_weeks))?;
+            sheet.write_number(line, 4, f64::from(row.review_weeks))?;
+            sheet.write_number(line, 5, f64::from(row.protection_weeks))?;
+            for (column, value) in [
+                (6, Some(row.safety_stock)),
+                (7, Some(row.moq)),
+                (8, Some(row.pack_size)),
+                (9, Some(row.opening_stock)),
+                (10, Some(row.inbound_in_window)),
+                (11, row.demand_window),
+                (12, row.raw_need),
+                (13, row.order_base),
+                (14, row.order_low),
+                (15, row.order_high),
+            ] {
+                if let Some(value) = value {
+                    sheet.write_number(line, column, value)?;
+                }
+            }
+            let blocked: Vec<&str> = row
+                .blocked
+                .iter()
+                .map(|finding| finding.code.as_str())
+                .collect();
+            sheet.write_string(line, 16, blocked.join(", "))?;
+            let warnings: Vec<&str> = row
+                .warnings
+                .iter()
+                .map(|finding| finding.code.as_str())
+                .collect();
+            sheet.write_string(line, 17, warnings.join(", "))?;
+        }
+    }
+    {
+        let sheet = workbook.add_worksheet();
+        sheet.set_name("Projection")?;
+        for (column, title) in [
+            "product_sku",
+            "week_index",
+            "week_start",
+            "demand",
+            "receipt",
+            "closing",
+            "order_arrival",
+        ]
+        .iter()
+        .enumerate()
+        {
+            sheet.write_string(0, column as u16, *title)?;
+        }
+        let mut line = 0u32;
+        for row in rows {
+            for week in &row.weeks {
+                line += 1;
+                sheet.write_string(line, 0, row.series_key.as_str())?;
+                sheet.write_number(line, 1, f64::from(week.index))?;
+                sheet.write_string(line, 2, week.week_start.as_str())?;
+                if let Some(demand) = week.demand {
+                    sheet.write_number(line, 3, demand)?;
+                }
+                sheet.write_number(line, 4, week.receipt)?;
+                if let Some(closing) = week.closing {
+                    sheet.write_number(line, 5, closing)?;
+                }
+                sheet.write_string(line, 6, if week.order_arrival { "yes" } else { "" })?;
+            }
+        }
+    }
+    {
+        let sheet = workbook.add_worksheet();
+        sheet.set_name("Summary")?;
+        sheet.write_string(0, 0, "Metric")?;
+        sheet.write_string(0, 1, "Value")?;
+        let text_rows: [(&str, String); 4] = [
+            ("calculation", REPLENISHMENT_CONTEXT.to_string()),
+            ("anchor_week", header.anchor_week.clone()),
+            ("publication_cutoff_week", header.cutoff_week.clone()),
+            ("horizon_start_week", header.horizon_start_week.clone()),
+        ];
+        for (index, (label, value)) in text_rows.iter().enumerate() {
+            let line = index as u32 + 1;
+            sheet.write_string(line, 0, *label)?;
+            sheet.write_string(line, 1, value.as_str())?;
+        }
+        let blocked_count = rows.iter().filter(|row| !row.blocked.is_empty()).count();
+        let number_rows: [(&str, f64); 6] = [
+            ("publication_id", f64::from(publication_id)),
+            ("inventory_snapshot_id", f64::from(snapshot_id)),
+            ("row_count", rows.len() as f64),
+            ("blocked_rows", blocked_count as f64),
+            ("low_multiplier", header.low_multiplier.unwrap_or(f64::NAN)),
+            (
+                "high_multiplier",
+                header.high_multiplier.unwrap_or(f64::NAN),
+            ),
+        ];
+        for (index, (label, value)) in number_rows.iter().enumerate() {
+            let line = index as u32 + 6;
+            sheet.write_string(line, 0, *label)?;
+            if value.is_finite() {
+                sheet.write_number(line, 1, *value)?;
+            }
+        }
+        sheet.write_string(12, 0, "scope_note")?;
+        sheet.write_string(
+            12,
+            1,
+            "Demand is the published effective plan; history is net sales and stockouts can suppress observed sales. No service-level guarantee, order netting, or demand uncensoring is provided.",
+        )?;
+    }
+    workbook.save_to_writer(temporary.as_file_mut())?;
+    Ok(rows.len() as i64)
+}
+
+// ---------------------------------------------------------------------------
+// FVA retrospective helpers end here
+// ---------------------------------------------------------------------------
 
 /// Retrospective accumulator for one series across eligible publications, in
 /// the series' own units.

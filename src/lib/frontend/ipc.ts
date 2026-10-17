@@ -16,6 +16,9 @@ import type {
 	ImportPreview,
 	InboxPolicy,
 	InboxPolicyEdit,
+	InventoryImportEdit,
+	InventoryPreview,
+	InventorySnapshot,
 	JobInfo,
 	OverrideEdit,
 	OverrideRevision,
@@ -23,6 +26,8 @@ import type {
 	PlanPublication,
 	PublicationFvaPoints,
 	PublicationSeriesDetail,
+	ReplenishmentEdit,
+	ReplenishmentPlan,
 	ReviewActionEdit,
 	RunOverview,
 	RunSummary,
@@ -339,6 +344,74 @@ export async function setActualsConfirmation(
 /** The current actuals confirmation of the active profile. */
 export async function fetchActualsConfirmationLatest(): Promise<ActualsConfirmation | null> {
 	return unwrap(await commands.actualsConfirmationLatest());
+}
+
+/** Inventory/1 batch file pickers (exact headers, no fuzzy mapping). */
+export async function pickInventoryStock(): Promise<string | null> {
+	const selection = await open({
+		multiple: false,
+		title: 'Choose the stock CSV',
+		filters: [{ name: 'Stock CSV', extensions: ['csv'] }]
+	});
+	return firstSelectedPath(selection);
+}
+
+export async function pickInventoryReceipts(): Promise<string | null> {
+	const selection = await open({
+		multiple: false,
+		title: 'Choose the receipts CSV',
+		filters: [{ name: 'Receipts CSV', extensions: ['csv'] }]
+	});
+	return firstSelectedPath(selection);
+}
+
+export async function pickInventoryPolicy(): Promise<string | null> {
+	const selection = await open({
+		multiple: false,
+		title: 'Choose the policy CSV',
+		filters: [{ name: 'Policy CSV', extensions: ['csv'] }]
+	});
+	return firstSelectedPath(selection);
+}
+
+export async function pickInventoryWorkbook(): Promise<string | null> {
+	const selection = await open({
+		multiple: false,
+		title: 'Choose the inventory workbook',
+		filters: [{ name: 'Workbook', extensions: ['xlsx', 'xls'] }]
+	});
+	return firstSelectedPath(selection);
+}
+
+/** Parse and validate an inventory batch without writing anything. */
+export async function inventoryPreview(edit: InventoryImportEdit): Promise<InventoryPreview> {
+	return unwrap(await commands.inventoryPreview(edit));
+}
+
+/** Import one immutable inventory batch (ADR-0031). */
+export async function inventoryImport(edit: InventoryImportEdit): Promise<InventorySnapshot> {
+	return unwrap(await commands.inventoryImport(edit));
+}
+
+export async function fetchInventorySnapshots(): Promise<InventorySnapshot[]> {
+	return unwrap(await commands.inventorySnapshotsList());
+}
+
+/** Derived replenishment plan for one publication and snapshot (ADR-0031). */
+export async function fetchReplenishmentPlan(
+	edit: ReplenishmentEdit,
+	search: string,
+	offset: number,
+	limit: number
+): Promise<ReplenishmentPlan> {
+	return unwrap(await commands.replenishmentPlan(edit, search, offset, limit));
+}
+
+export async function exportReplenishmentXlsx(
+	edit: ReplenishmentEdit,
+	path: string
+): Promise<ExportResult> {
+	return unwrap(await commands.exportReplenishmentXlsx(edit, path));
 }
 
 /** Derived retrospective planner FVA at one horizon step (ADR-0030). */

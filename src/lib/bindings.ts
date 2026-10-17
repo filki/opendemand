@@ -109,6 +109,11 @@ export const commands = {
 } | null, AppError>(__TAURI_INVOKE("actuals_confirmation_latest")),
 	fvaReport: (horizon: number, search: string, offset: number, limit: number) => typedError<FvaReport, AppError>(__TAURI_INVOKE("fva_report", { horizon, search, offset, limit })),
 	fvaPublicationSeries: (publicationId: number, horizon: number, search: string, offset: number, limit: number) => typedError<PublicationFvaPoints, AppError>(__TAURI_INVOKE("fva_publication_series", { publicationId, horizon, search, offset, limit })),
+	inventoryPreview: (edit: InventoryImportEdit) => typedError<InventoryPreview, AppError>(__TAURI_INVOKE("inventory_preview", { edit })),
+	inventoryImport: (edit: InventoryImportEdit) => typedError<InventorySnapshot, AppError>(__TAURI_INVOKE("inventory_import", { edit })),
+	inventorySnapshotsList: () => typedError<InventorySnapshot[], AppError>(__TAURI_INVOKE("inventory_snapshots_list")),
+	replenishmentPlan: (edit: ReplenishmentEdit, search: string, offset: number, limit: number) => typedError<ReplenishmentPlan, AppError>(__TAURI_INVOKE("replenishment_plan", { edit, search, offset, limit })),
+	exportReplenishmentXlsx: (edit: ReplenishmentEdit, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_replenishment_xlsx", { edit, path })),
 	exportCsv: (runId: string, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_csv", { runId, path })),
 	exportXlsx: (runId: string, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_xlsx", { runId, path })),
 };
@@ -396,6 +401,52 @@ export type InboxPolicyEdit = {
 	bias_abs: string | null,
 };
 
+export type InventoryFinding = {
+	/**  `blocking` or `warning`. */
+	severity: string,
+	code: string,
+	detail: string,
+	row_ref: string | null,
+};
+
+/**
+ *  Inputs for one inventory/1 import (ADR-0031): either three CSV files or one
+ *  XLSX workbook with the exact sheets `Stock`, `Receipts`, and `Policy`.
+ */
+export type InventoryImportEdit = {
+	stock_path: string | null,
+	receipts_path: string | null,
+	policy_path: string | null,
+	workbook_path: string | null,
+	/**  Required when the batch has no receipts at all. */
+	receipts_empty_confirmed: boolean,
+	/**  Confirms stock and receipts use the declared unit and the forecast does too. */
+	unit_confirmed: boolean,
+};
+
+export type InventoryPreview = {
+	as_of_week: string | null,
+	sku_count: number,
+	stock_count: number,
+	receipt_count: number,
+	policy_count: number,
+	overdue_receipts: number,
+	beyond_horizon_receipts: number,
+	findings: InventoryFinding[],
+	can_import: boolean,
+};
+
+export type InventorySnapshot = {
+	id: number,
+	as_of_week: string,
+	imported_at: string,
+	sku_count: number,
+	receipt_count: number,
+	overdue_receipts: number,
+	/**  True when identical content already existed; nothing was written. */
+	is_duplicate: boolean,
+};
+
 export type JobInfo = {
 	id: string,
 	kind: string,
@@ -572,6 +623,77 @@ export type PublicationSeriesDetail = {
 	outcome: string,
 	reason: string | null,
 	planning: PlanningPoint[],
+};
+
+/**  Sensitivities and selection for one derived replenishment plan (ADR-0031). */
+export type ReplenishmentEdit = {
+	publication_id: number,
+	snapshot_id: number,
+	/**  Raw decimal multipliers; both optional, `0 <= low <= 1 <= high`. */
+	low_multiplier: string | null,
+	high_multiplier: string | null,
+};
+
+export type ReplenishmentPlan = {
+	publication_id: number,
+	snapshot_id: number,
+	anchor_week: string,
+	cutoff_week: string,
+	horizon_start_week: string,
+	low_multiplier: number | null,
+	high_multiplier: number | null,
+	total: number,
+	rows: ReplenishmentRow[],
+};
+
+export type ReplenishmentRow = {
+	product_id: string,
+	location_id: string,
+	series_key: string,
+	location_code: string,
+	unit: string,
+	lead_weeks: number,
+	review_weeks: number,
+	protection_weeks: number,
+	safety_stock: number | null,
+	moq: number | null,
+	pack_size: number | null,
+	opening_stock: number | null,
+	inbound_in_window: number | null,
+	/**  Aggregate demand over the protection window; null when blocked. */
+	demand_window: number | null,
+	raw_need: number | null,
+	order_base: number | null,
+	order_low: number | null,
+	order_high: number | null,
+	/**  Blocking reasons (no order is suggested while any exists). */
+	blocked: InventoryFinding[],
+	/**
+	 *  Non-blocking disclosures (overdue receipts, imputed input, receipts
+	 *  beyond the horizon, early shortages).
+	 */
+	warnings: InventoryFinding[],
+	weeks: ReplenishmentWeek[],
+};
+
+export type ReplenishmentWeek = {
+	/**  1-based week of the protection/projection window: `anchor + (index-1)` weeks. */
+	index: number,
+	week_start: string,
+	/**  Published effective demand for the week; null blocks when inside P. */
+	demand: number | null,
+	/**
+	 *  Open receipts arriving at the beginning of this week (already in stock
+	 *  receipts never appear here).
+	 */
+	receipt: number | null,
+	/**
+	 *  Projected closing balance without the suggested order; null when demand
+	 *  is unknown.
+	 */
+	closing: number | null,
+	/**  True when the suggested order arrives at the beginning of this week. */
+	order_arrival: boolean,
 };
 
 export type ReviewActionEdit = {

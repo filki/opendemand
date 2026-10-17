@@ -389,6 +389,123 @@ pub struct PublicationFvaPoints {
     pub rows: Vec<FvaPoint>,
 }
 
+/// Inputs for one inventory/1 import (ADR-0031): either three CSV files or one
+/// XLSX workbook with the exact sheets `Stock`, `Receipts`, and `Policy`.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct InventoryImportEdit {
+    pub stock_path: Option<String>,
+    pub receipts_path: Option<String>,
+    pub policy_path: Option<String>,
+    pub workbook_path: Option<String>,
+    /// Required when the batch has no receipts at all.
+    pub receipts_empty_confirmed: bool,
+    /// Confirms stock and receipts use the declared unit and the forecast does too.
+    pub unit_confirmed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct InventoryFinding {
+    /// `blocking` or `warning`.
+    pub severity: String,
+    pub code: String,
+    pub detail: String,
+    pub row_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct InventoryPreview {
+    pub as_of_week: Option<String>,
+    pub sku_count: u32,
+    pub stock_count: u32,
+    pub receipt_count: u32,
+    pub policy_count: u32,
+    pub overdue_receipts: u32,
+    pub beyond_horizon_receipts: u32,
+    pub findings: Vec<InventoryFinding>,
+    pub can_import: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct InventorySnapshot {
+    pub id: i32,
+    pub as_of_week: String,
+    pub imported_at: String,
+    pub sku_count: u32,
+    pub receipt_count: u32,
+    pub overdue_receipts: u32,
+    /// True when identical content already existed; nothing was written.
+    pub is_duplicate: bool,
+}
+
+/// Sensitivities and selection for one derived replenishment plan (ADR-0031).
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReplenishmentEdit {
+    pub publication_id: i32,
+    pub snapshot_id: i32,
+    /// Raw decimal multipliers; both optional, `0 <= low <= 1 <= high`.
+    pub low_multiplier: Option<String>,
+    pub high_multiplier: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReplenishmentWeek {
+    /// 1-based week of the protection/projection window: `anchor + (index-1)` weeks.
+    pub index: u32,
+    pub week_start: String,
+    /// Published effective demand for the week; null blocks when inside P.
+    pub demand: Option<f64>,
+    /// Open receipts arriving at the beginning of this week (already in stock
+    /// receipts never appear here).
+    pub receipt: f64,
+    /// Projected closing balance without the suggested order; null when demand
+    /// is unknown.
+    pub closing: Option<f64>,
+    /// True when the suggested order arrives at the beginning of this week.
+    pub order_arrival: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReplenishmentRow {
+    pub product_id: String,
+    pub location_id: String,
+    pub series_key: String,
+    pub location_code: String,
+    pub unit: String,
+    pub lead_weeks: u32,
+    pub review_weeks: u32,
+    pub protection_weeks: u32,
+    pub safety_stock: f64,
+    pub moq: f64,
+    pub pack_size: f64,
+    pub opening_stock: f64,
+    pub inbound_in_window: f64,
+    /// Aggregate demand over the protection window; null when blocked.
+    pub demand_window: Option<f64>,
+    pub raw_need: Option<f64>,
+    pub order_base: Option<f64>,
+    pub order_low: Option<f64>,
+    pub order_high: Option<f64>,
+    /// Blocking reasons (no order is suggested while any exists).
+    pub blocked: Vec<InventoryFinding>,
+    /// Non-blocking disclosures (overdue receipts, imputed input, receipts
+    /// beyond the horizon, early shortages).
+    pub warnings: Vec<InventoryFinding>,
+    pub weeks: Vec<ReplenishmentWeek>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReplenishmentPlan {
+    pub publication_id: i32,
+    pub snapshot_id: i32,
+    pub anchor_week: String,
+    pub cutoff_week: String,
+    pub horizon_start_week: String,
+    pub low_multiplier: Option<f64>,
+    pub high_multiplier: Option<f64>,
+    pub total: u32,
+    pub rows: Vec<ReplenishmentRow>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct OverrideRevision {
     pub revision: u32,

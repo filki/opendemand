@@ -584,6 +584,60 @@ async fn fva_publication_series(
 
 #[tauri::command]
 #[specta::specta]
+async fn inventory_preview(
+    edit: InventoryImportEdit,
+    state: State<'_, Service>,
+) -> AppResult<InventoryPreview> {
+    state.current().await?.inventory_preview(edit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn inventory_import(
+    edit: InventoryImportEdit,
+    state: State<'_, Service>,
+) -> AppResult<InventorySnapshot> {
+    state.current().await?.inventory_import(edit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn inventory_snapshots_list(state: State<'_, Service>) -> AppResult<Vec<InventorySnapshot>> {
+    state.current().await?.inventory_snapshots_list().await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn replenishment_plan(
+    edit: ReplenishmentEdit,
+    search: String,
+    offset: u32,
+    limit: u32,
+    state: State<'_, Service>,
+) -> AppResult<ReplenishmentPlan> {
+    state
+        .current()
+        .await?
+        .replenishment_plan(edit, &search, offset, limit)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn export_replenishment_xlsx(
+    edit: ReplenishmentEdit,
+    path: String,
+    state: State<'_, Service>,
+) -> AppResult<ExportResult> {
+    state
+        .current()
+        .await?
+        .export_replenishment_xlsx(edit, std::path::Path::new(&path))
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn run_overview(
     run_id: String,
     offset: u32,
@@ -1115,6 +1169,11 @@ fn command_builder() -> Builder<tauri::Wry> {
             actuals_confirmation_latest,
             fva_report,
             fva_publication_series,
+            inventory_preview,
+            inventory_import,
+            inventory_snapshots_list,
+            replenishment_plan,
+            export_replenishment_xlsx,
             export_csv,
             export_xlsx
         ])

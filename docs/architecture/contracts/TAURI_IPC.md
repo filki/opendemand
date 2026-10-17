@@ -46,6 +46,11 @@ The UI never opens SQLite or runs the Python engine directly. This document cove
 - `actuals_confirmation_latest()`: the profile's current (latest) confirmation, or null.
 - `fva_report(horizon: number, search: string, offset: number, limit: number)`: derived retrospective planner FVA (ADR-0030) at one horizon step (1..12; `invalid_horizon` otherwise). Returns the current confirmation, per-publication counts with explicit exclusion counts, and paginated per-series measures for the search; nothing is stored.
 - `fva_publication_series(publication_id: number, horizon: number, search: string, offset: number, limit: number)`: every target point of one publication at one horizon with its inputs and verdict; `unknown_publication` on mismatch.
+- `inventory_preview(edit: InventoryImportEdit)`: parse and validate an inventory/1 batch (ADR-0031) without writing; returns counts, findings (`blocking`/`warning`), and `can_import`. Schema errors fail with `inventory_schema`/`inventory_unreadable`.
+- `inventory_import(edit: InventoryImportEdit)`: import one immutable batch; identical content under the contract resolves to the existing snapshot with `is_duplicate = true`. Blocking findings fail with `inventory_invalid`, and `inventory_no_history` when no sales revision exists.
+- `inventory_snapshots_list()`: snapshots of the active profile, newest first, with counts.
+- `replenishment_plan(edit: ReplenishmentEdit, search: string, offset: number, limit: number)`: derived plan for one publication and snapshot with every arithmetic term, the 12-week projection, explicit blocks, and warnings; `unknown_publication`, `unknown_snapshot`, `inventory_mismatch`, and `invalid_multiplier` on bad input. Nothing is stored.
+- `export_replenishment_xlsx(edit: ReplenishmentEdit, path: string)`: write the Recommendations, Projection, and Summary workbook under the ordinary export path rules; the export record links the publication and snapshot.
 - `export_csv(run_id: string, path: string)`: publish the saved full-run plan to a new CSV file and return `ExportResult`.
 - `export_xlsx(run_id: string, path: string)`: publish the same saved plan as a new XLSX workbook with `Plan` and `Summary` sheets; return `ExportResult`.
 
@@ -77,6 +82,11 @@ Jobs use string ids to correlate Tauri, SQLite, and sidecar messages.
 - `FvaReport`: `horizon`, nullable `confirmation`, `publications`, `total`, and paginated `rows`.
 - `FvaPoint`: series identity, `week_start`, nullable `actual`/`baseline`/`effective`, `baseline_error`/`effective_error` (forecast minus actual), `adjustment` (effective minus baseline), `imputed_input`, and the nullable `excluded` verdict code (null = scored).
 - `PublicationFvaPoints`: `publication_id`, `horizon`, `total`, paginated `rows`.
+- `InventoryFinding`: `severity` (`blocking`/`warning`), `code`, `detail`, nullable `row_ref`.
+- `InventoryPreview`: nullable `as_of_week`, `sku_count`, `stock_count`, `receipt_count`, `policy_count`, `overdue_receipts`, `beyond_horizon_receipts`, `findings`, `can_import`.
+- `InventorySnapshot`: `id`, `as_of_week`, `imported_at`, `sku_count`, `receipt_count`, `overdue_receipts`, `is_duplicate`.
+- `ReplenishmentRow`: series identity and `unit`, `lead_weeks`/`review_weeks`/`protection_weeks`, `safety_stock`/`moq`/`pack_size`, `opening_stock`, `inbound_in_window`, nullable `demand_window`/`raw_need`/`order_base`/`order_low`/`order_high`, `blocked` and `warnings` findings, and the 12 `weeks` projection (demand, receipt, closing, order_arrival).
+- `ReplenishmentPlan`: `publication_id`, `snapshot_id`, `anchor_week`, `cutoff_week`, `horizon_start_week`, nullable multipliers, `total`, paginated `rows`.
 - `RunSummary`: `id`, `revision_id`, `status`, `created_at`, `horizon_start_week`, `engine_version`.
 - `RunOverview`: `series_count`, `covered_series`, `coverage`, `outcomes` (all five outcome keys, including zero counts), `exception_count`, and `exceptions`. Coverage is the fraction with `ok` or `fallback_naive`, not forecast accuracy; zero series yields zero coverage. Totals are independent of pagination.
 - `RunException`: `product_id`, `location_id`, `series_key`, `location_code`, `outcome`, nullable `reason`. Exceptions have non-`ok` status or a recorded reason, including `ok` after production fallback. Order is model failure, invalid data, insufficient history, Naive fallback, then `ok` with a reason, followed by SKU/location/identity tie-breaks.
@@ -139,6 +149,12 @@ The inbox (ADR-0028) derives one row per exception series of the selected comple
 ## Retrospective FVA
 
 Scoring (ADR-0030) pins both sides: the published plan (ADR-0029) and the exact actuals revision named by the latest confirmation. A point is scored only when the publication happened strictly before the target week started, the target week is within the confirmed range, the confirmed revision holds a usable numeric actual, the published plan has baseline and effective values, and the actual was not already visible at or below the publication's revision high-water mark. Everything else carries one explicit exclusion code: `late_published`, `future`, `no_forecast`, `absent`, `missing_or_partial`, `stockout`, or `hindsight` — never a zero-filled week and never a silent skip. Series measures stay in the series' own units (pooled WAPE/MAE/bias plus percentage-point FVA); publication rows show counts only, with a low-sample flag. The persistent-bias inbox rule consumes the same evidence: at the configured horizon, distinct mature weeks from the newest publications must all share one nonzero error sign and exceed the bias threshold. `review/2` fingerprints include the bias token, so changed bias evidence reopens review acknowledgements.
+
+## Inventory and replenishment
+
+The `inventory/1` contract (ADR-0031) pins exact headers: `stock.csv` (`sku,stock,as_of`), `receipts.csv` (`receipt_id,sku,quantity,available_week`), `policy.csv` (`sku,unit,lead_weeks,review_weeks,safety_stock,moq,pack_size`), or one workbook with the sheets `Stock`, `Receipts`, and `Policy`. Stock and policy must describe exactly the same SKUs; receipts must be inside that scope; an empty receipts table and unit consistency need explicit confirmations. Overdue open receipts are retained in the `overdue` state, warn in preview, and block that SKU's suggestion; receipts beyond the 12-week horizon are retained and disclosed but never counted. Identical content under the contract is a no-op; raw files are retained content-addressed.
+
+The derived plan pins one publication and one snapshot of the same profile. The snapshot Monday is the anchor and must be inside the published horizon; `P = lead + review` whole weeks must all carry published effective values. `raw = max(0, demand over P + safety stock − opening stock − open receipts due inside the window)` and `order = pack × ceil(max(raw, MOQ) / pack)`, zero when raw is zero. Blocks: `not_in_publication`, `missing_policy`, `overdue_receipt`, `anchor_before_horizon`, `protection_too_long`, `missing_forecast`. Warnings: `imputed_input`, `beyond_horizon_receipt`, `early_shortage`. Low/high multipliers scale demand only and are sensitivities, never prediction intervals; no service-level guarantee, order netting, reservations, currency, or demand uncensoring is provided.
 
 ## Full-Run CSV And XLSX Export
 

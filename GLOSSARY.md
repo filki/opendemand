@@ -24,6 +24,7 @@ Vocabulary for issues, tests, ADRs, docs, and UI copy. Definitions here are conc
 - **Forecast run** — immutable record of one forecast execution; pins the import revision, horizon, timezone, config, and versions.
 - **H (usable history)** — number of consecutive weeks with numeric values ending at the last completed week; `missing` and `partial` weeks break the run (ADR-0005).
 - **Hindsight (exclusion)** — a target actual that existed in a profile revision at or below the publication's revision high-water mark: the planner could have seen it, so the point is never scored (ADR-0030).
+- **Inventory snapshot** — one immutable inventory/1 batch: opening stock as of a Monday inside the published horizon, open dated receipts, and whole-week policy per SKU; identical content is a no-op and raw files are retained (ADR-0031).
 - **Import revision** — immutable full-snapshot import; never mutated or auto-deleted.
 - **MAE** — mean absolute error: `sum(|actual − forecast|) / 12` over one backtest origin's 12-week horizon.
 - **Import configuration** — a named, profile-scoped parsing descriptor the guided import can save and reuse; editing or deleting one never changes a committed revision, which keeps its own frozen snapshot (ADR-0021).
@@ -34,6 +35,8 @@ Vocabulary for issues, tests, ADRs, docs, and UI copy. Definitions here are conc
 - **Parsing descriptor** — the versioned, deterministically serialized description of how one source file becomes observations (format, encoding, delimiter or sheet, header row, column bindings, date formats, separators, aggregation); it joins the mapping fingerprint and is frozen per preprocessed revision (ADR-0019, ADR-0020).
 - **Override** — append-only manual edit to a forecast cell; revisions are sequential, NULL clears, the highest revision wins, and overrides are scoped to one run.
 - **Plan publication** — immutable official commitment of one completed run for its history cutoff: pins the exact latest override revision of every overridden cell and the profile's highest import revision id at publication time; published values are derived from those pins, one publication per profile and cutoff (ADR-0029).
+- **Protection window** — the whole weeks a replenishment suggestion must cover: `P = lead time + review interval`, starting at the snapshot's anchor Monday inside the published horizon (ADR-0031).
+- **Raw need (replenishment)** — `max(0, demand over the protection window + safety stock − opening stock − open receipts due inside the window)`; rounded up to pack size and MOQ into the suggested order (ADR-0031).
 - **Override reason** — the required planner reason code stored with each new override revision (`promotion`, `customer_information`, `supply_constraint`, `data_quality`, `other`); `other` requires a note. It records intent, never a detected cause (ADR-0027).
 - **Review event** — append-only acknowledgement (`reviewed` or `reopened`) of one series in one run, stored with the evidence fingerprint it covered; the current state is derived at read time (ADR-0027).
 - **Review policy** — append-only versions of the profile-scoped material-change thresholds (absolute and relative); both set enables the rule, both empty disables it, and the highest version is current (ADR-0028).

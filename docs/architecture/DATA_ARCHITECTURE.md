@@ -200,6 +200,16 @@ Retrospective evaluation (ADR-0030, migration 007) stores one thing only: the ap
 - Publication rows carry counts only (scored, adjusted, improved/harmful/unchanged, exclusions, low-sample flag below five points); no cross-SKU accuracy aggregate exists.
 - Persistent-bias evidence (also derived) uses published effective values against confirmed actuals at the configured horizon: newest publications first, distinct mature target weeks, all errors sharing one nonzero sign, pooled bias magnitude above the threshold. The `review/2` evidence fingerprint includes the bias token.
 
+## 16. Inventory Inputs and Replenishment (immutable inputs, derived plan)
+
+The inventory/1 batch (ADR-0031, migration 008) stores only the immutable inputs; every purchasing number is derived at read time:
+
+- `inventory_snapshot` (immutable): one batch per profile and default location, pinned to one Monday as-of week inside the published horizon, with the contract label, a content hash, and the confirmations (unit consistency, empty receipts) the import required. Identical content is a no-op.
+- `inventory_stock` / `inventory_receipt` / `inventory_policy` (immutable): explicit stock per scoped product (absent is never zero), open dated receipts with the `overdue` state retained for blocking, and whole-week policy (unit, lead, review, safety stock, MOQ, pack). Stock and policy scopes must be equal; receipts must be inside the scope.
+- `inventory_source_file` (immutable): the retained raw files, content-addressed with hashes under `sources/inventory/`.
+- The derived plan pins one publication and one snapshot: `raw = max(0, demand over P weeks + safety stock − stock − open receipts due inside the window)` and `order = pack × ceil(max(raw, MOQ) / pack)`. Blocks and warnings are explicit codes; the 12-week projection arrives receipts at the beginning of their availability week and the suggested order after the lead time. Nothing about a plan is stored; exports add `export_record.inventory_snapshot_id` provenance and the `replenishment/1` calculation label.
+- Limitations stay visible in the contract: net-sales history, no demand uncensoring, no reservations/backlog, no currency or unit conversion, no service-level guarantee, no cross-series pooling.
+
 ## Related Documents
 
 - ADRs: `adr/README.md` (full index; semantics live in the referenced ADRs)
