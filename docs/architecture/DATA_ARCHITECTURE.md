@@ -181,6 +181,16 @@ The ranked review inbox (ADR-0028, migration 005) adds no derived storage:
 - `review_due` marks the latest override revision of a cell when its review date is due and its value is non-null; it is a reminder and changes nothing (ADR-0027).
 - Review state filters rows but never suppresses evidence; search and filters apply before pagination in one snapshot. Inbox rows, totals, and priorities are never stored.
 
+## 14. Plan Publications (immutable references)
+
+Publishing (ADR-0029, migration 006) is the explicit boundary between exploratory runs and the committed weekly plan:
+
+- `plan_publication` (immutable): one row per `(profile_id, cutoff_week)`; names the pinned run and revision, the horizon start, the profile's highest import revision id at publication (the hindsight high-water mark), the policy label (`publication/1`), and `published_at`. UPDATE and DELETE are rejected.
+- `publication_override` (immutable): the exact latest override revision of every overridden cell of the pinned run, including NULL clears; a composite foreign key proves each pin names a real override revision.
+- Published values are derived at read time: pinned override ?? immutable baseline, `missing` when neither exists — identical semantics to the live planner, with the pinned revision instead of the latest. Nothing is copied and later run edits cannot change a publication.
+- Publication legality: a completed run whose revision cutoff equals horizon start minus one week, and only for a finished week (`future_history` otherwise); a second publication for the same cutoff fails with `already_published`. Publishing never backdates.
+- Publication exports use the ordinary export columns, read pinned values, and record `export_record.publication_id`; the XLSX Summary adds publication identity lines. Ordinary run exports keep their live-saved-run semantics and stay unlinked.
+
 ## Related Documents
 
 - ADRs: `adr/README.md` (full index; semantics live in the referenced ADRs)

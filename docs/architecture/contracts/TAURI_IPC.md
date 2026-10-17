@@ -38,6 +38,10 @@ The UI never opens SQLite or runs the Python engine directly. This document cove
 - `review_policy()`: return the active profile's current inbox policy (latest version, or all-null when never configured).
 - `review_policy_set(edit: InboxPolicyEdit)`: append one policy version and return it. Both thresholds enable the material-change rule; both empty disable it; a partial pair fails with `invalid_policy` and appends nothing.
 - `exception_inbox(run_id: string, search: string, filter: string, offset: number, limit: number)`: derive the ranked exception inbox for one completed run (ADR-0028). `filter` is `all`, `unreviewed`, or `reviewed`; unknown values fail with `invalid_filter`. Limit clamps to 1..200; search and filter apply before pagination in one read snapshot. Unknown and incomplete runs fail with `unknown_run` and `run_not_completed`.
+- `publish_plan(edit: PublicationEdit)`: publish one completed run as the immutable official plan for its history cutoff (ADR-0029) and return `PlanPublication`. Errors include `unknown_run`, `run_not_completed`, `future_history` (history reaches into an unfinished week), and `already_published` (the cutoff already has a publication).
+- `publications_list()`: publications of the active profile, newest first, with derived override-cell and coverage counts.
+- `publication_series_detail(publication_id: number, product_id: string, location_id: string)`: the published plan for one series: pinned override values plus immutable baselines; `unknown_publication` and `unknown_series` on mismatch.
+- `export_publication_csv(publication_id: number, path: string)` / `export_publication_xlsx(publication_id: number, path: string)`: export the pinned published values (ADR-0029) with the ordinary export columns and the same path rules; XLSX Summary gains publication identity lines; the export record links to the publication. Ordinary `export_csv`/`export_xlsx` keep their live-saved-run semantics.
 - `export_csv(run_id: string, path: string)`: publish the saved full-run plan to a new CSV file and return `ExportResult`.
 - `export_xlsx(run_id: string, path: string)`: publish the same saved plan as a new XLSX workbook with `Plan` and `Summary` sheets; return `ExportResult`.
 
@@ -59,6 +63,8 @@ Jobs use string ids to correlate Tauri, SQLite, and sidecar messages.
 - `InboxPolicy`: nullable `change_abs`, `change_rel`, and `version`. Both thresholds are null together (rule disabled) or set (numeric threshold in the series' own units, and a fraction like 0.25). `version` is null when never configured.
 - `InboxItem`: series identity (`product_id`, `location_id`, `series_key`, `location_code`), `outcome`, nullable `reason`, `rules` (codes in fixed priority order), nullable `change_abs`/`change_rel` (material change evidence; the relative value is null when the previous baseline magnitude is zero), nullable `due_review_date`, `review_status` (`reviewed | unreviewed`), nullable `reviewed_at`, `note_count`, and nullable `last_note_at`.
 - `ExceptionInbox`: `run_id`, `policy`, nullable `predecessor_run_id` (newest completed run of the immediately preceding revision), `material_change_available`, `total` (matching rows across the run), and paginated `rows`.
+- `PlanPublication`: `id`, `run_id`, `revision_id`, `cutoff_week`, `horizon_start_week`, `revision_high_water` (highest import revision id visible at publication), `published_at`, `override_cells`, `override_series`, `series_count`, `covered_series`.
+- `PublicationSeriesDetail`: `publication_id`, series identity, `outcome`, nullable `reason`, and `planning` points with values pinned at publication time (same shape as `PlanningPoint`).
 - `RunSummary`: `id`, `revision_id`, `status`, `created_at`, `horizon_start_week`, `engine_version`.
 - `RunOverview`: `series_count`, `covered_series`, `coverage`, `outcomes` (all five outcome keys, including zero counts), `exception_count`, and `exceptions`. Coverage is the fraction with `ok` or `fallback_naive`, not forecast accuracy; zero series yields zero coverage. Totals are independent of pagination.
 - `RunException`: `product_id`, `location_id`, `series_key`, `location_code`, `outcome`, nullable `reason`. Exceptions have non-`ok` status or a recorded reason, including `ok` after production fallback. Order is model failure, invalid data, insufficient history, Naive fallback, then `ok` with a reason, followed by SKU/location/identity tie-breaks.
@@ -113,6 +119,10 @@ The effective forecast uses the latest override revision's value when non-null, 
 ## Exception inbox
 
 The inbox (ADR-0028) derives one row per exception series of the selected completed run with all applicable rule codes in the fixed priority order: `model_failure`, `invalid_data`, `insufficient_history`, `imputed_input`, `production_fallback`, `material_change`, `review_due`. Material-change evidence compares the run with the newest completed run of the immediately preceding revision: the sum of absolute baseline deltas over common calendar weeks and its ratio to the previous magnitude; when that magnitude is zero the ratio is null and the absolute threshold alone decides. Thresholds are per profile, append-only versions; the rule stays off until both are set. Review state is a filter, never suppression: reviewed rows stay listed and reopen automatically when evidence changes. No monetary impact, no cross-series score, and no stored inbox state.
+
+## Plan publications
+
+`PublicationEdit` carries only `run_id`. Publishing (ADR-0029) is one serialized writer transaction: it validates the completed run, the finished-week cutoff, and the one-per-cutoff rule; pins the exact latest override revision of every overridden cell; records the highest import revision id of the profile as the hindsight high-water mark; and stamps `published_at`. Published values are derived at read time (pinned override ?? immutable baseline) and never copied; later edits to the run cannot change them. Only overridden cells are pinned: baselines are immutable by construction.
 
 ## Full-Run CSV And XLSX Export
 

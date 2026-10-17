@@ -35,10 +35,22 @@ async fn raw_pool(database: &Path) -> sqlx::SqlitePool {
         .unwrap()
 }
 
-/// Reconstruct a version-1 database from a freshly created one: drop the 005
+/// Reconstruct a version-1 database from a freshly created one: drop the 006
 /// to 002 objects, forget their migration records, and reset the settings
 /// version.
 async fn downgrade_to_version_one(pool: &sqlx::SqlitePool) {
+    sqlx::query("DROP TABLE publication_override")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE plan_publication")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE export_record DROP COLUMN publication_id")
+        .execute(pool)
+        .await
+        .unwrap();
     sqlx::query("DROP TABLE review_policy")
         .execute(pool)
         .await
@@ -71,7 +83,7 @@ async fn downgrade_to_version_one(pool: &sqlx::SqlitePool) {
         .execute(pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (2, 3, 4, 5)")
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (2, 3, 4, 5, 6)")
         .execute(pool)
         .await
         .unwrap();
@@ -96,7 +108,7 @@ async fn opening_a_version_one_workspace_backs_up_then_migrates() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("workspace");
     let workspace = Workspace::create(root.clone()).await.unwrap();
-    assert_eq!(workspace.info().await.unwrap().schema_version, "5");
+    assert_eq!(workspace.info().await.unwrap().schema_version, "6");
     workspace
         .import_csv(&fixture("demo.csv"), &AtomicBool::new(false))
         .await
@@ -106,7 +118,7 @@ async fn opening_a_version_one_workspace_backs_up_then_migrates() {
 
     let reopened = Workspace::open(root.clone()).await.unwrap();
     let info = reopened.info().await.unwrap();
-    assert_eq!(info.schema_version, "5");
+    assert_eq!(info.schema_version, "6");
     // The upgrade preserved existing data.
     assert_eq!(info.latest_revision_id, Some(1));
     reopened.pool.close().await;
@@ -131,7 +143,7 @@ async fn opening_a_version_one_workspace_backs_up_then_migrates() {
     .unwrap();
     assert_eq!(manifest["scope"], "database");
     assert_eq!(manifest["schema_version_before"], "1");
-    assert_eq!(manifest["schema_version_after"], "5");
+    assert_eq!(manifest["schema_version_after"], "6");
     assert_eq!(manifest["app_version"], env!("CARGO_PKG_VERSION"));
     let bytes = std::fs::read(root.join("backups").join(&backup_file)).unwrap();
     let digest = {
@@ -260,7 +272,7 @@ async fn a_newer_schema_version_is_refused() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("workspace");
     let workspace = Workspace::create(root.clone()).await.unwrap();
-    sqlx::query("UPDATE workspace_settings SET schema_version = '6'")
+    sqlx::query("UPDATE workspace_settings SET schema_version = '7'")
         .execute(&workspace.pool)
         .await
         .unwrap();

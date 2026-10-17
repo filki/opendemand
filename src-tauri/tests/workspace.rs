@@ -37,7 +37,7 @@ async fn create_open_info_roundtrip_and_refuses_overwrite() {
     let root = directory.path().join("workspace");
     let workspace = Workspace::create(root.clone()).await.unwrap();
     let info = workspace.info().await.unwrap();
-    assert_eq!(info.schema_version, "5");
+    assert_eq!(info.schema_version, "6");
     assert_eq!(info.latest_revision_id, None);
     assert_eq!(info.locale, "en");
     assert!(info.recovery_issues.is_empty());
@@ -49,7 +49,7 @@ async fn create_open_info_roundtrip_and_refuses_overwrite() {
     workspace.pool.close().await;
 
     let reopened = Workspace::open(root.clone()).await.unwrap();
-    assert_eq!(reopened.info().await.unwrap().schema_version, "5");
+    assert_eq!(reopened.info().await.unwrap().schema_version, "6");
     reopened.pool.close().await;
 
     // Opening a path with no database is rejected.

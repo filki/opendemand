@@ -18,6 +18,8 @@ import type {
 	OverrideEdit,
 	OverrideRevision,
 	ParsingDescriptor,
+	PlanPublication,
+	PublicationSeriesDetail,
 	ReviewActionEdit,
 	RunOverview,
 	RunSummary,
@@ -282,6 +284,40 @@ export async function fetchReviewPolicy(): Promise<InboxPolicy> {
 /** Append one inbox-policy version: both thresholds or both empty. */
 export async function saveReviewPolicy(edit: InboxPolicyEdit): Promise<InboxPolicy> {
 	return unwrap(await commands.reviewPolicySet(edit));
+}
+
+/** Publish one completed run as the immutable official plan for its cutoff (ADR-0029). */
+export async function publishPlan(runId: string): Promise<PlanPublication> {
+	return unwrap(await commands.publishPlan({ run_id: runId }));
+}
+
+/** Publications of the active profile, newest first. */
+export async function fetchPublicationsList(): Promise<PlanPublication[]> {
+	return unwrap(await commands.publicationsList());
+}
+
+/** The published, pinned plan for one series. */
+export async function fetchPublicationSeriesDetail(
+	publicationId: number,
+	productId: string,
+	locationId: string
+): Promise<PublicationSeriesDetail> {
+	return unwrap(await commands.publicationSeriesDetail(publicationId, productId, locationId));
+}
+
+/** Export the pinned published values (CSV or XLSX) to a chosen path. */
+export async function exportPublicationCsv(
+	publicationId: number,
+	path: string
+): Promise<ExportResult> {
+	return unwrap(await commands.exportPublicationCsv(publicationId, path));
+}
+
+export async function exportPublicationXlsx(
+	publicationId: number,
+	path: string
+): Promise<ExportResult> {
+	return unwrap(await commands.exportPublicationXlsx(publicationId, path));
 }
 
 export async function exportPlanCsv(runId: string, path: string): Promise<ExportResult> {

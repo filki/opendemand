@@ -30,9 +30,11 @@ Vocabulary for issues, tests, ADRs, docs, and UI copy. Definitions here are conc
 - **Observation status** — one of `known`, `zero`, `missing`, `return`, `correction`, `stockout`, `partial`; `missing` and `partial` carry NULL quantity and break `H`.
 - **Parsing descriptor** — the versioned, deterministically serialized description of how one source file becomes observations (format, encoding, delimiter or sheet, header row, column bindings, date formats, separators, aggregation); it joins the mapping fingerprint and is frozen per preprocessed revision (ADR-0019, ADR-0020).
 - **Override** — append-only manual edit to a forecast cell; revisions are sequential, NULL clears, the highest revision wins, and overrides are scoped to one run.
+- **Plan publication** — immutable official commitment of one completed run for its history cutoff: pins the exact latest override revision of every overridden cell and the profile's highest import revision id at publication time; published values are derived from those pins, one publication per profile and cutoff (ADR-0029).
 - **Override reason** — the required planner reason code stored with each new override revision (`promotion`, `customer_information`, `supply_constraint`, `data_quality`, `other`); `other` requires a note. It records intent, never a detected cause (ADR-0027).
 - **Review event** — append-only acknowledgement (`reviewed` or `reopened`) of one series in one run, stored with the evidence fingerprint it covered; the current state is derived at read time (ADR-0027).
 - **Review policy** — append-only versions of the profile-scoped material-change thresholds (absolute and relative); both set enables the rule, both empty disables it, and the highest version is current (ADR-0028).
+- **Revision high-water mark** — the highest import revision id visible to a publication; target actuals present at or below it cannot have influenced the plan, so they bound the hindsight check for later evaluation (ADR-0029).
 - **Run outcome** — one of `ok`, `fallback_naive`, `insufficient_history`, `model_failure`, `invalid_data`.
 - **Selection score** — pooled WAPE over the comparable evaluation set, or pooled MAE when that set's actual total is zero; lower is better (ADR-0017).
 - **Series** — one product × location pair; the unit of history, qualification, and forecast status.

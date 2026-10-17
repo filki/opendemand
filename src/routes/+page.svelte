@@ -34,8 +34,11 @@
 		describeError,
 		exportPlanCsv,
 		exportPlanXlsx,
+		exportPublicationCsv,
+		exportPublicationXlsx,
 		fetchJobStatus,
 		fetchJobs,
+		fetchPublicationsList,
 		fetchRunsList,
 		fetchSeriesDetail,
 		fetchSeriesList,
@@ -49,6 +52,7 @@
 		pickCsvExport,
 		pickWorkspaceDirectory,
 		pickXlsxExport,
+		publishPlan,
 		queryErrorCode,
 		renameWorkspace,
 		saveOverride,
@@ -96,6 +100,9 @@
 	let exportKind = $state<'csv' | 'xlsx' | null>(null);
 	const exporting = $derived(exportKind !== null);
 	let exportNotice = $state<string | null>(null);
+	let publishArmed = $state(false);
+	let publishing = $state(false);
+	let publicationNotice = $state<string | null>(null);
 	let localeSaving = $state(false);
 	let seriesScope = '';
 	let wizardOpen = $state(false);
@@ -208,6 +215,21 @@
 		enabled: desktop && displayRunId !== null && selectedSeries !== null,
 		retry: 0
 	}));
+
+	const publicationsQuery = createQuery(() => ({
+		queryKey: ['publications', workspace?.path],
+		queryFn: fetchPublicationsList,
+		enabled: desktop && workspace !== null,
+		retry: 0
+	}));
+	/** The official publication of the displayed run's cutoff, when one exists. */
+	const publishedForRun = $derived(
+		(publicationsQuery.data ?? []).find(
+			(publication) =>
+				completedRun !== null &&
+				publication.horizon_start_week === completedRun.horizon_start_week
+		) ?? null
+	);
 
 	const jobQuery = createQuery(() => ({
 		queryKey: ['job', workspace?.path, activeJobId],
@@ -589,6 +611,8 @@
 		exportNotice = null;
 		actionError = null;
 		inboxOpen = false;
+		publishArmed = false;
+		publicationNotice = null;
 		offset = 0;
 		searchInput = '';
 	}
@@ -654,8 +678,7 @@
 		const run = displayRun;
 		if (!run || plannerDirty || plannerSaving || exporting) return;
 		const workspacePath = workspace?.path;
-		exportKind = 'xlsx';
-		actionError = null;
+		exportKind = 'xlsx';		actionError = null;
 		exportNotice = null;
 		try {
 			const path = await pickXlsxExport(run.id);
@@ -663,6 +686,72 @@
 			if (workspace?.path !== workspacePath) throw new Error('The workspace changed. Select the run and export again.');
 			const result = await exportPlanXlsx(run.id, path);
 			exportNotice = t(locale, 'export.xlsxSaved', { rows: result.row_count, path: result.path });
+		} catch (error) {
+			actionError = describeError(error);
+		} finally {
+			exportKind = null;
+			void queryClient.invalidateQueries({ queryKey: ['jobs'] });
+		}
+	}
+
+	/** Cutoff week of a run: one week before its horizon start. */
+	function cutoffOf(run: { horizon_start_week: string } | null): string {
+		if (!run) return '';
+		const date = new Date(`${run.horizon_start_week}T00:00:00Z`);
+		date.setUTCDate(date.getUTCDate() - 7);
+		return date.toISOString().slice(0, 10);
+	}
+
+	function handleArmPublish() {
+		if (!completedRun || plannerDirty || plannerSaving || exporting || jobBusy || publishedForRun) {
+			return;
+		}
+		publicationNotice = null;
+		publishArmed = true;
+	}
+
+	async function handleConfirmPublish() {
+		if (!completedRun || publishing) return;
+		publishing = true;
+		publicationNotice = null;
+		try {
+			const publication = await publishPlan(completedRun.id);
+			publishArmed = false;
+			publicationNotice = `Published cutoff ${publication.cutoff_week} as publication #${publication.id} (${publication.covered_series}/${publication.series_count} series covered).`;
+			await publicationsQuery.refetch();
+		} catch (error) {
+			publishArmed = false;
+			actionError = describeError(error);
+		} finally {
+			publishing = false;
+		}
+	}
+
+	/** Export the pinned published values; the exact save dialog as run exports. */
+	async function handleExportPublication(kind: 'csv' | 'xlsx') {
+		const publication = publishedForRun;
+		if (!publication || exporting) return;
+		const workspacePath = workspace?.path;
+		exportKind = kind;
+		actionError = null;
+		exportNotice = null;
+		try {
+			const path =
+				kind === 'csv'
+					? await pickCsvExport(`publication-${publication.id}`)
+					: await pickXlsxExport(`publication-${publication.id}`);
+			if (!path) return;
+			if (workspace?.path !== workspacePath) {
+				throw new Error('The workspace changed. Select the run and export again.');
+			}
+			const result =
+				kind === 'csv'
+					? await exportPublicationCsv(publication.id, path)
+					: await exportPublicationXlsx(publication.id, path);
+			exportNotice = t(locale, 'publication.exported', {
+				rows: result.row_count,
+				path: result.path
+			});
 		} catch (error) {
 			actionError = describeError(error);
 		} finally {
@@ -770,6 +859,58 @@
 							<button class="btn btn-secondary" disabled={jobBusy || plannerDirty || plannerSaving || exporting || !completedRun} onclick={() => { comparisonOpen = false; inboxOpen = true; }}>{t(locale, 'inbox.open')}</button>
 							<p class="muted">{plannerDirty ? 'Save or discard edits before switching series, runs, or exporting.' : 'Exports all series in the selected forecast. Compare runs to see what changed between recent imports.'}</p>
 						</div>
+						<div class="publication-controls">
+							{#if publishedForRun}
+								<p class="muted" role="status">
+									{t(locale, 'publication.published', {
+										time: formatTimestamp(publishedForRun.published_at),
+										cutoff: publishedForRun.cutoff_week,
+										id: publishedForRun.id
+									})}
+								</p>
+								<div class="publication-buttons">
+									<button
+										class="btn btn-secondary"
+										disabled={exporting}
+										onclick={() => handleExportPublication('csv')}
+									>
+										{t(locale, 'publication.exportCsv')}
+									</button>
+									<button
+										class="btn btn-secondary"
+										disabled={exporting}
+										onclick={() => handleExportPublication('xlsx')}
+									>
+										{t(locale, 'publication.exportXlsx')}
+									</button>
+								</div>
+							{:else if publishArmed}
+								<p class="muted">{t(locale, 'publication.armedHint')}</p>
+								<div class="publication-buttons">
+									<button class="btn btn-primary" disabled={publishing} onclick={handleConfirmPublish}>
+										{publishing
+											? 'Publishing…'
+											: t(locale, 'publication.arm', { cutoff: cutoffOf(completedRun) })}
+									</button>
+									<button class="btn btn-secondary" onclick={() => (publishArmed = false)}>
+										{t(locale, 'publication.cancel')}
+									</button>
+								</div>
+							{:else}
+								<div class="publication-buttons">
+									<button
+										class="btn btn-secondary"
+										disabled={!completedRun || plannerDirty || plannerSaving || exporting || jobBusy}
+										onclick={handleArmPublish}
+									>
+										{t(locale, 'publication.publish')}
+									</button>
+								</div>
+							{/if}
+							{#if publicationNotice}
+								<p class="banner banner-success" role="status">{publicationNotice}</p>
+							{/if}
+						</div>
 					</section>
 				{/if}
 				{#if exportNotice}
@@ -873,6 +1014,8 @@
 						summary={selectedSummary}
 						detail={detailQuery.data ?? null}
 						run={displayRun}
+						publication={publishedForRun}
+						{locale}
 						loading={detailQuery.isFetching}
 						error={detailQuery.isError
 							? { code: queryErrorCode(detailQuery.error), message: detailQuery.error.message }

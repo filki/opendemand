@@ -476,6 +476,64 @@ async fn exception_inbox(
 
 #[tauri::command]
 #[specta::specta]
+async fn publish_plan(
+    edit: PublicationEdit,
+    state: State<'_, Service>,
+) -> AppResult<PlanPublication> {
+    state.current().await?.publish_plan(edit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn publications_list(state: State<'_, Service>) -> AppResult<Vec<PlanPublication>> {
+    state.current().await?.publications_list().await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn publication_series_detail(
+    publication_id: i32,
+    product_id: String,
+    location_id: String,
+    state: State<'_, Service>,
+) -> AppResult<PublicationSeriesDetail> {
+    state
+        .current()
+        .await?
+        .publication_series_detail(publication_id, &product_id, &location_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn export_publication_csv(
+    publication_id: i32,
+    path: String,
+    state: State<'_, Service>,
+) -> AppResult<ExportResult> {
+    state
+        .current()
+        .await?
+        .export_publication_csv(publication_id, std::path::Path::new(&path))
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn export_publication_xlsx(
+    publication_id: i32,
+    path: String,
+    state: State<'_, Service>,
+) -> AppResult<ExportResult> {
+    state
+        .current()
+        .await?
+        .export_publication_xlsx(publication_id, std::path::Path::new(&path))
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn run_overview(
     run_id: String,
     offset: u32,
@@ -998,6 +1056,11 @@ fn command_builder() -> Builder<tauri::Wry> {
             review_policy,
             review_policy_set,
             exception_inbox,
+            publish_plan,
+            publications_list,
+            publication_series_detail,
+            export_publication_csv,
+            export_publication_xlsx,
             export_csv,
             export_xlsx
         ])

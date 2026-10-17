@@ -16,10 +16,10 @@ use crate::{
         DemandChangePoint, ExceptionInbox, ExportResult, ForecastChangePoint, ForecastInput,
         ForecastPoint, HistoryPoint, ImportResult, InboxItem, InboxPolicy, InboxPolicyEdit,
         InputSeries, ModelOriginRow, ObservationRecord, OverrideEdit, OverrideRevision,
-        PlanningPoint, ReviewActionEdit, RunException, RunOverview, RunSummary,
-        SeriesChangeSummary, SeriesComparisonDetail, SeriesDetail, SeriesModelComparison,
-        SeriesNote, SeriesNoteEdit, SeriesReviewInfo, SeriesSummary, WeeklyChangeFilter,
-        WeeklyComparisonContext, WorkspaceInfo,
+        PlanPublication, PlanningPoint, PublicationEdit, PublicationSeriesDetail, ReviewActionEdit,
+        RunException, RunOverview, RunSummary, SeriesChangeSummary, SeriesComparisonDetail,
+        SeriesDetail, SeriesModelComparison, SeriesNote, SeriesNoteEdit, SeriesReviewInfo,
+        SeriesSummary, WeeklyChangeFilter, WeeklyComparisonContext, WorkspaceInfo,
     },
 };
 use chrono::{Datelike, Duration as ChronoDuration, NaiveDate, Utc, Weekday};
@@ -49,8 +49,8 @@ use uuid::Uuid;
 /// SQLx is what `open` verifies against.
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../docs/architecture/schema");
 
-const SCHEMA_VERSION: i64 = 5;
-const SCHEMA_VERSION_TEXT: &str = "5";
+const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION_TEXT: &str = "6";
 const CONTRACT_VERSION: &str = "canonical/1";
 /// Contract version of revisions produced by the preprocessing layer.
 const PREPROCESS_CONTRACT: &str = "preprocess/1";
@@ -113,6 +113,18 @@ enum ExportFormat {
     Csv,
     Xlsx,
 }
+
+/// What an export publishes: the run's live saved plan or the values pinned by
+/// one publication (ADR-0029).
+#[derive(Clone, Copy)]
+enum PlanSelection {
+    Run(Uuid),
+    Publication(i32),
+}
+
+/// Policy label recorded with every publication; bump it when the pinned
+/// semantics change.
+const PUBLICATION_CONTEXT: &str = "publication/1";
 /// Upper bound on the number of dense weekly points materialised for a single
 /// series, protecting memory against a corrupted or absurd date span.
 const MAX_HISTORY_WEEKS: i64 = 5_200;
@@ -154,6 +166,49 @@ const PLANNING_ROWS_SQL: &str = "
         AND o.revision = (SELECT MAX(revision) FROM forecast_override
             WHERE run_id = s.run_id AND product_id = s.product_id
                 AND location_id = s.location_id AND week_start = w.week_start)
+    LEFT JOIN override_meta m ON m.run_id = o.run_id AND m.product_id = o.product_id
+        AND m.location_id = o.location_id AND m.week_start = o.week_start
+        AND m.revision = o.revision
+    ORDER BY s.product_id, s.location_id, w.horizon";
+
+// The published plan for a pinned run: identical shape to PLANNING_ROWS_SQL,
+// but the override join goes through publication_override so the exact pinned
+// revision wins even after later edits. A pinned clearing revision yields the
+// baseline as the published effective value.
+const PUBLICATION_ROWS_SQL: &str = "
+    WITH RECURSIVE run AS (
+        SELECT id, horizon_start_week, horizon_weeks FROM forecast_run WHERE id = ?
+    ), weeks(horizon, week_start) AS (
+        SELECT 1, horizon_start_week FROM run
+        UNION ALL
+        SELECT horizon + 1, date(week_start, '+7 days') FROM weeks, run
+        WHERE horizon < run.horizon_weeks
+    ), scope AS (
+        SELECT s.* FROM forecast_series_status s JOIN run r ON s.run_id = r.id
+        WHERE (? IS NULL OR s.product_id = ?) AND (? IS NULL OR s.location_id = ?)
+            AND (s.product_id, s.location_id) > (?, ?)
+        ORDER BY s.product_id, s.location_id LIMIT ?
+    )
+    SELECT s.product_id, s.location_id, p.sku AS product_sku, p.name AS product_name,
+           l.code AS location_code, w.week_start, w.horizon, f.value AS baseline,
+           o.value AS override_value, o.note AS override_note,
+           COALESCE(o.value, f.value) AS effective,
+           COALESCE(o.revision, 0) AS override_revision,
+           m.reason_code AS override_reason, m.review_date AS override_review_date,
+           CASE WHEN o.value IS NOT NULL THEN 'override'
+                WHEN f.value IS NOT NULL THEN 'model' ELSE 'missing' END AS value_source,
+           s.status AS series_status, s.selected_model_id AS model_id
+    FROM scope s
+    JOIN product p ON p.id = s.product_id JOIN location l ON l.id = s.location_id
+    CROSS JOIN weeks w
+    LEFT JOIN forecast f ON f.run_id = s.run_id AND f.product_id = s.product_id
+        AND f.location_id = s.location_id AND f.week_start = w.week_start
+    LEFT JOIN publication_override po ON po.publication_id = ?
+        AND po.product_id = s.product_id AND po.location_id = s.location_id
+        AND po.week_start = w.week_start
+    LEFT JOIN forecast_override o ON o.run_id = s.run_id AND o.product_id = s.product_id
+        AND o.location_id = s.location_id AND o.week_start = w.week_start
+        AND o.revision = po.revision
     LEFT JOIN override_meta m ON m.run_id = o.run_id AND m.product_id = o.product_id
         AND m.location_id = o.location_id AND m.week_start = o.week_start
         AND m.revision = o.revision
@@ -1089,7 +1144,7 @@ impl Workspace {
                 let mut connection = self.pool.acquire().await?;
                 load_planning_rows(
                     &mut connection,
-                    &run_bytes,
+                    PlanSource::Run(&run_bytes),
                     Some(&product_bytes),
                     Some(&location_bytes),
                     (&[], &[]),
@@ -1945,24 +2000,311 @@ impl Workspace {
         })
     }
 
+    /// Publish one completed run as the immutable official plan for its history
+    /// cutoff (ADR-0029). One publication per profile and cutoff week; the
+    /// exact latest override revision of every overridden cell is pinned in the
+    /// same transaction, together with the highest import revision id visible
+    /// to the publication (the hindsight boundary for later evaluation).
+    pub async fn publish_plan(&self, edit: PublicationEdit) -> AppResult<PlanPublication> {
+        let run = parse_uuid(&edit.run_id, "run_id")?;
+        let _writer = self.writer.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let run_row = sqlx::query(
+            "SELECT r.status AS status, r.revision_id AS revision_id,
+                    r.horizon_start_week AS horizon_start_week, r.timezone AS timezone,
+                    i.profile_id AS profile_id
+             FROM forecast_run r JOIN import_revision i ON i.id = r.revision_id
+             WHERE r.id = ?",
+        )
+        .bind(run.as_bytes().as_slice())
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or_else(|| {
+            err(
+                "unknown_run",
+                "The forecast run does not exist in this workspace.",
+            )
+        })?;
+        if run_row.get::<String, _>("status") != "completed" {
+            return Err(err(
+                "run_not_completed",
+                "Only completed forecast runs can be published.",
+            ));
+        }
+        let revision_id = i32::try_from(run_row.get::<i64, _>("revision_id"))
+            .map_err(|_| err("contract_violation", "The run revision is unsupported."))?;
+        let profile_id: i64 = run_row.get("profile_id");
+        let timezone: String = run_row.get("timezone");
+        let horizon_start_week: String = run_row.get("horizon_start_week");
+        let horizon_start = NaiveDate::parse_from_str(&horizon_start_week, "%Y-%m-%d")
+            .map_err(|_| err("contract_violation", "The run horizon start is invalid."))?;
+        let cutoff_week = (horizon_start - ChronoDuration::weeks(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let stored_cutoff: Option<String> =
+            sqlx::query_scalar("SELECT MAX(week_start) FROM observation WHERE revision_id = ?")
+                .bind(revision_id)
+                .fetch_one(&mut *transaction)
+                .await?;
+        if stored_cutoff.as_deref() != Some(cutoff_week.as_str()) {
+            return Err(err(
+                "contract_violation",
+                "The run horizon does not match its pinned history cutoff.",
+            ));
+        }
+        // Only finished weeks may be published: a source that reaches into the
+        // unfinished current week (or beyond) must wait for a completed import.
+        let today = Utc::now().date_naive();
+        let current_monday =
+            today - ChronoDuration::days(i64::from(today.weekday().num_days_from_monday()));
+        let last_finished_week = current_monday - ChronoDuration::weeks(1);
+        if horizon_start > last_finished_week + ChronoDuration::weeks(1) {
+            return Err(err(
+                "future_history",
+                "The imported history reaches into an unfinished week. Import a completed week before publishing.",
+            ));
+        }
+        let existing: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM plan_publication WHERE profile_id = ? AND cutoff_week = ?",
+        )
+        .bind(profile_id)
+        .bind(cutoff_week.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if existing.is_some() {
+            return Err(err(
+                "already_published",
+                "This history cutoff already has an official publication. Publish a newer cutoff instead.",
+            ));
+        }
+        let revision_high_water: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(id) FROM import_revision WHERE profile_id = ?")
+                .bind(profile_id)
+                .fetch_one(&mut *transaction)
+                .await?;
+        let revision_high_water = revision_high_water.ok_or_else(|| {
+            err(
+                "contract_violation",
+                "The profile has no import revisions to publish.",
+            )
+        })?;
+        let published_at = now_iso();
+        let publication_id = sqlx::query(
+            "INSERT INTO plan_publication
+             (profile_id, run_id, revision_id, cutoff_week, horizon_start_week, revision_high_water, timezone, policy_context, published_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(profile_id)
+        .bind(run.as_bytes().as_slice())
+        .bind(revision_id)
+        .bind(cutoff_week.as_str())
+        .bind(horizon_start_week.as_str())
+        .bind(revision_high_water)
+        .bind(timezone.as_str())
+        .bind(PUBLICATION_CONTEXT)
+        .bind(published_at.as_str())
+        .execute(&mut *transaction)
+        .await?
+        .last_insert_rowid();
+        let cells = sqlx::query(
+            "INSERT INTO publication_override (publication_id, run_id, product_id, location_id, week_start, revision)
+             SELECT ?, o.run_id, o.product_id, o.location_id, o.week_start, o.revision
+             FROM forecast_override o
+             WHERE o.run_id = ? AND o.revision = (
+                 SELECT MAX(x.revision) FROM forecast_override x
+                 WHERE x.run_id = o.run_id AND x.product_id = o.product_id
+                     AND x.location_id = o.location_id AND x.week_start = o.week_start)",
+        )
+        .bind(publication_id)
+        .bind(run.as_bytes().as_slice())
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        let override_series: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM (
+                SELECT DISTINCT product_id, location_id FROM publication_override WHERE publication_id = ?
+             )",
+        )
+        .bind(publication_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        let coverage = run_coverage(&mut transaction, run.as_bytes()).await?;
+        transaction.commit().await?;
+        Ok(PlanPublication {
+            id: i32::try_from(publication_id)
+                .map_err(|_| err("contract_violation", "The publication id is unsupported."))?,
+            run_id: run.to_string(),
+            revision_id,
+            cutoff_week,
+            horizon_start_week,
+            revision_high_water: i32::try_from(revision_high_water).map_err(|_| {
+                err(
+                    "contract_violation",
+                    "The revision high-water mark is unsupported.",
+                )
+            })?,
+            published_at,
+            override_cells: u32::try_from(cells)
+                .map_err(|_| err("contract_violation", "The override count is unsupported."))?,
+            override_series: u32::try_from(override_series)
+                .map_err(|_| err("contract_violation", "The override count is unsupported."))?,
+            series_count: coverage.series_count,
+            covered_series: coverage.covered_series,
+        })
+    }
+
+    /// Publications of the active profile, newest first.
+    pub async fn publications_list(&self) -> AppResult<Vec<PlanPublication>> {
+        let profile_id = active_profile_id(&self.pool).await?;
+        let rows = sqlx::query(
+            "SELECT pub.id, pub.run_id, pub.revision_id, pub.cutoff_week, pub.horizon_start_week,
+                    pub.revision_high_water, pub.published_at,
+                    (SELECT COUNT(*) FROM publication_override po WHERE po.publication_id = pub.id) AS override_cells,
+                    (SELECT COUNT(*) FROM (
+                        SELECT DISTINCT product_id, location_id FROM publication_override po
+                        WHERE po.publication_id = pub.id)) AS override_series,
+                    (SELECT COUNT(*) FROM forecast_series_status s WHERE s.run_id = pub.run_id) AS series_count,
+                    (SELECT COUNT(*) FROM forecast_series_status s WHERE s.run_id = pub.run_id
+                        AND s.status IN ('ok', 'fallback_naive')) AS covered_series
+             FROM plan_publication pub WHERE pub.profile_id = ?
+             ORDER BY pub.published_at DESC, pub.id DESC LIMIT 200",
+        )
+        .bind(profile_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut publications = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let run_bytes: Vec<u8> = row.get("run_id");
+            publications.push(PlanPublication {
+                id: i32::try_from(row.get::<i64, _>("id"))
+                    .map_err(|_| err("contract_violation", "The publication id is unsupported."))?,
+                run_id: uuid_from_bytes(&run_bytes)?.to_string(),
+                revision_id: i32::try_from(row.get::<i64, _>("revision_id"))
+                    .map_err(|_| err("contract_violation", "The run revision is unsupported."))?,
+                cutoff_week: row.get("cutoff_week"),
+                horizon_start_week: row.get("horizon_start_week"),
+                revision_high_water: i32::try_from(row.get::<i64, _>("revision_high_water"))
+                    .map_err(|_| {
+                        err(
+                            "contract_violation",
+                            "The revision high-water mark is unsupported.",
+                        )
+                    })?,
+                published_at: row.get("published_at"),
+                override_cells: u32::try_from(row.get::<i64, _>("override_cells"))
+                    .map_err(|_| err("contract_violation", "The override count is unsupported."))?,
+                override_series: u32::try_from(row.get::<i64, _>("override_series"))
+                    .map_err(|_| err("contract_violation", "The override count is unsupported."))?,
+                series_count: u32::try_from(row.get::<i64, _>("series_count"))
+                    .map_err(|_| err("contract_violation", "The series count is unsupported."))?,
+                covered_series: u32::try_from(row.get::<i64, _>("covered_series"))
+                    .map_err(|_| err("contract_violation", "The series count is unsupported."))?,
+            });
+        }
+        Ok(publications)
+    }
+
+    /// The published plan for one series: pinned override revisions from the
+    /// publication plus immutable baselines (ADR-0029).
+    pub async fn publication_series_detail(
+        &self,
+        publication_id: i32,
+        product_id: &str,
+        location_id: &str,
+    ) -> AppResult<PublicationSeriesDetail> {
+        let product = parse_uuid(product_id, "product_id")?;
+        let location = parse_uuid(location_id, "location_id")?;
+        let mut connection = self.pool.acquire().await?;
+        let publication = sqlx::query("SELECT run_id FROM plan_publication WHERE id = ?")
+            .bind(i64::from(publication_id))
+            .fetch_optional(&mut *connection)
+            .await?
+            .ok_or_else(|| {
+                err(
+                    "unknown_publication",
+                    "The publication does not exist in this workspace.",
+                )
+            })?;
+        let run_bytes: Vec<u8> = publication.get("run_id");
+        let rows = load_planning_rows(
+            &mut connection,
+            PlanSource::Publication {
+                run: &run_bytes,
+                publication_id: i64::from(publication_id),
+            },
+            Some(product.as_bytes().as_slice()),
+            Some(location.as_bytes().as_slice()),
+            (&[], &[]),
+            1,
+        )
+        .await?;
+        let Some(first) = rows.first() else {
+            return Err(err(
+                "unknown_series",
+                "The selected series is not part of this publication.",
+            ));
+        };
+        Ok(PublicationSeriesDetail {
+            publication_id,
+            product_id: uuid_from_bytes(&first.get::<Vec<u8>, _>("product_id"))?.to_string(),
+            location_id: uuid_from_bytes(&first.get::<Vec<u8>, _>("location_id"))?.to_string(),
+            series_key: first.get("product_sku"),
+            location_code: first.get("location_code"),
+            outcome: first.get("series_status"),
+            reason: None,
+            planning: rows.iter().map(planning_point).collect(),
+        })
+    }
+
     /// Export a consistent full-run plan in bounded batches. The workspace copy
     /// gives export_record a durable relative path; the selected file is a copy.
     /// Neither publication may overwrite existing data.
     pub async fn export_csv(&self, run_id: &str, target: &Path) -> AppResult<ExportResult> {
-        self.export_plan(run_id, target, ExportFormat::Csv).await
+        let run = parse_uuid(run_id, "run_id")?;
+        self.export_plan(PlanSelection::Run(run), target, ExportFormat::Csv)
+            .await
     }
 
     pub async fn export_xlsx(&self, run_id: &str, target: &Path) -> AppResult<ExportResult> {
-        self.export_plan(run_id, target, ExportFormat::Xlsx).await
+        let run = parse_uuid(run_id, "run_id")?;
+        self.export_plan(PlanSelection::Run(run), target, ExportFormat::Xlsx)
+            .await
+    }
+
+    /// Export the immutable published values of one publication (ADR-0029); the
+    /// export record links back to the publication.
+    pub async fn export_publication_csv(
+        &self,
+        publication_id: i32,
+        target: &Path,
+    ) -> AppResult<ExportResult> {
+        self.export_plan(
+            PlanSelection::Publication(publication_id),
+            target,
+            ExportFormat::Csv,
+        )
+        .await
+    }
+
+    pub async fn export_publication_xlsx(
+        &self,
+        publication_id: i32,
+        target: &Path,
+    ) -> AppResult<ExportResult> {
+        self.export_plan(
+            PlanSelection::Publication(publication_id),
+            target,
+            ExportFormat::Xlsx,
+        )
+        .await
     }
 
     async fn export_plan(
         &self,
-        run_id: &str,
+        selection: PlanSelection,
         target: &Path,
         format: ExportFormat,
     ) -> AppResult<ExportResult> {
-        let run = parse_uuid(run_id, "run_id")?;
         let extension = match format {
             ExportFormat::Csv => "csv",
             ExportFormat::Xlsx => "xlsx",
@@ -2002,6 +2344,34 @@ impl Workspace {
             // occupying the sole writer connection while a large export is built.
             let mut reader = self.read_connection().await?;
             let mut snapshot = reader.begin().await?;
+            let (run, publication) = match selection {
+                PlanSelection::Run(run) => (run, None),
+                PlanSelection::Publication(publication_id) => {
+                    let row = sqlx::query(
+                        "SELECT run_id, published_at, cutoff_week, revision_high_water, policy_context
+                         FROM plan_publication WHERE id = ?",
+                    )
+                    .bind(i64::from(publication_id))
+                    .fetch_optional(&mut *snapshot)
+                    .await?
+                    .ok_or_else(|| {
+                        err(
+                            "unknown_publication",
+                            "The publication does not exist in this workspace.",
+                        )
+                    })?;
+                    let run_bytes: Vec<u8> = row.get("run_id");
+                    (
+                        uuid_from_bytes(&run_bytes)?,
+                        Some(PublicationStamp {
+                            id: i64::from(publication_id),
+                            published_at: row.get("published_at"),
+                            cutoff_week: row.get("cutoff_week"),
+                            revision_high_water: row.get("revision_high_water"),
+                        }),
+                    )
+                }
+            };
             let status: Option<String> = sqlx::query_scalar("SELECT status FROM forecast_run WHERE id = ?")
                 .bind(run.as_bytes().as_slice()).fetch_optional(&mut *snapshot).await?;
             match status.as_deref() {
@@ -2011,10 +2381,17 @@ impl Workspace {
             }
             let coverage = run_coverage(&mut snapshot, run.as_bytes()).await?;
 
+            let source = match &publication {
+                Some(stamp) => PlanSource::Publication {
+                    run: run.as_bytes(),
+                    publication_id: stamp.id,
+                },
+                None => PlanSource::Run(run.as_bytes()),
+            };
             let mut temporary = tempfile::Builder::new().prefix(".opendemand-export-").tempfile_in(&parent)?;
             let row_count = match format {
-                ExportFormat::Csv => write_csv_plan(&mut snapshot, &run, &mut temporary).await?,
-                ExportFormat::Xlsx => write_xlsx_plan(&mut snapshot, &run, &mut temporary, &coverage).await?,
+                ExportFormat::Csv => write_csv_plan(&mut snapshot, source, &run, &mut temporary).await?,
+                ExportFormat::Xlsx => write_xlsx_plan(&mut snapshot, source, &run, &mut temporary, &coverage, publication.as_ref()).await?,
             };
             let coverage = serde_json::to_string(&coverage)?;
             snapshot.commit().await?;
@@ -2031,9 +2408,10 @@ impl Workspace {
             let _writer = self.writer.lock().await;
             let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
             let export_id = sqlx::query(
-                "INSERT INTO export_record (run_id, format, relative_path, created_at, row_count, coverage_json)
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO export_record (run_id, format, relative_path, created_at, row_count, coverage_json, publication_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
             ).bind(run.as_bytes().as_slice()).bind(extension).bind(&relative_path).bind(now_iso()).bind(row_count).bind(coverage)
+                .bind(publication.as_ref().map(|stamp| stamp.id))
                 .execute(&mut *transaction).await?.last_insert_rowid();
             sqlx::query("UPDATE job SET status = 'completed', finished_at = ? WHERE id = ?")
                 .bind(now_iso()).bind(job_id).execute(&mut *transaction).await?;
@@ -2510,7 +2888,7 @@ impl Workspace {
             let mut connection = self.pool.acquire().await?;
             load_planning_rows(
                 &mut connection,
-                &pair.current_run,
+                PlanSource::Run(&pair.current_run),
                 Some(&product_bytes),
                 Some(&location_bytes),
                 (&[], &[]),
@@ -2686,7 +3064,8 @@ struct RunCoverage {
 
 async fn write_csv_plan(
     connection: &mut SqliteConnection,
-    run: &Uuid,
+    source: PlanSource<'_>,
+    run_label: &Uuid,
     temporary: &mut tempfile::NamedTempFile,
 ) -> AppResult<i64> {
     // Keep the existing Excel-friendly CSV bytes unchanged.
@@ -2700,15 +3079,8 @@ async fn write_csv_plan(
     let mut after = (Vec::<u8>::new(), Vec::<u8>::new());
     let mut row_count = 0i64;
     loop {
-        let rows = load_planning_rows(
-            connection,
-            run.as_bytes(),
-            None,
-            None,
-            (&after.0, &after.1),
-            32,
-        )
-        .await?;
+        let rows =
+            load_planning_rows(connection, source, None, None, (&after.0, &after.1), 32).await?;
         let Some(last) = rows.last() else {
             break;
         };
@@ -2717,7 +3089,7 @@ async fn write_csv_plan(
             let point = planning_point(row);
             writer
                 .write_record([
-                    run.to_string(),
+                    run_label.to_string(),
                     row.get::<String, _>("product_sku"),
                     row.get("product_name"),
                     row.get("location_code"),
@@ -2752,11 +3124,22 @@ async fn write_csv_plan(
     Ok(row_count)
 }
 
+/// Identity lines a publication export adds to the XLSX Summary sheet; the
+/// export never masquerades as a plain run export (ADR-0029).
+struct PublicationStamp {
+    id: i64,
+    published_at: String,
+    cutoff_week: String,
+    revision_high_water: i64,
+}
+
 async fn write_xlsx_plan(
     connection: &mut SqliteConnection,
+    source: PlanSource<'_>,
     run: &Uuid,
     temporary: &mut tempfile::NamedTempFile,
     coverage: &RunCoverage,
+    publication: Option<&PublicationStamp>,
 ) -> AppResult<i64> {
     let mut workbook = Workbook::new();
     let date_format = Format::new().set_num_format("yyyy-mm-dd");
@@ -2770,15 +3153,8 @@ async fn write_xlsx_plan(
         }
         let mut after = (Vec::<u8>::new(), Vec::<u8>::new());
         loop {
-            let rows = load_planning_rows(
-                connection,
-                run.as_bytes(),
-                None,
-                None,
-                (&after.0, &after.1),
-                32,
-            )
-            .await?;
+            let rows = load_planning_rows(connection, source, None, None, (&after.0, &after.1), 32)
+                .await?;
             let Some(last) = rows.last() else {
                 break;
             };
@@ -2883,6 +3259,22 @@ async fn write_xlsx_plan(
         1,
         "Share of series with ok or fallback_naive outcomes; not forecast accuracy.",
     )?;
+    if let Some(stamp) = publication {
+        summary.write_string(18, 0, "publication_id")?;
+        summary.write_number(18, 1, stamp.id as f64)?;
+        summary.write_string(19, 0, "published_at")?;
+        summary.write_string(19, 1, &stamp.published_at)?;
+        summary.write_string(20, 0, "publication_cutoff_week")?;
+        summary.write_string(20, 1, &stamp.cutoff_week)?;
+        summary.write_string(21, 0, "publication_revision_high_water")?;
+        summary.write_number(21, 1, stamp.revision_high_water as f64)?;
+        summary.write_string(22, 0, "publication_note")?;
+        summary.write_string(
+            22,
+            1,
+            "Values are pinned at publication time; later run edits do not change them (ADR-0029).",
+        )?;
+    }
     workbook.save_to_writer(temporary.as_file_mut())?;
     Ok(i64::from(row_count))
 }
@@ -2908,25 +3300,55 @@ async fn run_coverage(connection: &mut SqliteConnection, run: &[u8]) -> AppResul
     })
 }
 
+/// Where a batch of plan rows comes from: the run's live saved plan or the
+/// values pinned by one publication (ADR-0029).
+#[derive(Clone, Copy)]
+enum PlanSource<'a> {
+    Run(&'a [u8]),
+    Publication { run: &'a [u8], publication_id: i64 },
+}
+
 async fn load_planning_rows(
     connection: &mut SqliteConnection,
-    run: &[u8],
+    source: PlanSource<'_>,
     product: Option<&[u8]>,
     location: Option<&[u8]>,
     after: (&[u8], &[u8]),
     limit: i64,
 ) -> AppResult<Vec<SqliteRow>> {
-    Ok(sqlx::query(PLANNING_ROWS_SQL)
-        .bind(run)
-        .bind(product)
-        .bind(product)
-        .bind(location)
-        .bind(location)
-        .bind(after.0)
-        .bind(after.1)
-        .bind(limit)
-        .fetch_all(connection)
-        .await?)
+    let rows = match source {
+        PlanSource::Run(run) => {
+            sqlx::query(PLANNING_ROWS_SQL)
+                .bind(run)
+                .bind(product)
+                .bind(product)
+                .bind(location)
+                .bind(location)
+                .bind(after.0)
+                .bind(after.1)
+                .bind(limit)
+                .fetch_all(&mut *connection)
+                .await?
+        }
+        PlanSource::Publication {
+            run,
+            publication_id,
+        } => {
+            sqlx::query(PUBLICATION_ROWS_SQL)
+                .bind(run)
+                .bind(product)
+                .bind(product)
+                .bind(location)
+                .bind(location)
+                .bind(after.0)
+                .bind(after.1)
+                .bind(limit)
+                .bind(publication_id)
+                .fetch_all(&mut *connection)
+                .await?
+        }
+    };
+    Ok(rows)
 }
 
 fn planning_point(row: &SqliteRow) -> PlanningPoint {

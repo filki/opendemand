@@ -2,6 +2,7 @@
 	import type {
 		OverrideEdit,
 		OverrideRevision,
+		PlanPublication,
 		ReviewActionEdit,
 		RunSummary,
 		SeriesDetail,
@@ -12,9 +13,11 @@
 	} from '#lib/bindings.ts';
 	import ForecastEditor from '#lib/components/ForecastEditor.svelte';
 	import ModelComparison from '#lib/components/ModelComparison.svelte';
+	import PublishedPlan from '#lib/components/PublishedPlan.svelte';
 	import SeriesChart from '#lib/components/SeriesChart.svelte';
 	import SeriesReviewPanel from '#lib/components/SeriesReviewPanel.svelte';
 	import StatusChip from '#lib/components/StatusChip.svelte';
+	import type { Locale } from '#lib/frontend/i18n.ts';
 	import {
 		formatScore,
 		formatTimestamp,
@@ -29,6 +32,8 @@
 		summary,
 		detail,
 		run,
+		publication,
+		locale,
 		loading,
 		error,
 		models,
@@ -45,6 +50,8 @@
 		summary: SeriesSummary | null;
 		detail: SeriesDetail | null;
 		run: RunSummary | null;
+		publication: PlanPublication | null;
+		locale: Locale;
 		loading: boolean;
 		error: { code: string; message: string } | null;
 		models: SeriesModelComparison[] | null;
@@ -145,6 +152,10 @@
 		{/if}
 
 		<ForecastEditor {detail} {onSave} {onRefresh} {onDirtyChange} />
+
+		{#if publication}
+			<PublishedPlan {detail} {publication} {locale} />
+		{/if}
 
 		<SeriesReviewPanel {detail} {onNote} {onReview} {onRefresh} />
 

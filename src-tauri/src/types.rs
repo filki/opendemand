@@ -195,6 +195,46 @@ pub struct ExceptionInbox {
     pub rows: Vec<InboxItem>,
 }
 
+/// One immutable official publication of a completed run (ADR-0029). Published
+/// effective values are derived from the pinned override revisions plus the
+/// immutable baselines; nothing is copied.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct PlanPublication {
+    pub id: i32,
+    pub run_id: String,
+    pub revision_id: i32,
+    pub cutoff_week: String,
+    pub horizon_start_week: String,
+    /// Highest import revision id of the profile visible at publication time.
+    pub revision_high_water: i32,
+    pub published_at: String,
+    /// Overridden cells pinned by the publication.
+    pub override_cells: u32,
+    /// Distinct series with at least one pinned override cell.
+    pub override_series: u32,
+    pub series_count: u32,
+    pub covered_series: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct PublicationEdit {
+    pub run_id: String,
+}
+
+/// The published plan for one series: the same point shape as the live planner,
+/// but with override values pinned at publication time (ADR-0029).
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct PublicationSeriesDetail {
+    pub publication_id: i32,
+    pub product_id: String,
+    pub location_id: String,
+    pub series_key: String,
+    pub location_code: String,
+    pub outcome: String,
+    pub reason: Option<String>,
+    pub planning: Vec<PlanningPoint>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct OverrideRevision {
     pub revision: u32,

@@ -95,6 +95,11 @@ export const commands = {
 	reviewPolicy: () => typedError<InboxPolicy, AppError>(__TAURI_INVOKE("review_policy")),
 	reviewPolicySet: (edit: InboxPolicyEdit) => typedError<InboxPolicy, AppError>(__TAURI_INVOKE("review_policy_set", { edit })),
 	exceptionInbox: (runId: string, search: string, filter: string, offset: number, limit: number) => typedError<ExceptionInbox, AppError>(__TAURI_INVOKE("exception_inbox", { runId, search, filter, offset, limit })),
+	publishPlan: (edit: PublicationEdit) => typedError<PlanPublication, AppError>(__TAURI_INVOKE("publish_plan", { edit })),
+	publicationsList: () => typedError<PlanPublication[], AppError>(__TAURI_INVOKE("publications_list")),
+	publicationSeriesDetail: (publicationId: number, productId: string, locationId: string) => typedError<PublicationSeriesDetail, AppError>(__TAURI_INVOKE("publication_series_detail", { publicationId, productId, locationId })),
+	exportPublicationCsv: (publicationId: number, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_publication_csv", { publicationId, path })),
+	exportPublicationXlsx: (publicationId: number, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_publication_xlsx", { publicationId, path })),
 	exportCsv: (runId: string, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_csv", { runId, path })),
 	exportXlsx: (runId: string, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_xlsx", { runId, path })),
 };
@@ -329,6 +334,28 @@ export type ParsingDescriptor = {
 	aggregation: string | null,
 };
 
+/**
+ *  One immutable official publication of a completed run (ADR-0029). Published
+ *  effective values are derived from the pinned override revisions plus the
+ *  immutable baselines; nothing is copied.
+ */
+export type PlanPublication = {
+	id: number,
+	run_id: string,
+	revision_id: number,
+	cutoff_week: string,
+	horizon_start_week: string,
+	/**  Highest import revision id of the profile visible at publication time. */
+	revision_high_water: number,
+	published_at: string,
+	/**  Overridden cells pinned by the publication. */
+	override_cells: number,
+	/**  Distinct series with at least one pinned override cell. */
+	override_series: number,
+	series_count: number,
+	covered_series: number,
+};
+
 export type PlanningPoint = {
 	week_start: string,
 	horizon: number,
@@ -371,6 +398,25 @@ export type PreviewFinding = {
 	code: string,
 	detail: string,
 	row_ref: string | null,
+};
+
+export type PublicationEdit = {
+	run_id: string,
+};
+
+/**
+ *  The published plan for one series: the same point shape as the live planner,
+ *  but with override values pinned at publication time (ADR-0029).
+ */
+export type PublicationSeriesDetail = {
+	publication_id: number,
+	product_id: string,
+	location_id: string,
+	series_key: string,
+	location_code: string,
+	outcome: string,
+	reason: string | null,
+	planning: PlanningPoint[],
 };
 
 export type ReviewActionEdit = {
