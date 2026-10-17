@@ -13,6 +13,7 @@
 	import BrowserFallback from '#lib/components/BrowserFallback.svelte';
 	import CsvFormatCard from '#lib/components/CsvFormatCard.svelte';
 	import ExceptionInbox from '#lib/components/ExceptionInbox.svelte';
+	import FvaPanel from '#lib/components/FvaPanel.svelte';
 	import HomeScreen from '#lib/components/HomeScreen.svelte';
 	import ImportWizard from '#lib/components/ImportWizard.svelte';
 	import JobMonitor from '#lib/components/JobMonitor.svelte';
@@ -108,6 +109,7 @@
 	let wizardOpen = $state(false);
 	let comparisonOpen = $state(false);
 	let inboxOpen = $state(false);
+	let performanceOpen = $state(false);
 	/** Home flow with no workspace open: module menu, then the workspace list. */
 	let homeScreen = $state<'home' | 'picker'>('home');
 	const actionErrorHint = $derived(
@@ -855,8 +857,9 @@
 						<div class="export-controls">
 							<button class="btn btn-secondary" disabled={!displayRun || displayRun.status !== 'completed' || plannerDirty || plannerSaving || exporting} onclick={handleExport}>{exporting && exportKind === 'csv' ? 'Exporting CSV…' : 'Export CSV'}</button>
 							<button class="btn btn-secondary" disabled={!displayRun || displayRun.status !== 'completed' || plannerDirty || plannerSaving || exporting} onclick={handleExportXlsx}>{exporting && exportKind === 'xlsx' ? t(locale, 'export.xlsxBusy') : t(locale, 'export.xlsx')}</button>
-							<button class="btn btn-secondary" disabled={jobBusy || plannerDirty || plannerSaving || exporting || completedRunCount < 2} onclick={() => { inboxOpen = false; comparisonOpen = true; }}>Compare runs</button>
-							<button class="btn btn-secondary" disabled={jobBusy || plannerDirty || plannerSaving || exporting || !completedRun} onclick={() => { comparisonOpen = false; inboxOpen = true; }}>{t(locale, 'inbox.open')}</button>
+							<button class="btn btn-secondary" disabled={jobBusy || plannerDirty || plannerSaving || exporting || completedRunCount < 2} onclick={() => { inboxOpen = false; performanceOpen = false; comparisonOpen = true; }}>Compare runs</button>
+							<button class="btn btn-secondary" disabled={jobBusy || plannerDirty || plannerSaving || exporting || !completedRun} onclick={() => { comparisonOpen = false; performanceOpen = false; inboxOpen = true; }}>{t(locale, 'inbox.open')}</button>
+							<button class="btn btn-secondary" disabled={jobBusy || plannerDirty || plannerSaving || exporting} onclick={() => { comparisonOpen = false; inboxOpen = false; performanceOpen = true; }}>{t(locale, 'fva.title')}</button>
 							<p class="muted">{plannerDirty ? 'Save or discard edits before switching series, runs, or exporting.' : 'Exports all series in the selected forecast. Compare runs to see what changed between recent imports.'}</p>
 						</div>
 						<div class="publication-controls">
@@ -952,6 +955,8 @@
 						onOpenSeries={handleInboxOpenSeries}
 						onClose={() => (inboxOpen = false)}
 					/>
+				{:else if performanceOpen}
+					<FvaPanel {locale} {latestRevisionId} onClose={() => (performanceOpen = false)} />
 				{:else if workspaceQuery.isPending}
 					<p class="muted" role="status">Opening workspace…</p>
 				{:else if workspaceQuery.isError && !isNoWorkspaceError(workspaceQuery.error)}

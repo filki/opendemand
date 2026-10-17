@@ -3,6 +3,7 @@
 Vocabulary for issues, tests, ADRs, docs, and UI copy. Definitions here are concise; the authoritative semantics live in `docs/architecture/DATA_ARCHITECTURE.md` and the ADRs under `docs/architecture/adr/`. Use these terms as written — do not drift to synonyms.
 
 - **Adjacent revisions** — the two newest import revisions of the active source profile; the default weekly comparison never skips an unforecast revision (ADR-0022).
+- **Actuals confirmation** — append-only declaration that one actuals revision is complete through a finished week; the latest row is current and pins the revision every retrospective score uses (ADR-0030).
 - **Backtest origin** — one rolling-origin training cutoff per model inside a forecast run; a run plans up to four (`origin_index` 1–4), each with its own origin date and train size.
 - **Baseline forecast** — immutable model output for one product/location/week cell. Never edited; manual edits are overrides.
 - **canonical/1** — the frozen CSV input contract: `series_key`, `week_start`, `quantity`. Raw planner exports are converted into it by the preprocessing layer (ADR-0019); the contract itself does not change.
@@ -18,9 +19,11 @@ Vocabulary for issues, tests, ADRs, docs, and UI copy. Definitions here are conc
 - **Exception inbox** — derived, read-time ranked list of exception series for one completed run, with fixed rule priority; review state filters rows but never suppresses evidence, and nothing is stored (ADR-0028).
 - **fallback_naive** — a run outcome: no champion was available (too few completed origins, or no origin common to all candidates), so the Naive baseline was used; flagged.
 - **Forecast bias** — `sum(forecast − actual) / sum(|actual|)` pooled over a model's completed origins; positive means overforecasting; unavailable when the actual total is zero; diagnostic only, never a ranking input.
+- **FVA (retrospective)** — baseline WAPE minus published-effective WAPE in percentage points over one series' scored points at one horizon step; positive means the planner's adjustment helped (ADR-0030). Not a cross-SKU score.
 - **Forecast change** — a read-time baseline difference between two runs at the same `week_start`; horizon edge weeks are non-comparable and count as no change (ADR-0022).
 - **Forecast run** — immutable record of one forecast execution; pins the import revision, horizon, timezone, config, and versions.
 - **H (usable history)** — number of consecutive weeks with numeric values ending at the last completed week; `missing` and `partial` weeks break the run (ADR-0005).
+- **Hindsight (exclusion)** — a target actual that existed in a profile revision at or below the publication's revision high-water mark: the planner could have seen it, so the point is never scored (ADR-0030).
 - **Import revision** — immutable full-snapshot import; never mutated or auto-deleted.
 - **MAE** — mean absolute error: `sum(|actual − forecast|) / 12` over one backtest origin's 12-week horizon.
 - **Import configuration** — a named, profile-scoped parsing descriptor the guided import can save and reuse; editing or deleting one never changes a committed revision, which keeps its own frozen snapshot (ADR-0021).

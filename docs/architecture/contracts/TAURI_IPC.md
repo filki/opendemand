@@ -42,6 +42,10 @@ The UI never opens SQLite or runs the Python engine directly. This document cove
 - `publications_list()`: publications of the active profile, newest first, with derived override-cell and coverage counts.
 - `publication_series_detail(publication_id: number, product_id: string, location_id: string)`: the published plan for one series: pinned override values plus immutable baselines; `unknown_publication` and `unknown_series` on mismatch.
 - `export_publication_csv(publication_id: number, path: string)` / `export_publication_xlsx(publication_id: number, path: string)`: export the pinned published values (ADR-0029) with the ordinary export columns and the same path rules; XLSX Summary gains publication identity lines; the export record links to the publication. Ordinary `export_csv`/`export_xlsx` keep their live-saved-run semantics.
+- `actuals_confirmation_set(edit: ActualsConfirmationEdit)`: append one confirmation that a revision is complete through a finished week (ADR-0030) and return it. `confirmation_not_finished` when the week is not finished; `invalid_week` for a non-Monday date.
+- `actuals_confirmation_latest()`: the profile's current (latest) confirmation, or null.
+- `fva_report(horizon: number, search: string, offset: number, limit: number)`: derived retrospective planner FVA (ADR-0030) at one horizon step (1..12; `invalid_horizon` otherwise). Returns the current confirmation, per-publication counts with explicit exclusion counts, and paginated per-series measures for the search; nothing is stored.
+- `fva_publication_series(publication_id: number, horizon: number, search: string, offset: number, limit: number)`: every target point of one publication at one horizon with its inputs and verdict; `unknown_publication` on mismatch.
 - `export_csv(run_id: string, path: string)`: publish the saved full-run plan to a new CSV file and return `ExportResult`.
 - `export_xlsx(run_id: string, path: string)`: publish the same saved plan as a new XLSX workbook with `Plan` and `Summary` sheets; return `ExportResult`.
 
@@ -65,6 +69,14 @@ Jobs use string ids to correlate Tauri, SQLite, and sidecar messages.
 - `ExceptionInbox`: `run_id`, `policy`, nullable `predecessor_run_id` (newest completed run of the immediately preceding revision), `material_change_available`, `total` (matching rows across the run), and paginated `rows`.
 - `PlanPublication`: `id`, `run_id`, `revision_id`, `cutoff_week`, `horizon_start_week`, `revision_high_water` (highest import revision id visible at publication), `published_at`, `override_cells`, `override_series`, `series_count`, `covered_series`.
 - `PublicationSeriesDetail`: `publication_id`, series identity, `outcome`, nullable `reason`, and `planning` points with values pinned at publication time (same shape as `PlanningPoint`).
+- `ActualsConfirmation`: `id`, `revision_id`, `confirmed_through`, `created_at`.
+- `FvaExclusions`: point counts per verdict: `future`, `late_published`, `hindsight`, `absent`, `missing_or_partial`, `stockout`, `no_forecast`.
+- `FvaSeriesMeasures`: `points`, nullable `baseline_wape`/`effective_wape`/`wape_improvement_pp` (pooled actual magnitude zero makes the percentages unavailable), `baseline_mae`/`effective_mae`/`mae_improvement` in quantity units, and nullable `baseline_bias`/`effective_bias` (positive = overforecasting).
+- `PublicationFva`: publication identity plus `horizon`, `scored`, `adjusted`, `imputed_input`, `improved`/`harmful`/`unchanged` series counts, `excluded` counts, and the `low_sample` flag (fewer than five points scored).
+- `SeriesFvaRow`: series identity, `scored`, `adjusted`, `measures`, and the `imputed_input` disclosure flag.
+- `FvaReport`: `horizon`, nullable `confirmation`, `publications`, `total`, and paginated `rows`.
+- `FvaPoint`: series identity, `week_start`, nullable `actual`/`baseline`/`effective`, `baseline_error`/`effective_error` (forecast minus actual), `adjustment` (effective minus baseline), `imputed_input`, and the nullable `excluded` verdict code (null = scored).
+- `PublicationFvaPoints`: `publication_id`, `horizon`, `total`, paginated `rows`.
 - `RunSummary`: `id`, `revision_id`, `status`, `created_at`, `horizon_start_week`, `engine_version`.
 - `RunOverview`: `series_count`, `covered_series`, `coverage`, `outcomes` (all five outcome keys, including zero counts), `exception_count`, and `exceptions`. Coverage is the fraction with `ok` or `fallback_naive`, not forecast accuracy; zero series yields zero coverage. Totals are independent of pagination.
 - `RunException`: `product_id`, `location_id`, `series_key`, `location_code`, `outcome`, nullable `reason`. Exceptions have non-`ok` status or a recorded reason, including `ok` after production fallback. Order is model failure, invalid data, insufficient history, Naive fallback, then `ok` with a reason, followed by SKU/location/identity tie-breaks.
@@ -123,6 +135,10 @@ The inbox (ADR-0028) derives one row per exception series of the selected comple
 ## Plan publications
 
 `PublicationEdit` carries only `run_id`. Publishing (ADR-0029) is one serialized writer transaction: it validates the completed run, the finished-week cutoff, and the one-per-cutoff rule; pins the exact latest override revision of every overridden cell; records the highest import revision id of the profile as the hindsight high-water mark; and stamps `published_at`. Published values are derived at read time (pinned override ?? immutable baseline) and never copied; later edits to the run cannot change them. Only overridden cells are pinned: baselines are immutable by construction.
+
+## Retrospective FVA
+
+Scoring (ADR-0030) pins both sides: the published plan (ADR-0029) and the exact actuals revision named by the latest confirmation. A point is scored only when the publication happened strictly before the target week started, the target week is within the confirmed range, the confirmed revision holds a usable numeric actual, the published plan has baseline and effective values, and the actual was not already visible at or below the publication's revision high-water mark. Everything else carries one explicit exclusion code: `late_published`, `future`, `no_forecast`, `absent`, `missing_or_partial`, `stockout`, or `hindsight` — never a zero-filled week and never a silent skip. Series measures stay in the series' own units (pooled WAPE/MAE/bias plus percentage-point FVA); publication rows show counts only, with a low-sample flag. The persistent-bias inbox rule consumes the same evidence: at the configured horizon, distinct mature weeks from the newest publications must all share one nonzero error sign and exceed the bias threshold. `review/2` fingerprints include the bias token, so changed bias evidence reopens review acknowledgements.
 
 ## Full-Run CSV And XLSX Export
 

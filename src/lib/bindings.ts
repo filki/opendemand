@@ -100,6 +100,15 @@ export const commands = {
 	publicationSeriesDetail: (publicationId: number, productId: string, locationId: string) => typedError<PublicationSeriesDetail, AppError>(__TAURI_INVOKE("publication_series_detail", { publicationId, productId, locationId })),
 	exportPublicationCsv: (publicationId: number, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_publication_csv", { publicationId, path })),
 	exportPublicationXlsx: (publicationId: number, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_publication_xlsx", { publicationId, path })),
+	actualsConfirmationSet: (edit: ActualsConfirmationEdit) => typedError<ActualsConfirmation, AppError>(__TAURI_INVOKE("actuals_confirmation_set", { edit })),
+	actualsConfirmationLatest: () => typedError<{
+	id: number,
+	revision_id: number,
+	confirmed_through: string,
+	created_at: string,
+} | null, AppError>(__TAURI_INVOKE("actuals_confirmation_latest")),
+	fvaReport: (horizon: number, search: string, offset: number, limit: number) => typedError<FvaReport, AppError>(__TAURI_INVOKE("fva_report", { horizon, search, offset, limit })),
+	fvaPublicationSeries: (publicationId: number, horizon: number, search: string, offset: number, limit: number) => typedError<PublicationFvaPoints, AppError>(__TAURI_INVOKE("fva_publication_series", { publicationId, horizon, search, offset, limit })),
 	exportCsv: (runId: string, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_csv", { runId, path })),
 	exportXlsx: (runId: string, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_xlsx", { runId, path })),
 };
@@ -110,6 +119,23 @@ export const events = {
 };
 
 /* Types */
+/**
+ *  One append-only confirmation that an actuals revision is complete through a
+ *  finished week (ADR-0030). The latest confirmation of the profile is current.
+ */
+export type ActualsConfirmation = {
+	id: number,
+	revision_id: number,
+	confirmed_through: string,
+	created_at: string,
+};
+
+export type ActualsConfirmationEdit = {
+	revision_id: number,
+	/**  ISO Monday, no later than the last finished week. */
+	confirmed_through: string,
+};
+
 export type AppError = {
 	code: string,
 	message: string,
@@ -176,6 +202,85 @@ export type ForecastResult = {
 	coverage: number | null,
 };
 
+/**
+ *  Why one target point could not be scored (ADR-0030). Counts only; nothing
+ *  is stored.
+ */
+export type FvaExclusions = {
+	/**  Target week beyond the confirmed completed range. */
+	future: number,
+	/**  The publication happened at or after the target week started. */
+	late_published: number,
+	/**
+	 *  The target actual was visible to the planner at or before the
+	 *  publication's revision high-water mark.
+	 */
+	hindsight: number,
+	/**  No observation row for the target week in the confirmed revision. */
+	absent: number,
+	/**  The target observation is missing or partial. */
+	missing_or_partial: number,
+	/**  The target observation is marked as a stockout. */
+	stockout: number,
+	/**  The published plan has no baseline or effective value for the week. */
+	no_forecast: number,
+};
+
+/**
+ *  One target point of one publication (scored or excluded), with all inputs
+ *  visible: actual from the confirmed revision, pinned published values, and
+ *  forecast-minus-actual errors (positive means overforecast).
+ */
+export type FvaPoint = {
+	product_id: string,
+	location_id: string,
+	series_key: string,
+	location_code: string,
+	week_start: string,
+	actual: number | null,
+	baseline: number | null,
+	effective: number | null,
+	baseline_error: number | null,
+	effective_error: number | null,
+	/**  Effective minus baseline; None when either value is missing. */
+	adjustment: number | null,
+	imputed_input: boolean,
+	/**  Exclusion code when the point was not scored; None when scored. */
+	excluded: string | null,
+};
+
+export type FvaReport = {
+	horizon: number,
+	/**  Latest actuals confirmation of the profile; None until confirmed. */
+	confirmation: ActualsConfirmation | null,
+	publications: PublicationFva[],
+	/**  Series rows matching the search across every publication. */
+	total: number,
+	rows: SeriesFvaRow[],
+};
+
+/**
+ *  Same-unit measures pooled over eligible points of one series (ADR-0030).
+ *  WAPE and bias are unavailable when the pooled actual magnitude is zero;
+ *  MAE stays available in quantity units.
+ */
+export type FvaSeriesMeasures = {
+	points: number,
+	baseline_wape: number | null,
+	effective_wape: number | null,
+	/**
+	 *  Baseline WAPE minus effective WAPE in percentage points; positive means
+	 *  the adjustment improved the plan.
+	 */
+	wape_improvement_pp: number | null,
+	baseline_mae: number | null,
+	effective_mae: number | null,
+	/**  Baseline MAE minus effective MAE; positive means improvement. */
+	mae_improvement: number | null,
+	baseline_bias: number | null,
+	effective_bias: number | null,
+};
+
 export type HistoryPoint = {
 	week_start: string,
 	quantity: number | null,
@@ -235,6 +340,15 @@ export type InboxItem = {
 	change_rel: number | null,
 	/**  Earliest due override review date for this series, when any is due. */
 	due_review_date: string | null,
+	/**
+	 *  Pooled persistent bias (positive means overforecasting) when the rule
+	 *  fired; None otherwise.
+	 */
+	bias_value: number | null,
+	/**  Mature target weeks the bias evidence covered. */
+	bias_weeks: number | null,
+	/**  Horizon step the bias evidence was evaluated at. */
+	bias_horizon: number | null,
 	/**  `reviewed` or `unreviewed` for the selected run. */
 	review_status: string,
 	reviewed_at: string | null,
@@ -246,6 +360,8 @@ export type InboxItem = {
 /**
  *  Versioned, profile-scoped thresholds for the derived exception inbox
  *  (ADR-0028). Both thresholds are NULL together (rule disabled) or set.
+ *  The persistent-bias group (horizon, window, minimum, threshold) is
+ *  all-set or all-null as well (ADR-0030).
  */
 export type InboxPolicy = {
 	/**  Absolute material-change threshold in the series' own quantity units. */
@@ -255,17 +371,29 @@ export type InboxPolicy = {
 	 *  baseline magnitude (0.25 means 25%).
 	 */
 	change_rel: number | null,
+	/**  Horizon step the persistent-bias rule evaluates (1..12). */
+	bias_horizon: number | null,
+	/**  How many mature target weeks the rule considers. */
+	bias_window: number | null,
+	/**  Minimum mature target weeks before the rule can fire (at least 2). */
+	bias_min: number | null,
+	/**  Minimum absolute pooled bias before the rule can fire (> 0). */
+	bias_abs: number | null,
 	/**  Latest stored policy version; None when never configured. */
 	version: number | null,
 };
 
 /**
- *  Raw threshold input; empty strings disable the rule. Both fields must be
- *  provided together or both empty.
+ *  Raw threshold input; empty strings disable the rule. Each rule group must
+ *  be provided together or left empty.
  */
 export type InboxPolicyEdit = {
 	change_abs: string | null,
 	change_rel: string | null,
+	bias_horizon: string | null,
+	bias_window: string | null,
+	bias_min: string | null,
+	bias_abs: string | null,
 };
 
 export type JobInfo = {
@@ -404,6 +532,33 @@ export type PublicationEdit = {
 	run_id: string,
 };
 
+/**  Derived retrospective aggregates for one publication at one horizon step. */
+export type PublicationFva = {
+	publication_id: number,
+	run_id: string,
+	revision_id: number,
+	cutoff_week: string,
+	horizon: number,
+	scored: number,
+	adjusted: number,
+	/**  Scored points whose run input had imputed weeks (disclosure only). */
+	imputed_input: number,
+	/**  Series whose absolute error got smaller, larger, or stayed equal. */
+	improved: number,
+	harmful: number,
+	unchanged: number,
+	excluded: FvaExclusions,
+	/**  True when fewer than five points scored; no significance is implied. */
+	low_sample: boolean,
+};
+
+export type PublicationFvaPoints = {
+	publication_id: number,
+	horizon: number,
+	total: number,
+	rows: FvaPoint[],
+};
+
 /**
  *  The published plan for one series: the same point shape as the live planner,
  *  but with override values pinned at publication time (ADR-0029).
@@ -507,6 +662,19 @@ export type SeriesDetail = {
 	notes: SeriesNote[],
 	/**  Derived review state for the selected run; None without a run. */
 	review: SeriesReviewInfo | null,
+};
+
+/**  Per-series retrospective view pooled across publications at one horizon. */
+export type SeriesFvaRow = {
+	product_id: string,
+	location_id: string,
+	series_key: string,
+	location_code: string,
+	scored: number,
+	adjusted: number,
+	measures: FvaSeriesMeasures,
+	/**  True when any scored point's run input had imputed weeks. */
+	imputed_input: boolean,
 };
 
 /**

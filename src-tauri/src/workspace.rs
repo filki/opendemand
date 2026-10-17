@@ -13,13 +13,15 @@ use crate::{
     preprocess::{self, descriptor_json, ImportConfig, ParsingDescriptor},
     selection,
     types::{
-        DemandChangePoint, ExceptionInbox, ExportResult, ForecastChangePoint, ForecastInput,
-        ForecastPoint, HistoryPoint, ImportResult, InboxItem, InboxPolicy, InboxPolicyEdit,
-        InputSeries, ModelOriginRow, ObservationRecord, OverrideEdit, OverrideRevision,
-        PlanPublication, PlanningPoint, PublicationEdit, PublicationSeriesDetail, ReviewActionEdit,
-        RunException, RunOverview, RunSummary, SeriesChangeSummary, SeriesComparisonDetail,
-        SeriesDetail, SeriesModelComparison, SeriesNote, SeriesNoteEdit, SeriesReviewInfo,
-        SeriesSummary, WeeklyChangeFilter, WeeklyComparisonContext, WorkspaceInfo,
+        ActualsConfirmation, ActualsConfirmationEdit, DemandChangePoint, ExceptionInbox,
+        ExportResult, ForecastChangePoint, ForecastInput, ForecastPoint, FvaExclusions, FvaPoint,
+        FvaReport, FvaSeriesMeasures, HistoryPoint, ImportResult, InboxItem, InboxPolicy,
+        InboxPolicyEdit, InputSeries, ModelOriginRow, ObservationRecord, OverrideEdit,
+        OverrideRevision, PlanPublication, PlanningPoint, PublicationEdit, PublicationFva,
+        PublicationFvaPoints, PublicationSeriesDetail, ReviewActionEdit, RunException, RunOverview,
+        RunSummary, SeriesChangeSummary, SeriesComparisonDetail, SeriesDetail, SeriesFvaRow,
+        SeriesModelComparison, SeriesNote, SeriesNoteEdit, SeriesReviewInfo, SeriesSummary,
+        WeeklyChangeFilter, WeeklyComparisonContext, WorkspaceInfo,
     },
 };
 use chrono::{Datelike, Duration as ChronoDuration, NaiveDate, Utc, Weekday};
@@ -49,8 +51,8 @@ use uuid::Uuid;
 /// SQLx is what `open` verifies against.
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../docs/architecture/schema");
 
-const SCHEMA_VERSION: i64 = 6;
-const SCHEMA_VERSION_TEXT: &str = "6";
+const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION_TEXT: &str = "7";
 const CONTRACT_VERSION: &str = "canonical/1";
 /// Contract version of revisions produced by the preprocessing layer.
 const PREPROCESS_CONTRACT: &str = "preprocess/1";
@@ -79,17 +81,18 @@ const OVERRIDE_REASONS: [&str; 5] = [
 ];
 /// Rule/policy context label recorded with every review event; bump it when the
 /// acknowledged evidence changes so stored acknowledgements stop matching.
-const REVIEW_CONTEXT: &str = "review/1";
-/// Fixed exception-inbox rule priority (ADR-0028); row order follows the first
-/// applicable rule index. `persistent_bias` arrives with the retrospective
-/// evaluation slice and takes its place before `review_due`.
-const INBOX_RULES: [&str; 7] = [
+/// `review/2` adds the persistent-bias evidence token (ADR-0030).
+const REVIEW_CONTEXT: &str = "review/2";
+/// Fixed exception-inbox rule priority (ADR-0028, ADR-0030); row order follows
+/// the first applicable rule index.
+const INBOX_RULES: [&str; 8] = [
     "model_failure",
     "invalid_data",
     "insufficient_history",
     "imputed_input",
     "production_fallback",
     "material_change",
+    "persistent_bias",
     "review_due",
 ];
 const LIST_LIMIT_MAX: u32 = 200;
@@ -170,6 +173,39 @@ const PLANNING_ROWS_SQL: &str = "
         AND m.location_id = o.location_id AND m.week_start = o.week_start
         AND m.revision = o.revision
     ORDER BY s.product_id, s.location_id, w.horizon";
+
+// One target week of a publication (ADR-0030): published values pinned at
+// publication time plus the week's identity, for evaluation and bias evidence.
+const PUBLICATION_WEEK_ROWS_SQL: &str = "
+    WITH RECURSIVE run AS (
+        SELECT id, horizon_start_week, horizon_weeks FROM forecast_run WHERE id = ?
+    ), weeks(horizon, week_start) AS (
+        SELECT 1, horizon_start_week FROM run
+        UNION ALL
+        SELECT horizon + 1, date(week_start, '+7 days') FROM weeks, run
+        WHERE horizon < run.horizon_weeks
+    )
+    SELECT s.product_id AS product_id, s.location_id AS location_id,
+           s.imputed_weeks AS imputed_weeks,
+           p.sku AS series_key, l.code AS location_code,
+           f.value AS baseline, o.value AS override_value,
+           COALESCE(o.value, f.value) AS effective, w.week_start AS week_start,
+           s.status AS series_status
+    FROM forecast_series_status s
+    JOIN run r ON s.run_id = r.id
+    JOIN product p ON p.id = s.product_id
+    JOIN location l ON l.id = s.location_id
+    CROSS JOIN weeks w
+    LEFT JOIN forecast f ON f.run_id = s.run_id AND f.product_id = s.product_id
+        AND f.location_id = s.location_id AND f.week_start = w.week_start
+    LEFT JOIN publication_override po ON po.publication_id = ?
+        AND po.product_id = s.product_id AND po.location_id = s.location_id
+        AND po.week_start = w.week_start
+    LEFT JOIN forecast_override o ON o.run_id = s.run_id AND o.product_id = s.product_id
+        AND o.location_id = s.location_id AND o.week_start = w.week_start
+        AND o.revision = po.revision
+    WHERE w.week_start = ?
+    ORDER BY s.product_id, s.location_id";
 
 // The published plan for a pinned run: identical shape to PLANNING_ROWS_SQL,
 // but the override join goes through publication_override so the exact pinned
@@ -1651,16 +1687,42 @@ impl Workspace {
         review_policy_row(&mut connection, profile_id).await
     }
 
-    /// Append one inbox-policy version: both thresholds enable the
-    /// material-change rule, or both empty disable it. Never partial.
+    /// Append one inbox-policy version (ADR-0028, ADR-0030): each rule group is
+    /// all-set or all-null. The material-change group is the absolute and
+    /// relative thresholds; the persistent-bias group is the horizon step, the
+    /// mature-week window, the minimum week count, and the bias threshold.
     pub async fn save_review_policy(&self, edit: InboxPolicyEdit) -> AppResult<InboxPolicy> {
         let change_abs = parse_threshold(edit.change_abs.as_deref(), "absolute")?;
         let change_rel = parse_threshold(edit.change_rel.as_deref(), "relative")?;
         if change_abs.is_some() != change_rel.is_some() {
             return Err(err(
                 "invalid_policy",
-                "Set both thresholds to enable the change rule, or leave both empty to disable it.",
+                "Set both change thresholds to enable the change rule, or leave both empty to disable it.",
             ));
+        }
+        let bias_horizon = parse_bias_horizon(edit.bias_horizon.as_deref())?;
+        let bias_window = parse_bias_count(edit.bias_window.as_deref(), "window")?;
+        let bias_min = parse_bias_count(edit.bias_min.as_deref(), "minimum count")?;
+        let bias_abs = parse_threshold(edit.bias_abs.as_deref(), "bias")?;
+        let bias_set = [
+            bias_horizon.is_some(),
+            bias_window.is_some(),
+            bias_min.is_some(),
+            bias_abs.is_some(),
+        ];
+        if bias_set.iter().any(|set| *set) && !bias_set.iter().all(|set| *set) {
+            return Err(err(
+                "invalid_policy",
+                "Set the horizon, window, minimum count, and bias threshold together, or leave all four empty.",
+            ));
+        }
+        if let (Some(window), Some(minimum)) = (bias_window, bias_min) {
+            if minimum > window {
+                return Err(err(
+                    "invalid_policy",
+                    "The minimum count cannot exceed the window.",
+                ));
+            }
         }
         let profile_id = active_profile_id(&self.pool).await?;
         let _writer = self.writer.lock().await;
@@ -1672,13 +1734,18 @@ impl Workspace {
                 .await?;
         let version = current.unwrap_or(0) + 1;
         sqlx::query(
-            "INSERT INTO review_policy (profile_id, version, change_abs, change_rel, created_at)
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO review_policy
+             (profile_id, version, change_abs, change_rel, bias_horizon, bias_window, bias_min, bias_abs, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(profile_id)
         .bind(version)
         .bind(change_abs)
         .bind(change_rel)
+        .bind(bias_horizon.map(i64::from))
+        .bind(bias_window.map(i64::from))
+        .bind(bias_min.map(i64::from))
+        .bind(bias_abs)
         .bind(now_iso().as_str())
         .execute(&mut *transaction)
         .await?;
@@ -1688,6 +1755,10 @@ impl Workspace {
         Ok(InboxPolicy {
             change_abs,
             change_rel,
+            bias_horizon,
+            bias_window,
+            bias_min,
+            bias_abs,
             version: Some(version),
         })
     }
@@ -1860,6 +1931,7 @@ impl Workspace {
         }
 
         let policy_enabled = policy.change_abs.is_some() && policy.change_rel.is_some();
+        let bias_map = persistent_bias_map(&mut connection, profile_id).await?;
         let mut items: Vec<(usize, InboxItem)> = Vec::new();
         for row in &status_rows {
             let product: Vec<u8> = row.get("product_id");
@@ -1903,6 +1975,10 @@ impl Workspace {
                     }
                 }
             }
+            let bias = bias_map.get(&key).copied();
+            if bias.is_some() {
+                rules.push("persistent_bias");
+            }
             let due_review_date = due.get(&key).cloned();
             if due_review_date.is_some() {
                 rules.push("review_due");
@@ -1920,6 +1996,7 @@ impl Workspace {
                         &location,
                         Some((outcome.as_str(), reason.as_deref())),
                         override_map,
+                        bias,
                     );
                     if &current == fingerprint {
                         ("reviewed", Some(created_at.clone()))
@@ -1947,6 +2024,9 @@ impl Workspace {
                     change_abs,
                     change_rel,
                     due_review_date,
+                    bias_value: bias.map(|(value, _, _)| value),
+                    bias_weeks: bias.map(|(_, weeks, _)| weeks),
+                    bias_horizon: bias.map(|(_, _, horizon)| horizon),
                     review_status: review_status.to_string(),
                     reviewed_at,
                     note_count: note_meta.map(|(count, _)| *count as u32).unwrap_or(0),
@@ -2253,6 +2333,327 @@ impl Workspace {
             outcome: first.get("series_status"),
             reason: None,
             planning: rows.iter().map(planning_point).collect(),
+        })
+    }
+
+    /// Append one actuals confirmation (ADR-0030): the named revision is
+    /// complete through a finished week. Corrections and retractions append a
+    /// new row; evaluations always pin the exact confirmation they used.
+    pub async fn actuals_confirmation_set(
+        &self,
+        edit: ActualsConfirmationEdit,
+    ) -> AppResult<ActualsConfirmation> {
+        ensure_revision(&self.pool, edit.revision_id).await?;
+        let week = parse_confirmed_week(&edit.confirmed_through)?;
+        let today = Utc::now().date_naive();
+        let current_monday =
+            today - ChronoDuration::days(i64::from(today.weekday().num_days_from_monday()));
+        let last_finished_week = current_monday - ChronoDuration::weeks(1);
+        if week > last_finished_week {
+            return Err(err(
+                "confirmation_not_finished",
+                "Confirm completeness only through a finished week.",
+            ));
+        }
+        let profile_id: i64 =
+            sqlx::query_scalar("SELECT profile_id FROM import_revision WHERE id = ?")
+                .bind(edit.revision_id)
+                .fetch_one(&self.pool)
+                .await?;
+        let _writer = self.writer.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let timestamp = now_iso();
+        let id = sqlx::query(
+            "INSERT INTO actuals_confirmation (profile_id, revision_id, confirmed_through, created_at)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(profile_id)
+        .bind(edit.revision_id)
+        .bind(week.format("%Y-%m-%d").to_string())
+        .bind(timestamp.as_str())
+        .execute(&mut *transaction)
+        .await?
+        .last_insert_rowid();
+        transaction.commit().await?;
+        Ok(ActualsConfirmation {
+            id: i32::try_from(id)
+                .map_err(|_| err("contract_violation", "The confirmation id is unsupported."))?,
+            revision_id: edit.revision_id,
+            confirmed_through: week.format("%Y-%m-%d").to_string(),
+            created_at: timestamp,
+        })
+    }
+
+    /// The current (latest) actuals confirmation of the active profile.
+    pub async fn actuals_confirmation_latest(&self) -> AppResult<Option<ActualsConfirmation>> {
+        let profile_id = active_profile_id(&self.pool).await?;
+        let mut connection = self.pool.acquire().await?;
+        latest_confirmation(&mut connection, profile_id).await
+    }
+
+    /// Derived retrospective planner FVA across the profile's publications at
+    /// one horizon step (ADR-0030). Nothing is stored; the latest confirmation
+    /// pins the actuals revision, and every exclusion is reported explicitly.
+    pub async fn fva_report(
+        &self,
+        horizon: u32,
+        search: &str,
+        offset: u32,
+        limit: u32,
+    ) -> AppResult<FvaReport> {
+        if !(1..=12).contains(&horizon) {
+            return Err(err(
+                "invalid_horizon",
+                "Choose a horizon step from 1 to 12.",
+            ));
+        }
+        let limit = limit.clamp(1, LIST_LIMIT_MAX);
+        let profile_id = active_profile_id(&self.pool).await?;
+        let mut connection = self.pool.acquire().await?;
+        let confirmation = latest_confirmation(&mut connection, profile_id).await?;
+        let publications = sqlx::query(
+            "SELECT id, run_id, revision_id, cutoff_week, horizon_start_week,
+                    revision_high_water, published_at
+             FROM plan_publication WHERE profile_id = ?
+             ORDER BY published_at DESC, id DESC LIMIT 200",
+        )
+        .bind(profile_id)
+        .fetch_all(&mut *connection)
+        .await?;
+        let mut publication_rows = Vec::new();
+        let mut series_acc: HashMap<SeriesKey, SeriesFvaAccumulator> = HashMap::new();
+        for row in &publications {
+            let publication_id: i64 = row.get("id");
+            let run_bytes: Vec<u8> = row.get("run_id");
+            let revision_id = i32::try_from(row.get::<i64, _>("revision_id"))
+                .map_err(|_| err("contract_violation", "The run revision is unsupported."))?;
+            let high_water: i64 = row.get("revision_high_water");
+            let horizon_start_week: String = row.get("horizon_start_week");
+            let published_at: String = row.get("published_at");
+            let mut excluded = FvaExclusions::default();
+            let mut scored = 0u32;
+            let mut adjusted = 0u32;
+            let mut imputed = 0u32;
+            let mut improved = 0u32;
+            let mut harmful = 0u32;
+            let mut unchanged = 0u32;
+            if let Some(confirmation) = &confirmation {
+                // Publications whose high-water mark reaches the confirmation
+                // revision exclude every visible actual as hindsight; the
+                // per-point verdict does that explicitly, never by skipping.
+                let points = publication_fva_points(
+                    &mut connection,
+                    profile_id,
+                    publication_id,
+                    &run_bytes,
+                    high_water,
+                    &horizon_start_week,
+                    &published_at,
+                    confirmation,
+                    horizon,
+                )
+                .await?;
+                for point in &points {
+                    match point.excluded {
+                        Some(code) => excluded.bump(code),
+                        None => {
+                            scored += 1;
+                            let baseline = point.baseline.unwrap_or_default();
+                            let effective = point.effective.unwrap_or_default();
+                            let actual = point.actual.unwrap_or_default();
+                            if effective != baseline {
+                                adjusted += 1;
+                            }
+                            if point.imputed_input {
+                                imputed += 1;
+                            }
+                            match (effective - actual)
+                                .abs()
+                                .partial_cmp(&(baseline - actual).abs())
+                            {
+                                Some(std::cmp::Ordering::Less) => improved += 1,
+                                Some(std::cmp::Ordering::Greater) => harmful += 1,
+                                _ => unchanged += 1,
+                            }
+                            series_acc
+                                .entry((point.product.clone(), point.location.clone()))
+                                .or_insert_with(|| SeriesFvaAccumulator {
+                                    series_key: point.series_key.clone(),
+                                    location_code: point.location_code.clone(),
+                                    ..SeriesFvaAccumulator::default()
+                                })
+                                .push_point(baseline, effective, actual, point.imputed_input);
+                        }
+                    }
+                }
+            }
+            publication_rows.push(PublicationFva {
+                publication_id: i32::try_from(publication_id)
+                    .map_err(|_| err("contract_violation", "The publication id is unsupported."))?,
+                run_id: uuid_from_bytes(&run_bytes)?.to_string(),
+                revision_id,
+                cutoff_week: row.get("cutoff_week"),
+                horizon,
+                scored,
+                adjusted,
+                imputed_input: imputed,
+                improved,
+                harmful,
+                unchanged,
+                excluded,
+                low_sample: scored > 0 && scored < 5,
+            });
+        }
+        let needle = search.trim().to_lowercase();
+        let mut rows: Vec<SeriesFvaRow> = series_acc
+            .into_iter()
+            .map(|((product, location), accumulator)| {
+                let measures = accumulator.measures();
+                Ok(SeriesFvaRow {
+                    product_id: uuid_from_bytes(&product)?.to_string(),
+                    location_id: uuid_from_bytes(&location)?.to_string(),
+                    series_key: accumulator.series_key,
+                    location_code: accumulator.location_code,
+                    scored: measures.points,
+                    adjusted: accumulator.adjusted,
+                    measures,
+                    imputed_input: accumulator.imputed_input,
+                })
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+        if !needle.is_empty() {
+            rows.retain(|row| {
+                row.series_key.to_lowercase().contains(&needle)
+                    || row.location_code.to_lowercase().contains(&needle)
+            });
+        }
+        rows.sort_by(|left, right| {
+            left.series_key
+                .cmp(&right.series_key)
+                .then_with(|| left.location_code.cmp(&right.location_code))
+                .then_with(|| left.product_id.cmp(&right.product_id))
+                .then_with(|| left.location_id.cmp(&right.location_id))
+        });
+        let total = u32::try_from(rows.len())
+            .map_err(|_| err("contract_violation", "The report is too large."))?;
+        let rows = rows
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect();
+        Ok(FvaReport {
+            horizon,
+            confirmation,
+            publications: publication_rows,
+            total,
+            rows,
+        })
+    }
+
+    /// Every target point of one publication at one horizon: scored values and
+    /// explicit exclusions, for the per-publication detail view (ADR-0030).
+    pub async fn fva_publication_series(
+        &self,
+        publication_id: i32,
+        horizon: u32,
+        search: &str,
+        offset: u32,
+        limit: u32,
+    ) -> AppResult<PublicationFvaPoints> {
+        if !(1..=12).contains(&horizon) {
+            return Err(err(
+                "invalid_horizon",
+                "Choose a horizon step from 1 to 12.",
+            ));
+        }
+        let limit = limit.clamp(1, LIST_LIMIT_MAX);
+        let (profile_id, run_bytes, high_water, horizon_start_week, published_at, confirmation) = {
+            let mut connection = self.pool.acquire().await?;
+            let row = sqlx::query(
+                "SELECT run_id, revision_high_water, horizon_start_week, published_at, profile_id
+                 FROM plan_publication WHERE id = ?",
+            )
+            .bind(i64::from(publication_id))
+            .fetch_optional(&mut *connection)
+            .await?
+            .ok_or_else(|| {
+                err(
+                    "unknown_publication",
+                    "The publication does not exist in this workspace.",
+                )
+            })?;
+            let profile_id: i64 = row.get("profile_id");
+            let confirmation = latest_confirmation(&mut connection, profile_id).await?;
+            (
+                profile_id,
+                row.get::<Vec<u8>, _>("run_id"),
+                row.get::<i64, _>("revision_high_water"),
+                row.get::<String, _>("horizon_start_week"),
+                row.get::<String, _>("published_at"),
+                confirmation,
+            )
+        };
+        let mut rows = Vec::new();
+        if let Some(confirmation) = confirmation {
+            let mut connection = self.pool.acquire().await?;
+            let points = publication_fva_points(
+                &mut connection,
+                profile_id,
+                i64::from(publication_id),
+                &run_bytes,
+                high_water,
+                &horizon_start_week,
+                &published_at,
+                &confirmation,
+                horizon,
+            )
+            .await?;
+            for point in points {
+                rows.push(FvaPoint {
+                    product_id: uuid_from_bytes(&point.product)?.to_string(),
+                    location_id: uuid_from_bytes(&point.location)?.to_string(),
+                    series_key: point.series_key,
+                    location_code: point.location_code,
+                    week_start: point.week,
+                    actual: point.actual,
+                    baseline: point.baseline,
+                    effective: point.effective,
+                    baseline_error: match (point.baseline, point.actual) {
+                        (Some(baseline), Some(actual)) => Some(baseline - actual),
+                        _ => None,
+                    },
+                    effective_error: match (point.effective, point.actual) {
+                        (Some(effective), Some(actual)) => Some(effective - actual),
+                        _ => None,
+                    },
+                    adjustment: match (point.effective, point.baseline) {
+                        (Some(effective), Some(baseline)) => Some(effective - baseline),
+                        _ => None,
+                    },
+                    imputed_input: point.imputed_input,
+                    excluded: point.excluded.map(str::to_string),
+                });
+            }
+        }
+        let needle = search.trim().to_lowercase();
+        if !needle.is_empty() {
+            rows.retain(|row| {
+                row.series_key.to_lowercase().contains(&needle)
+                    || row.location_code.to_lowercase().contains(&needle)
+            });
+        }
+        let total = u32::try_from(rows.len())
+            .map_err(|_| err("contract_violation", "The report is too large."))?;
+        let rows = rows
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect();
+        Ok(PublicationFvaPoints {
+            publication_id,
+            horizon,
+            total,
+            rows,
         })
     }
 
@@ -4200,6 +4601,7 @@ fn fingerprint_from_parts(
     location: &[u8],
     status: Option<(&str, Option<&str>)>,
     overrides: &[(String, i64)],
+    bias: Option<(f64, u32, u32)>,
 ) -> String {
     let mut lines = vec![
         format!("{REVIEW_CONTEXT}|v1"),
@@ -4209,6 +4611,10 @@ fn fingerprint_from_parts(
         match status {
             Some((outcome, reason)) => format!("{outcome}|{}", reason.unwrap_or_default()),
             None => "no-status".to_string(),
+        },
+        match bias {
+            Some((value, weeks, horizon)) => format!("bias:{horizon}:{value:.4}:{weeks}"),
+            None => "bias:none".to_string(),
         },
     ];
     for (week, revision) in overrides {
@@ -4252,6 +4658,19 @@ async fn evidence_fingerprint(
         .iter()
         .map(|row| (row.get("week_start"), row.get("revision")))
         .collect();
+    let profile_id: Option<i64> = sqlx::query_scalar(
+        "SELECT i.profile_id FROM forecast_run r JOIN import_revision i ON i.id = r.revision_id
+         WHERE r.id = ?",
+    )
+    .bind(run)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let bias = match profile_id {
+        Some(profile_id) => {
+            persistent_bias_for_series(connection, profile_id, product, location).await?
+        }
+        None => None,
+    };
     Ok(fingerprint_from_parts(
         run,
         product,
@@ -4260,6 +4679,7 @@ async fn evidence_fingerprint(
             .as_ref()
             .map(|(outcome, reason)| (outcome.as_str(), reason.as_deref())),
         &overrides,
+        bias,
     ))
 }
 
@@ -4387,13 +4807,646 @@ fn parse_threshold(text: Option<&str>, label: &str) -> AppResult<Option<f64>> {
     }
 }
 
+fn parse_bias_horizon(text: Option<&str>) -> AppResult<Option<u32>> {
+    match text.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(text) => {
+            let value = text
+                .parse::<u32>()
+                .ok()
+                .filter(|value| (1..=12).contains(value))
+                .ok_or_else(|| {
+                    err(
+                        "invalid_policy",
+                        "The bias horizon must be a whole number from 1 to 12.",
+                    )
+                })?;
+            Ok(Some(value))
+        }
+        None => Ok(None),
+    }
+}
+
+fn parse_bias_count(text: Option<&str>, label: &str) -> AppResult<Option<u32>> {
+    match text.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(text) => {
+            let value = text
+                .parse::<u32>()
+                .ok()
+                .filter(|value| (2..=52).contains(value))
+                .ok_or_else(|| {
+                    err(
+                        "invalid_policy",
+                        format!("The bias {label} must be a whole number from 2 to 52."),
+                    )
+                })?;
+            Ok(Some(value))
+        }
+        None => Ok(None),
+    }
+}
+
+fn parse_confirmed_week(text: &str) -> AppResult<NaiveDate> {
+    NaiveDate::parse_from_str(text, "%Y-%m-%d")
+        .ok()
+        .filter(|week| week.weekday() == Weekday::Mon && week.to_string() == text)
+        .ok_or_else(|| err("invalid_week", "Choose a Monday in YYYY-MM-DD format."))
+}
+
+/// Horizon week for a 1-based step: `start + (horizon - 1)` weeks.
+fn add_weeks_str(start: &str, weeks: u32) -> AppResult<Option<String>> {
+    match NaiveDate::parse_from_str(start, "%Y-%m-%d") {
+        Ok(date) => Ok(Some(
+            (date + ChronoDuration::weeks(i64::from(weeks) - 1))
+                .format("%Y-%m-%d")
+                .to_string(),
+        )),
+        Err(_) => Ok(None),
+    }
+}
+
+fn confirmation_from_row(row: &SqliteRow) -> AppResult<ActualsConfirmation> {
+    Ok(ActualsConfirmation {
+        id: i32::try_from(row.get::<i64, _>("id"))
+            .map_err(|_| err("contract_violation", "The confirmation id is unsupported."))?,
+        revision_id: i32::try_from(row.get::<i64, _>("revision_id"))
+            .map_err(|_| err("contract_violation", "The revision id is unsupported."))?,
+        confirmed_through: row.get("confirmed_through"),
+        created_at: row.get("created_at"),
+    })
+}
+
+async fn latest_confirmation(
+    connection: &mut SqliteConnection,
+    profile_id: i64,
+) -> AppResult<Option<ActualsConfirmation>> {
+    let row = sqlx::query(
+        "SELECT id, revision_id, confirmed_through, created_at FROM actuals_confirmation
+         WHERE profile_id = ? ORDER BY id DESC LIMIT 1",
+    )
+    .bind(profile_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    row.as_ref().map(confirmation_from_row).transpose()
+}
+
+// ---------------------------------------------------------------------------
+// Retrospective evaluation and persistent-bias evidence (ADR-0030)
+// ---------------------------------------------------------------------------
+
+impl FvaExclusions {
+    fn bump(&mut self, code: &str) {
+        match code {
+            "future" => self.future += 1,
+            "late_published" => self.late_published += 1,
+            "hindsight" => self.hindsight += 1,
+            "absent" => self.absent += 1,
+            "missing_or_partial" => self.missing_or_partial += 1,
+            "stockout" => self.stockout += 1,
+            "no_forecast" => self.no_forecast += 1,
+            _ => {}
+        }
+    }
+}
+
+/// Publication windows examined for persistent-bias evidence: the most recent
+/// published cutoffs of the profile, newest first.
+async fn recent_bias_publications(
+    connection: &mut SqliteConnection,
+    profile_id: i64,
+    window: u32,
+) -> AppResult<Vec<SqliteRow>> {
+    Ok(sqlx::query(
+        "SELECT id, run_id, revision_high_water, horizon_start_week, published_at
+         FROM plan_publication WHERE profile_id = ?
+         ORDER BY published_at DESC, id DESC LIMIT ?",
+    )
+    .bind(profile_id)
+    .bind(i64::from(window))
+    .fetch_all(&mut *connection)
+    .await?)
+}
+
+/// One mature target point of one publication for a single series: the pinned
+/// published values and the confirmed actual, or `None` when not scoreable.
+async fn published_week_values_for_series(
+    connection: &mut SqliteConnection,
+    run: &[u8],
+    publication_id: i64,
+    week: &str,
+    product: &[u8],
+    location: &[u8],
+) -> AppResult<Option<(Option<f64>, Option<f64>)>> {
+    let row = sqlx::query(
+        "SELECT f.value AS baseline, COALESCE(o.value, f.value) AS effective
+         FROM forecast_series_status s
+         LEFT JOIN forecast f ON f.run_id = s.run_id AND f.product_id = s.product_id
+             AND f.location_id = s.location_id AND f.week_start = ?
+         LEFT JOIN publication_override po ON po.publication_id = ?
+             AND po.product_id = s.product_id AND po.location_id = s.location_id
+             AND po.week_start = ?
+         LEFT JOIN forecast_override o ON o.run_id = s.run_id AND o.product_id = s.product_id
+             AND o.location_id = s.location_id AND o.week_start = ? AND o.revision = po.revision
+         WHERE s.run_id = ? AND s.product_id = ? AND s.location_id = ?",
+    )
+    .bind(week)
+    .bind(publication_id)
+    .bind(week)
+    .bind(week)
+    .bind(run)
+    .bind(product)
+    .bind(location)
+    .fetch_optional(&mut *connection)
+    .await?;
+    Ok(row.map(|row| (row.get("baseline"), row.get("effective"))))
+}
+
+/// Numeric actual of one target week in a specific revision, with its status;
+/// `None` when the row is absent or has no numeric quantity.
+async fn actual_value_for_series(
+    connection: &mut SqliteConnection,
+    revision_id: i32,
+    week: &str,
+    product: &[u8],
+    location: &[u8],
+) -> AppResult<Option<(f64, String)>> {
+    let row = sqlx::query(
+        "SELECT quantity, status FROM observation
+         WHERE revision_id = ? AND product_id = ? AND location_id = ? AND week_start = ?",
+    )
+    .bind(revision_id)
+    .bind(product)
+    .bind(location)
+    .bind(week)
+    .fetch_optional(&mut *connection)
+    .await?;
+    Ok(row.and_then(|row| {
+        row.get::<Option<f64>, _>("quantity")
+            .map(|quantity| (quantity, row.get("status")))
+    }))
+}
+
+/// True when the target actual existed in any profile revision at or below the
+/// high-water mark: the planner could have seen it, so it must not be scored.
+async fn actual_visible_before(
+    connection: &mut SqliteConnection,
+    profile_id: i64,
+    high_water: i64,
+    week: &str,
+    product: &[u8],
+    location: &[u8],
+) -> AppResult<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM observation o JOIN import_revision i ON i.id = o.revision_id
+         WHERE i.profile_id = ? AND i.id <= ? AND o.product_id = ? AND o.location_id = ?
+           AND o.week_start = ?)",
+    )
+    .bind(profile_id)
+    .bind(high_water)
+    .bind(product)
+    .bind(location)
+    .bind(week)
+    .fetch_one(&mut *connection)
+    .await?)
+}
+
+/// Persistent-bias evidence for one series (ADR-0030): every mature target
+/// point in the configured window must share one nonzero error sign and the
+/// pooled bias magnitude must exceed the threshold, or the rule stays silent.
+async fn persistent_bias_for_series(
+    connection: &mut SqliteConnection,
+    profile_id: i64,
+    product: &[u8],
+    location: &[u8],
+) -> AppResult<Option<(f64, u32, u32)>> {
+    let policy = review_policy_row(connection, profile_id).await?;
+    let (Some(horizon), Some(window), Some(minimum), Some(threshold)) = (
+        policy.bias_horizon,
+        policy.bias_window,
+        policy.bias_min,
+        policy.bias_abs,
+    ) else {
+        return Ok(None);
+    };
+    let Some(confirmation) = latest_confirmation(connection, profile_id).await? else {
+        return Ok(None);
+    };
+    let publications = recent_bias_publications(connection, profile_id, window).await?;
+    let mut sum_error = 0.0;
+    let mut sum_abs_actual = 0.0;
+    let mut count = 0u32;
+    let mut sign: Option<bool> = None;
+    let mut seen_weeks: HashSet<String> = HashSet::new();
+    for row in &publications {
+        let high_water: i64 = row.get("revision_high_water");
+        if i64::from(confirmation.revision_id) <= high_water {
+            continue;
+        }
+        let horizon_start_week: String = row.get("horizon_start_week");
+        let Some(target) = add_weeks_str(&horizon_start_week, horizon)? else {
+            continue;
+        };
+        if target.as_str() > confirmation.confirmed_through.as_str() {
+            continue;
+        }
+        let published_at: String = row.get("published_at");
+        if published_at.get(..10).unwrap_or("9999-12-31") >= target.as_str() {
+            continue;
+        }
+        if !seen_weeks.insert(target.clone()) {
+            continue;
+        }
+        let run_bytes: Vec<u8> = row.get("run_id");
+        let publication_id: i64 = row.get("id");
+        let Some((baseline, effective)) = published_week_values_for_series(
+            connection,
+            &run_bytes,
+            publication_id,
+            &target,
+            product,
+            location,
+        )
+        .await?
+        else {
+            continue;
+        };
+        let (Some(_baseline), Some(effective)) = (baseline, effective) else {
+            continue;
+        };
+        if actual_visible_before(
+            connection, profile_id, high_water, &target, product, location,
+        )
+        .await?
+        {
+            continue;
+        }
+        let Some((actual, status)) = actual_value_for_series(
+            connection,
+            confirmation.revision_id,
+            &target,
+            product,
+            location,
+        )
+        .await?
+        else {
+            continue;
+        };
+        if !matches!(status.as_str(), "known" | "zero" | "return" | "correction") {
+            continue;
+        }
+        let error = effective - actual;
+        if error == 0.0 {
+            return Ok(None);
+        }
+        let positive = error > 0.0;
+        match sign {
+            None => sign = Some(positive),
+            Some(previous) if previous != positive => return Ok(None),
+            _ => {}
+        }
+        sum_error += error;
+        sum_abs_actual += actual.abs();
+        count += 1;
+    }
+    if count < minimum || sum_abs_actual <= 0.0 {
+        return Ok(None);
+    }
+    let bias = sum_error / sum_abs_actual;
+    if bias.abs() < threshold {
+        return Ok(None);
+    }
+    Ok(Some((bias, count, horizon)))
+}
+
+/// Bulk persistent-bias evidence for every series of the profile, computed
+/// with bounded queries: three bulk reads per mature publication window.
+async fn persistent_bias_map(
+    connection: &mut SqliteConnection,
+    profile_id: i64,
+) -> AppResult<HashMap<SeriesKey, (f64, u32, u32)>> {
+    let policy = review_policy_row(connection, profile_id).await?;
+    let (Some(horizon), Some(window), Some(minimum), Some(threshold)) = (
+        policy.bias_horizon,
+        policy.bias_window,
+        policy.bias_min,
+        policy.bias_abs,
+    ) else {
+        return Ok(HashMap::new());
+    };
+    let Some(confirmation) = latest_confirmation(connection, profile_id).await? else {
+        return Ok(HashMap::new());
+    };
+    let publications = recent_bias_publications(connection, profile_id, window).await?;
+    #[derive(Default)]
+    struct BiasAcc {
+        sum_error: f64,
+        sum_abs_actual: f64,
+        count: u32,
+        sign: Option<bool>,
+        broken: bool,
+    }
+    let mut acc: HashMap<SeriesKey, BiasAcc> = HashMap::new();
+    let mut seen_weeks: HashSet<(SeriesKey, String)> = HashSet::new();
+    for row in &publications {
+        let high_water: i64 = row.get("revision_high_water");
+        if i64::from(confirmation.revision_id) <= high_water {
+            continue;
+        }
+        let horizon_start_week: String = row.get("horizon_start_week");
+        let Some(target) = add_weeks_str(&horizon_start_week, horizon)? else {
+            continue;
+        };
+        let published_at: String = row.get("published_at");
+        if published_at.get(..10).unwrap_or("9999-12-31") >= target.as_str() {
+            continue;
+        }
+        if target.as_str() > confirmation.confirmed_through.as_str() {
+            continue;
+        }
+        let run_bytes: Vec<u8> = row.get("run_id");
+        let publication_id: i64 = row.get("id");
+        let week_rows = sqlx::query(PUBLICATION_WEEK_ROWS_SQL)
+            .bind(run_bytes.as_slice())
+            .bind(publication_id)
+            .bind(target.as_str())
+            .fetch_all(&mut *connection)
+            .await?;
+        let actual_rows = sqlx::query(
+            "SELECT product_id, location_id, quantity, status FROM observation
+             WHERE revision_id = ? AND week_start = ?",
+        )
+        .bind(confirmation.revision_id)
+        .bind(target.as_str())
+        .fetch_all(&mut *connection)
+        .await?;
+        let mut actuals: HashMap<SeriesKey, (Option<f64>, String)> = HashMap::new();
+        for row in &actual_rows {
+            actuals.insert(
+                (row.get("product_id"), row.get("location_id")),
+                (row.get("quantity"), row.get("status")),
+            );
+        }
+        let visible_rows = sqlx::query(
+            "SELECT o.product_id AS product_id, o.location_id AS location_id
+             FROM observation o JOIN import_revision i ON i.id = o.revision_id
+             WHERE i.profile_id = ? AND i.id <= ? AND o.week_start = ?
+             GROUP BY o.product_id, o.location_id",
+        )
+        .bind(profile_id)
+        .bind(high_water)
+        .bind(target.as_str())
+        .fetch_all(&mut *connection)
+        .await?;
+        let mut hindsight: HashSet<SeriesKey> = HashSet::new();
+        for row in &visible_rows {
+            hindsight.insert((row.get("product_id"), row.get("location_id")));
+        }
+        for row in &week_rows {
+            let key: SeriesKey = (row.get("product_id"), row.get("location_id"));
+            let baseline: Option<f64> = row.get("baseline");
+            let effective: Option<f64> = row.get("effective");
+            if baseline.is_none() || effective.is_none() || hindsight.contains(&key) {
+                continue;
+            }
+            let Some((quantity, status)) = actuals.get(&key) else {
+                continue;
+            };
+            let Some(actual) = quantity else {
+                continue;
+            };
+            if !matches!(status.as_str(), "known" | "zero" | "return" | "correction") {
+                continue;
+            }
+            if !seen_weeks.insert((key.clone(), target.clone())) {
+                continue;
+            }
+            let entry = acc.entry(key).or_default();
+            if entry.broken {
+                continue;
+            }
+            let error = effective.unwrap_or_default() - actual;
+            if error == 0.0 {
+                entry.broken = true;
+                continue;
+            }
+            let positive = error > 0.0;
+            match entry.sign {
+                None => entry.sign = Some(positive),
+                Some(previous) if previous != positive => {
+                    entry.broken = true;
+                    continue;
+                }
+                _ => {}
+            }
+            entry.sum_error += error;
+            entry.sum_abs_actual += actual.abs();
+            entry.count += 1;
+        }
+    }
+    let mut evidence = HashMap::new();
+    for (key, entry) in acc {
+        if entry.broken || entry.count < minimum || entry.sum_abs_actual <= 0.0 {
+            continue;
+        }
+        let bias = entry.sum_error / entry.sum_abs_actual;
+        if bias.abs() < threshold {
+            continue;
+        }
+        evidence.insert(key, (bias, entry.count, horizon));
+    }
+    Ok(evidence)
+}
+
+/// Retrospective accumulator for one series across eligible publications, in
+/// the series' own units.
+#[derive(Default)]
+struct SeriesFvaAccumulator {
+    series_key: String,
+    location_code: String,
+    points: u32,
+    adjusted: u32,
+    imputed_input: bool,
+    sum_abs_actual: f64,
+    sum_abs_baseline_error: f64,
+    sum_abs_effective_error: f64,
+    sum_baseline_bias: f64,
+    sum_effective_bias: f64,
+}
+
+impl SeriesFvaAccumulator {
+    fn push_point(&mut self, baseline: f64, effective: f64, actual: f64, imputed: bool) {
+        self.points += 1;
+        if effective != baseline {
+            self.adjusted += 1;
+        }
+        self.imputed_input |= imputed;
+        let baseline_error = baseline - actual;
+        let effective_error = effective - actual;
+        self.sum_abs_actual += actual.abs();
+        self.sum_abs_baseline_error += baseline_error.abs();
+        self.sum_abs_effective_error += effective_error.abs();
+        self.sum_baseline_bias += baseline_error;
+        self.sum_effective_bias += effective_error;
+    }
+
+    fn measures(&self) -> FvaSeriesMeasures {
+        let points = self.points;
+        let denominator = self.sum_abs_actual;
+        let (baseline_wape, effective_wape, baseline_bias, effective_bias) = if denominator > 0.0 {
+            (
+                Some(self.sum_abs_baseline_error / denominator),
+                Some(self.sum_abs_effective_error / denominator),
+                Some(self.sum_baseline_bias / denominator),
+                Some(self.sum_effective_bias / denominator),
+            )
+        } else {
+            (None, None, None, None)
+        };
+        let baseline_mae = (points > 0).then(|| self.sum_abs_baseline_error / f64::from(points));
+        let effective_mae = (points > 0).then(|| self.sum_abs_effective_error / f64::from(points));
+        FvaSeriesMeasures {
+            points,
+            baseline_wape,
+            effective_wape,
+            wape_improvement_pp: match (baseline_wape, effective_wape) {
+                (Some(baseline), Some(effective)) => Some((baseline - effective) * 100.0),
+                _ => None,
+            },
+            baseline_mae,
+            effective_mae,
+            mae_improvement: match (baseline_mae, effective_mae) {
+                (Some(baseline), Some(effective)) => Some(baseline - effective),
+                _ => None,
+            },
+            baseline_bias,
+            effective_bias,
+        }
+    }
+}
+
+/// One target point of one publication with its scoring verdict.
+struct PublicationPointAcc {
+    product: Vec<u8>,
+    location: Vec<u8>,
+    series_key: String,
+    location_code: String,
+    imputed_input: bool,
+    actual: Option<f64>,
+    baseline: Option<f64>,
+    effective: Option<f64>,
+    excluded: Option<&'static str>,
+    week: String,
+}
+
+/// Score or exclude every series of one publication at one horizon step
+/// (ADR-0030): single explicit verdict per point, newest actuals revision
+/// pinned by the confirmation, hindsight rejected against the high-water mark.
+#[allow(clippy::too_many_arguments)]
+async fn publication_fva_points(
+    connection: &mut SqliteConnection,
+    profile_id: i64,
+    publication_id: i64,
+    run: &[u8],
+    high_water: i64,
+    horizon_start_week: &str,
+    published_at: &str,
+    confirmation: &ActualsConfirmation,
+    horizon: u32,
+) -> AppResult<Vec<PublicationPointAcc>> {
+    let Some(target) = add_weeks_str(horizon_start_week, horizon)? else {
+        return Ok(Vec::new());
+    };
+    let rows = sqlx::query(PUBLICATION_WEEK_ROWS_SQL)
+        .bind(run)
+        .bind(publication_id)
+        .bind(target.as_str())
+        .fetch_all(&mut *connection)
+        .await?;
+    let late = published_at.get(..10).unwrap_or("9999-12-31") >= target.as_str();
+    let future = target.as_str() > confirmation.confirmed_through.as_str();
+    let mut actuals: HashMap<SeriesKey, (Option<f64>, String)> = HashMap::new();
+    let mut hindsight: HashSet<SeriesKey> = HashSet::new();
+    if !late && !future {
+        let actual_rows = sqlx::query(
+            "SELECT product_id, location_id, quantity, status FROM observation
+             WHERE revision_id = ? AND week_start = ?",
+        )
+        .bind(confirmation.revision_id)
+        .bind(target.as_str())
+        .fetch_all(&mut *connection)
+        .await?;
+        for row in &actual_rows {
+            actuals.insert(
+                (row.get("product_id"), row.get("location_id")),
+                (row.get("quantity"), row.get("status")),
+            );
+        }
+        let visible_rows = sqlx::query(
+            "SELECT o.product_id AS product_id, o.location_id AS location_id
+             FROM observation o JOIN import_revision i ON i.id = o.revision_id
+             WHERE i.profile_id = ? AND i.id <= ? AND o.week_start = ?
+             GROUP BY o.product_id, o.location_id",
+        )
+        .bind(profile_id)
+        .bind(high_water)
+        .bind(target.as_str())
+        .fetch_all(&mut *connection)
+        .await?;
+        for row in &visible_rows {
+            hindsight.insert((row.get("product_id"), row.get("location_id")));
+        }
+    }
+    let mut points = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let product: Vec<u8> = row.get("product_id");
+        let location: Vec<u8> = row.get("location_id");
+        let key: SeriesKey = (product.clone(), location.clone());
+        let baseline: Option<f64> = row.get("baseline");
+        let effective: Option<f64> = row.get("effective");
+        let excluded = if late {
+            Some("late_published")
+        } else if future {
+            Some("future")
+        } else if baseline.is_none() || effective.is_none() {
+            Some("no_forecast")
+        } else {
+            match actuals.get(&key) {
+                None => Some("absent"),
+                Some((quantity, status)) => {
+                    if quantity.is_none() {
+                        Some("missing_or_partial")
+                    } else if status == "stockout" {
+                        Some("stockout")
+                    } else if hindsight.contains(&key) {
+                        Some("hindsight")
+                    } else {
+                        None
+                    }
+                }
+            }
+        };
+        points.push(PublicationPointAcc {
+            product,
+            location,
+            series_key: row.get("series_key"),
+            location_code: row.get("location_code"),
+            imputed_input: row.get::<i64, _>("imputed_weeks") > 0,
+            actual: actuals.get(&key).and_then(|(quantity, _)| *quantity),
+            baseline,
+            effective,
+            excluded,
+            week: row.get("week_start"),
+        });
+    }
+    Ok(points)
+}
+
 async fn review_policy_row(
     connection: &mut SqliteConnection,
     profile_id: i64,
 ) -> AppResult<InboxPolicy> {
     let row = sqlx::query(
-        "SELECT version, change_abs, change_rel FROM review_policy
-         WHERE profile_id = ? ORDER BY version DESC LIMIT 1",
+        "SELECT version, change_abs, change_rel, bias_horizon, bias_window, bias_min, bias_abs
+         FROM review_policy WHERE profile_id = ? ORDER BY version DESC LIMIT 1",
     )
     .bind(profile_id)
     .fetch_optional(&mut *connection)
@@ -4402,6 +5455,16 @@ async fn review_policy_row(
         Some(row) => InboxPolicy {
             change_abs: row.get("change_abs"),
             change_rel: row.get("change_rel"),
+            bias_horizon: row
+                .get::<Option<i64>, _>("bias_horizon")
+                .map(|value| value as u32),
+            bias_window: row
+                .get::<Option<i64>, _>("bias_window")
+                .map(|value| value as u32),
+            bias_min: row
+                .get::<Option<i64>, _>("bias_min")
+                .map(|value| value as u32),
+            bias_abs: row.get("bias_abs"),
             version: Some(
                 i32::try_from(row.get::<i64, _>("version"))
                     .map_err(|_| err("contract_violation", "The policy version is unsupported."))?,
@@ -4410,6 +5473,10 @@ async fn review_policy_row(
         None => InboxPolicy {
             change_abs: None,
             change_rel: None,
+            bias_horizon: None,
+            bias_window: None,
+            bias_min: None,
+            bias_abs: None,
             version: None,
         },
     })

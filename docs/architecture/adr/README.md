@@ -35,8 +35,9 @@ This directory records the accepted architecture decisions for OpenDemand. Each 
 | [0027](0027-planner-decision-memory.md) | Planner decision memory (notes, reviews, override reasons) | Accepted | 2026-10-17 |
 | [0028](0028-exception-inbox-policy.md) | Exception inbox ranking and material-change policy | Accepted | 2026-10-17 |
 | [0029](0029-plan-publication.md) | Immutable plan publications | Accepted | 2026-10-17 |
+| [0030](0030-retrospective-fva.md) | Retrospective planner FVA and persistent-bias evidence | Accepted | 2026-10-17 |
 
-Schema status: migration 001 is frozen (2026-10-13; SHA-256 recorded in `../schema/001_init.sha256`); migration 002 adds `import_config` and `import_revision.descriptor_json`; migration 003 adds the run-level imputation method and per-series filled-week counts (ADR-0023); migration 004 adds planner decision memory — `series_note`, `series_review`, and `override_meta` (ADR-0027); migration 005 adds the append-only `review_policy` thresholds (ADR-0028); migration 006 adds immutable plan publications — `plan_publication`, `publication_override`, and `export_record.publication_id` (ADR-0029). Migrations are applied only behind the verified pre-migration backup (ADR-0021). All schema changes use new numbered migrations.
+Schema status: migration 001 is frozen (2026-10-13; SHA-256 recorded in `../schema/001_init.sha256`); migration 002 adds `import_config` and `import_revision.descriptor_json`; migration 003 adds the run-level imputation method and per-series filled-week counts (ADR-0023); migration 004 adds planner decision memory — `series_note`, `series_review`, and `override_meta` (ADR-0027); migration 005 adds the append-only `review_policy` thresholds (ADR-0028); migration 006 adds immutable plan publications — `plan_publication`, `publication_override`, and `export_record.publication_id` (ADR-0029); migration 007 adds `actuals_confirmation` and the persistent-bias policy columns (ADR-0030). Migrations are applied only behind the verified pre-migration backup (ADR-0021). All schema changes use new numbered migrations.
 
 ## Rules
 

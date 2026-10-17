@@ -32,6 +32,10 @@
 	let resultScope = '';
 	let policyAbs = $state('');
 	let policyRel = $state('');
+	let biasHorizon = $state('');
+	let biasWindow = $state('');
+	let biasMin = $state('');
+	let biasAbs = $state('');
 	let policyBusy = $state(false);
 	let policyError = $state<{ code: string; message: string } | null>(null);
 	let seededPolicy = '';
@@ -45,6 +49,7 @@
 		imputed_input: 'inbox.rule.imputedInput',
 		production_fallback: 'inbox.rule.productionFallback',
 		material_change: 'inbox.rule.materialChange',
+		persistent_bias: 'inbox.rule.persistentBias',
 		review_due: 'inbox.rule.reviewDue'
 	};
 
@@ -55,6 +60,7 @@
 		imputed_input: 'warn',
 		production_fallback: 'warn',
 		material_change: 'info',
+		persistent_bias: 'info',
 		review_due: 'violet'
 	};
 
@@ -89,11 +95,15 @@
 	$effect(() => {
 		const policy = inbox?.policy ?? null;
 		if (!policy) return;
-		const key = `${policy.version ?? 'none'}\u0000${policy.change_abs ?? ''}\u0000${policy.change_rel ?? ''}`;
+		const key = `${policy.version ?? 'none'}\u0000${policy.change_abs ?? ''}\u0000${policy.change_rel ?? ''}\u0000${policy.bias_horizon ?? ''}\u0000${policy.bias_window ?? ''}\u0000${policy.bias_min ?? ''}\u0000${policy.bias_abs ?? ''}`;
 		if (key !== seededPolicy) {
 			seededPolicy = key;
 			policyAbs = policy.change_abs === null ? '' : String(policy.change_abs);
 			policyRel = policy.change_rel === null ? '' : String(policy.change_rel);
+			biasHorizon = policy.bias_horizon === null ? '' : String(policy.bias_horizon);
+			biasWindow = policy.bias_window === null ? '' : String(policy.bias_window);
+			biasMin = policy.bias_min === null ? '' : String(policy.bias_min);
+			biasAbs = policy.bias_abs === null ? '' : String(policy.bias_abs);
 		}
 	});
 
@@ -127,7 +137,11 @@
 		try {
 			await saveReviewPolicy({
 				change_abs: disable ? null : policyAbs,
-				change_rel: disable ? null : policyRel
+				change_rel: disable ? null : policyRel,
+				bias_horizon: disable ? null : biasHorizon,
+				bias_window: disable ? null : biasWindow,
+				bias_min: disable ? null : biasMin,
+				bias_abs: disable ? null : biasAbs
 			});
 			await inboxQuery.refetch();
 		} catch (failure) {
@@ -256,6 +270,52 @@
 						</button>
 					</div>
 				</div>
+				<div class="policy-bias">
+					<span class="field-label">{t(locale, 'inbox.policyBiasHeading')}</span>
+					<div class="policy-fields">
+						<label>
+							<span class="field-label">{t(locale, 'inbox.policyBiasHorizon')}</span>
+							<input
+								type="text"
+								inputmode="numeric"
+								class="policy-input small-input"
+								value={biasHorizon}
+								oninput={(event) => (biasHorizon = event.currentTarget.value)}
+							/>
+						</label>
+						<label>
+							<span class="field-label">{t(locale, 'inbox.policyBiasWindow')}</span>
+							<input
+								type="text"
+								inputmode="numeric"
+								class="policy-input small-input"
+								value={biasWindow}
+								oninput={(event) => (biasWindow = event.currentTarget.value)}
+							/>
+						</label>
+						<label>
+							<span class="field-label">{t(locale, 'inbox.policyBiasMin')}</span>
+							<input
+								type="text"
+								inputmode="numeric"
+								class="policy-input small-input"
+								value={biasMin}
+								oninput={(event) => (biasMin = event.currentTarget.value)}
+							/>
+						</label>
+						<label>
+							<span class="field-label">{t(locale, 'inbox.policyBiasAbs')}</span>
+							<input
+								type="text"
+								inputmode="decimal"
+								class="policy-input small-input"
+								value={biasAbs}
+								oninput={(event) => (biasAbs = event.currentTarget.value)}
+							/>
+						</label>
+					</div>
+					<p class="muted small">{t(locale, 'inbox.policyBiasHint')}</p>
+				</div>
 				<p class="muted small">
 					{inbox.policy.version === null ? t(locale, 'inbox.policyOff') : t(locale, 'inbox.policyHint')}
 				</p>
@@ -302,6 +362,18 @@
 											{#if item.change_rel !== null}
 												<span class="muted">({Math.round(item.change_rel * 100)}%)</span>
 											{/if}
+										</span>
+									{/if}
+									{#if item.bias_value !== null && item.bias_weeks !== null}
+										<span class="evidence">
+											{t(locale, 'inbox.biasChip', {
+												direction: t(
+													locale,
+													item.bias_value > 0 ? 'inbox.biasOver' : 'inbox.biasUnder'
+												),
+												value: formatQuantity(Math.abs(item.bias_value) * 100, 1) + '%',
+												weeks: item.bias_weeks
+											})}
 										</span>
 									{/if}
 									{#if item.due_review_date}
@@ -446,6 +518,16 @@
 
 	.policy-input {
 		min-width: 8rem;
+	}
+
+	.small-input {
+		min-width: 5rem;
+	}
+
+	.policy-bias {
+		margin-top: 0.4rem;
+		border-top: 1px dashed var(--border);
+		padding-top: 0.4rem;
 	}
 
 	.policy-actions {

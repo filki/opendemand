@@ -222,6 +222,10 @@ async fn material_change_requires_both_thresholds_and_respects_them() {
     let error = fixture
         .workspace
         .save_review_policy(InboxPolicyEdit {
+            bias_horizon: None,
+            bias_window: None,
+            bias_min: None,
+            bias_abs: None,
             change_abs: Some("50".into()),
             change_rel: None,
         })
@@ -231,6 +235,10 @@ async fn material_change_requires_both_thresholds_and_respects_them() {
     let error = fixture
         .workspace
         .save_review_policy(InboxPolicyEdit {
+            bias_horizon: None,
+            bias_window: None,
+            bias_min: None,
+            bias_abs: None,
             change_abs: Some("0".into()),
             change_rel: Some("0.5".into()),
         })
@@ -241,6 +249,10 @@ async fn material_change_requires_both_thresholds_and_respects_them() {
     let policy = fixture
         .workspace
         .save_review_policy(InboxPolicyEdit {
+            bias_horizon: None,
+            bias_window: None,
+            bias_min: None,
+            bias_abs: None,
             change_abs: Some("50".into()),
             change_rel: Some("0.5".into()),
         })
@@ -283,6 +295,10 @@ async fn material_change_requires_both_thresholds_and_respects_them() {
     let policy = fixture
         .workspace
         .save_review_policy(InboxPolicyEdit {
+            bias_horizon: None,
+            bias_window: None,
+            bias_min: None,
+            bias_abs: None,
             change_abs: Some("1000".into()),
             change_rel: Some("0.5".into()),
         })
@@ -304,6 +320,10 @@ async fn material_change_requires_both_thresholds_and_respects_them() {
     fixture
         .workspace
         .save_review_policy(InboxPolicyEdit {
+            bias_horizon: None,
+            bias_window: None,
+            bias_min: None,
+            bias_abs: None,
             change_abs: Some("10".into()),
             change_rel: Some("1.5".into()),
         })
@@ -324,6 +344,10 @@ async fn the_first_revision_has_no_material_change_evidence() {
     fixture
         .workspace
         .save_review_policy(InboxPolicyEdit {
+            bias_horizon: None,
+            bias_window: None,
+            bias_min: None,
+            bias_abs: None,
             change_abs: Some("0.001".into()),
             change_rel: Some("0.001".into()),
         })

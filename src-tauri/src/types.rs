@@ -134,6 +134,8 @@ pub struct ReviewActionEdit {
 
 /// Versioned, profile-scoped thresholds for the derived exception inbox
 /// (ADR-0028). Both thresholds are NULL together (rule disabled) or set.
+/// The persistent-bias group (horizon, window, minimum, threshold) is
+/// all-set or all-null as well (ADR-0030).
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct InboxPolicy {
     /// Absolute material-change threshold in the series' own quantity units.
@@ -141,16 +143,28 @@ pub struct InboxPolicy {
     /// Relative material-change threshold as a fraction of the previous
     /// baseline magnitude (0.25 means 25%).
     pub change_rel: Option<f64>,
+    /// Horizon step the persistent-bias rule evaluates (1..12).
+    pub bias_horizon: Option<u32>,
+    /// How many mature target weeks the rule considers.
+    pub bias_window: Option<u32>,
+    /// Minimum mature target weeks before the rule can fire (at least 2).
+    pub bias_min: Option<u32>,
+    /// Minimum absolute pooled bias before the rule can fire (> 0).
+    pub bias_abs: Option<f64>,
     /// Latest stored policy version; None when never configured.
     pub version: Option<i32>,
 }
 
-/// Raw threshold input; empty strings disable the rule. Both fields must be
-/// provided together or both empty.
+/// Raw threshold input; empty strings disable the rule. Each rule group must
+/// be provided together or left empty.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct InboxPolicyEdit {
     pub change_abs: Option<String>,
     pub change_rel: Option<String>,
+    pub bias_horizon: Option<String>,
+    pub bias_window: Option<String>,
+    pub bias_min: Option<String>,
+    pub bias_abs: Option<String>,
 }
 
 /// One derived exception-inbox row: a series with at least one applicable rule
@@ -173,6 +187,13 @@ pub struct InboxItem {
     pub change_rel: Option<f64>,
     /// Earliest due override review date for this series, when any is due.
     pub due_review_date: Option<String>,
+    /// Pooled persistent bias (positive means overforecasting) when the rule
+    /// fired; None otherwise.
+    pub bias_value: Option<f64>,
+    /// Mature target weeks the bias evidence covered.
+    pub bias_weeks: Option<u32>,
+    /// Horizon step the bias evidence was evaluated at.
+    pub bias_horizon: Option<u32>,
     /// `reviewed` or `unreviewed` for the selected run.
     pub review_status: String,
     pub reviewed_at: Option<String>,
@@ -233,6 +254,139 @@ pub struct PublicationSeriesDetail {
     pub outcome: String,
     pub reason: Option<String>,
     pub planning: Vec<PlanningPoint>,
+}
+
+/// One append-only confirmation that an actuals revision is complete through a
+/// finished week (ADR-0030). The latest confirmation of the profile is current.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ActualsConfirmation {
+    pub id: i32,
+    pub revision_id: i32,
+    pub confirmed_through: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ActualsConfirmationEdit {
+    pub revision_id: i32,
+    /// ISO Monday, no later than the last finished week.
+    pub confirmed_through: String,
+}
+
+/// Why one target point could not be scored (ADR-0030). Counts only; nothing
+/// is stored.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
+pub struct FvaExclusions {
+    /// Target week beyond the confirmed completed range.
+    pub future: u32,
+    /// The publication happened at or after the target week started.
+    pub late_published: u32,
+    /// The target actual was visible to the planner at or before the
+    /// publication's revision high-water mark.
+    pub hindsight: u32,
+    /// No observation row for the target week in the confirmed revision.
+    pub absent: u32,
+    /// The target observation is missing or partial.
+    pub missing_or_partial: u32,
+    /// The target observation is marked as a stockout.
+    pub stockout: u32,
+    /// The published plan has no baseline or effective value for the week.
+    pub no_forecast: u32,
+}
+
+/// Same-unit measures pooled over eligible points of one series (ADR-0030).
+/// WAPE and bias are unavailable when the pooled actual magnitude is zero;
+/// MAE stays available in quantity units.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct FvaSeriesMeasures {
+    pub points: u32,
+    pub baseline_wape: Option<f64>,
+    pub effective_wape: Option<f64>,
+    /// Baseline WAPE minus effective WAPE in percentage points; positive means
+    /// the adjustment improved the plan.
+    pub wape_improvement_pp: Option<f64>,
+    pub baseline_mae: Option<f64>,
+    pub effective_mae: Option<f64>,
+    /// Baseline MAE minus effective MAE; positive means improvement.
+    pub mae_improvement: Option<f64>,
+    pub baseline_bias: Option<f64>,
+    pub effective_bias: Option<f64>,
+}
+
+/// Derived retrospective aggregates for one publication at one horizon step.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct PublicationFva {
+    pub publication_id: i32,
+    pub run_id: String,
+    pub revision_id: i32,
+    pub cutoff_week: String,
+    pub horizon: u32,
+    pub scored: u32,
+    pub adjusted: u32,
+    /// Scored points whose run input had imputed weeks (disclosure only).
+    pub imputed_input: u32,
+    /// Series whose absolute error got smaller, larger, or stayed equal.
+    pub improved: u32,
+    pub harmful: u32,
+    pub unchanged: u32,
+    pub excluded: FvaExclusions,
+    /// True when fewer than five points scored; no significance is implied.
+    pub low_sample: bool,
+}
+
+/// Per-series retrospective view pooled across publications at one horizon.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct SeriesFvaRow {
+    pub product_id: String,
+    pub location_id: String,
+    pub series_key: String,
+    pub location_code: String,
+    pub scored: u32,
+    pub adjusted: u32,
+    pub measures: FvaSeriesMeasures,
+    /// True when any scored point's run input had imputed weeks.
+    pub imputed_input: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct FvaReport {
+    pub horizon: u32,
+    /// Latest actuals confirmation of the profile; None until confirmed.
+    pub confirmation: Option<ActualsConfirmation>,
+    pub publications: Vec<PublicationFva>,
+    /// Series rows matching the search across every publication.
+    pub total: u32,
+    pub rows: Vec<SeriesFvaRow>,
+}
+
+/// One target point of one publication (scored or excluded), with all inputs
+/// visible: actual from the confirmed revision, pinned published values, and
+/// forecast-minus-actual errors (positive means overforecast).
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct FvaPoint {
+    pub product_id: String,
+    pub location_id: String,
+    pub series_key: String,
+    pub location_code: String,
+    pub week_start: String,
+    pub actual: Option<f64>,
+    pub baseline: Option<f64>,
+    pub effective: Option<f64>,
+    pub baseline_error: Option<f64>,
+    pub effective_error: Option<f64>,
+    /// Effective minus baseline; None when either value is missing.
+    pub adjustment: Option<f64>,
+    pub imputed_input: bool,
+    /// Exclusion code when the point was not scored; None when scored.
+    pub excluded: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct PublicationFvaPoints {
+    pub publication_id: i32,
+    pub horizon: u32,
+    pub total: u32,
+    pub rows: Vec<FvaPoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

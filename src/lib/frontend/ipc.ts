@@ -7,9 +7,11 @@
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { commands } from '#lib/bindings.ts';
 import type {
+	ActualsConfirmation,
 	AppError,
 	ExceptionInbox,
 	ExportResult,
+	FvaReport,
 	ImportConfig,
 	ImportPreview,
 	InboxPolicy,
@@ -19,6 +21,7 @@ import type {
 	OverrideRevision,
 	ParsingDescriptor,
 	PlanPublication,
+	PublicationFvaPoints,
 	PublicationSeriesDetail,
 	ReviewActionEdit,
 	RunOverview,
@@ -318,6 +321,47 @@ export async function exportPublicationXlsx(
 	path: string
 ): Promise<ExportResult> {
 	return unwrap(await commands.exportPublicationXlsx(publicationId, path));
+}
+
+/** Append one actuals confirmation (ADR-0030). */
+export async function setActualsConfirmation(
+	revisionId: number,
+	confirmedThrough: string
+): Promise<ActualsConfirmation> {
+	return unwrap(
+		await commands.actualsConfirmationSet({
+			revision_id: revisionId,
+			confirmed_through: confirmedThrough
+		})
+	);
+}
+
+/** The current actuals confirmation of the active profile. */
+export async function fetchActualsConfirmationLatest(): Promise<ActualsConfirmation | null> {
+	return unwrap(await commands.actualsConfirmationLatest());
+}
+
+/** Derived retrospective planner FVA at one horizon step (ADR-0030). */
+export async function fetchFvaReport(
+	horizon: number,
+	search: string,
+	offset: number,
+	limit: number
+): Promise<FvaReport> {
+	return unwrap(await commands.fvaReport(horizon, search, offset, limit));
+}
+
+/** Every target point of one publication at one horizon (ADR-0030). */
+export async function fetchFvaPublicationSeries(
+	publicationId: number,
+	horizon: number,
+	search: string,
+	offset: number,
+	limit: number
+): Promise<PublicationFvaPoints> {
+	return unwrap(
+		await commands.fvaPublicationSeries(publicationId, horizon, search, offset, limit)
+	);
 }
 
 export async function exportPlanCsv(runId: string, path: string): Promise<ExportResult> {

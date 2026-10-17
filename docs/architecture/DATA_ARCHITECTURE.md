@@ -191,6 +191,15 @@ Publishing (ADR-0029, migration 006) is the explicit boundary between explorator
 - Publication legality: a completed run whose revision cutoff equals horizon start minus one week, and only for a finished week (`future_history` otherwise); a second publication for the same cutoff fails with `already_published`. Publishing never backdates.
 - Publication exports use the ordinary export columns, read pinned values, and record `export_record.publication_id`; the XLSX Summary adds publication identity lines. Ordinary run exports keep their live-saved-run semantics and stay unlinked.
 
+## 15. Retrospective FVA (derived, with one confirmation ledger)
+
+Retrospective evaluation (ADR-0030, migration 007) stores one thing only: the append-only `actuals_confirmation` ledger, where each row declares one revision complete through a finished week. The latest confirmation of the profile is current; corrections and retractions append.
+
+- Verdicts per target point (publication × horizon step × series), computed at read time: `late_published` (published at/after the target week start), `future` (beyond the confirmed range), `no_forecast` (no published baseline/effective), `absent`/`missing_or_partial`/`stockout` (no usable numeric actual in the confirmed revision), `hindsight` (the actual was visible at or below the publication's revision high-water mark), or scored.
+- Series measures (same units, pooled over the series' own scored points): baseline/effective WAPE, MAE, and bias; FVA is baseline minus effective WAPE in percentage points. Zero pooled actual magnitude makes WAPE/bias/FVA-pp unavailable while MAE stays in units. Imputed-input points are scored but disclosed per point and counted per publication.
+- Publication rows carry counts only (scored, adjusted, improved/harmful/unchanged, exclusions, low-sample flag below five points); no cross-SKU accuracy aggregate exists.
+- Persistent-bias evidence (also derived) uses published effective values against confirmed actuals at the configured horizon: newest publications first, distinct mature target weeks, all errors sharing one nonzero sign, pooled bias magnitude above the threshold. The `review/2` evidence fingerprint includes the bias token.
+
 ## Related Documents
 
 - ADRs: `adr/README.md` (full index; semantics live in the referenced ADRs)

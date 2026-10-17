@@ -534,6 +534,56 @@ async fn export_publication_xlsx(
 
 #[tauri::command]
 #[specta::specta]
+async fn actuals_confirmation_set(
+    edit: ActualsConfirmationEdit,
+    state: State<'_, Service>,
+) -> AppResult<ActualsConfirmation> {
+    state.current().await?.actuals_confirmation_set(edit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn actuals_confirmation_latest(
+    state: State<'_, Service>,
+) -> AppResult<Option<ActualsConfirmation>> {
+    state.current().await?.actuals_confirmation_latest().await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fva_report(
+    horizon: u32,
+    search: String,
+    offset: u32,
+    limit: u32,
+    state: State<'_, Service>,
+) -> AppResult<FvaReport> {
+    state
+        .current()
+        .await?
+        .fva_report(horizon, &search, offset, limit)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn fva_publication_series(
+    publication_id: i32,
+    horizon: u32,
+    search: String,
+    offset: u32,
+    limit: u32,
+    state: State<'_, Service>,
+) -> AppResult<PublicationFvaPoints> {
+    state
+        .current()
+        .await?
+        .fva_publication_series(publication_id, horizon, &search, offset, limit)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn run_overview(
     run_id: String,
     offset: u32,
@@ -1061,6 +1111,10 @@ fn command_builder() -> Builder<tauri::Wry> {
             publication_series_detail,
             export_publication_csv,
             export_publication_xlsx,
+            actuals_confirmation_set,
+            actuals_confirmation_latest,
+            fva_report,
+            fva_publication_series,
             export_csv,
             export_xlsx
         ])
