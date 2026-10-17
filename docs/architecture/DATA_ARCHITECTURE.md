@@ -162,9 +162,18 @@ The weekly workflow (ADR-0022) adds no entities. Everything is derived at read t
 - The wizard's configuration suggestion is derived by exact string equality between a saved configuration's descriptor JSON and the latest preprocessed revision's frozen `descriptor_json`; zero or multiple matches suggest nothing.
 - The changed-series list can filter demand changes, forecast changes, or series presence changes. Filters combine with search before pagination and keep the original SKU/location ordering; no comparison policy or persisted state changes.
 
+## 12. Planner Decision Memory (persisted, user-authored)
+
+Decision memory (ADR-0027, migration 004) stores only user-authored intent; membership, deltas, and review status stay derived at read time:
+
+- `series_note` (append-only): profile-scoped notes for one `product × location` with an optional context run. Notes survive across runs; they never change coverage, outcomes, exports, or stored history. UPDATE and DELETE are rejected by triggers.
+- `series_review` (append-only): review events (`reviewed` | `reopened`) naming one run and series, with the rule context label (`review/1`) and the deterministic evidence fingerprint the event covered. The derived state is `reviewed` only when the latest event is an acknowledgement whose fingerprint still matches the run's current evidence (outcome/reason plus the cell override revision map); later override revisions or a new run reopen the series without rewriting history.
+- `override_meta` (immutable, one row per exact override revision): the required `reason_code` and optional `review_date`. The free-text note lives in the existing `forecast_override.note` column on the same revision. `other` requires a note. Overrides without metadata (historical rows) render as legacy with no invented reason. A review date is a reminder only while its revision is the latest; it never clears or expires an override.
+- Exports, coverage, and comparisons do not change; decision rows join the never-auto-delete business data set (ADR-0009).
+
 ## Related Documents
 
-- ADRs: `adr/README.md` (0001–0016; semantics in 0004–0007 and 0012–0015)
+- ADRs: `adr/README.md` (full index; semantics live in the referenced ADRs)
 - Contracts: `contracts/` (TAURI_IPC, SIDECAR_PROTOCOL, ARROW_SCHEMAS)
 - System structure: `SYSTEM_ARCHITECTURE.md`
-- Schema: `schema/001_init.sql` (frozen; SHA-256 in `schema/001_init.sha256`)
+- Schema: `schema/001_init.sql` (frozen; SHA-256 in `schema/001_init.sha256`); current version adds 002–004 (`schema/004_review_decisions.sql`)

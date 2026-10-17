@@ -12,6 +12,7 @@ Vocabulary for issues, tests, ADRs, docs, and UI copy. Definitions here are conc
 - **Content hash** — SHA-256 of the original retained source bytes (CSV, TXT, or XLSX), qualified by the input contract version; part of the import idempotency key.
 - **Coverage** — share of series in a run whose outcome is `ok` or `fallback_naive`.
 - **Effective forecast** — derived at read time as the latest override ?? baseline. Never stored.
+- **Evidence fingerprint** — deterministic hash of what a review acknowledgement covered (the run outcome/reason for one series plus its cell override revision map); a mismatch at read time makes the series unreviewed again (ADR-0027).
 - **Demand change** — a read-time cell difference between two revisions at one `product × location × week_start`: `added`, `removed`, or `changed` quantity/status; `missing` stays distinct from zero (ADR-0022).
 - **Eligibility status** — per series × model × run: `not_eligible` (below the model floor), `production_only` (too few completed origins), or `champion_eligible`.
 - **fallback_naive** — a run outcome: no champion was available (too few completed origins, or no origin common to all candidates), so the Naive baseline was used; flagged.
@@ -27,9 +28,12 @@ Vocabulary for issues, tests, ADRs, docs, and UI copy. Definitions here are conc
 - **Observation status** — one of `known`, `zero`, `missing`, `return`, `correction`, `stockout`, `partial`; `missing` and `partial` carry NULL quantity and break `H`.
 - **Parsing descriptor** — the versioned, deterministically serialized description of how one source file becomes observations (format, encoding, delimiter or sheet, header row, column bindings, date formats, separators, aggregation); it joins the mapping fingerprint and is frozen per preprocessed revision (ADR-0019, ADR-0020).
 - **Override** — append-only manual edit to a forecast cell; revisions are sequential, NULL clears, the highest revision wins, and overrides are scoped to one run.
+- **Override reason** — the required planner reason code stored with each new override revision (`promotion`, `customer_information`, `supply_constraint`, `data_quality`, `other`); `other` requires a note. It records intent, never a detected cause (ADR-0027).
+- **Review event** — append-only acknowledgement (`reviewed` or `reopened`) of one series in one run, stored with the evidence fingerprint it covered; the current state is derived at read time (ADR-0027).
 - **Run outcome** — one of `ok`, `fallback_naive`, `insufficient_history`, `model_failure`, `invalid_data`.
 - **Selection score** — pooled WAPE over the comparable evaluation set, or pooled MAE when that set's actual total is zero; lower is better (ADR-0017).
 - **Series** — one product × location pair; the unit of history, qualification, and forecast status.
+- **Series note** — append-only, profile-scoped planner note attached to one series; it survives across runs and never changes plan values, coverage, or stored history (ADR-0027).
 - **Series qualification** — per-revision eligibility: `eligible`, `insufficient_history` (`H < 12`), or `invalid_data`.
 - **SKU** — the product's canonical display code; product identity is the UUIDv7 id, not the SKU (ADR-0004).
 - **WAPE** — weighted absolute percentage error: `sum(|actual − forecast|) / sum(|actual|)`; unavailable when the actual total is zero (MAE fallback).

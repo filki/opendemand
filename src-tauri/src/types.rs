@@ -67,6 +67,14 @@ pub struct PlanningPoint {
     pub effective: Option<f64>,
     pub value_source: String,
     pub override_revision: u32,
+    /// Reason recorded with the latest override revision; NULL with a non-zero
+    /// revision means a legacy override written before reasons were required.
+    pub override_reason: Option<String>,
+    /// Free-text note recorded with the latest override revision.
+    pub override_note: Option<String>,
+    /// Optional reminder date (`YYYY-MM-DD`) recorded with the latest override
+    /// revision; a reminder only, never automatic expiry (ADR-0027).
+    pub override_review_date: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -79,6 +87,49 @@ pub struct OverrideEdit {
     // become an accidental NULL clear through JSON number serialization.
     pub value: Option<String>,
     pub expected_revision: u32,
+    /// Required planner reason; one of the documented reason codes (ADR-0027).
+    pub reason_code: String,
+    /// Optional free-text note; required for the `other` reason.
+    pub note: Option<String>,
+    /// Optional reminder date (`YYYY-MM-DD`); reminder only, never expiry.
+    pub review_date: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct SeriesNote {
+    pub id: i32,
+    pub note: String,
+    /// The run that was open when the note was written, when one was supplied.
+    pub context_run_id: Option<String>,
+    pub created_at: String,
+}
+
+/// Derived review state of one series in one run (ADR-0027). A stored
+/// acknowledgement whose evidence fingerprint no longer matches the run's
+/// current evidence reads as `unreviewed`.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct SeriesReviewInfo {
+    /// `reviewed` or `unreviewed`.
+    pub status: String,
+    /// When the current acknowledgement was recorded; None when unreviewed.
+    pub reviewed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct SeriesNoteEdit {
+    pub run_id: String,
+    pub product_id: String,
+    pub location_id: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReviewActionEdit {
+    pub run_id: String,
+    pub product_id: String,
+    pub location_id: String,
+    /// `reviewed` or `reopened`.
+    pub action: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -114,6 +165,10 @@ pub struct SeriesDetail {
     pub imputation_method: Option<String>,
     /// Missing weeks the run filled for this series; zero without imputation.
     pub imputed_weeks: Option<u32>,
+    /// Profile-scoped planner notes, newest first; independent of the run.
+    pub notes: Vec<SeriesNote>,
+    /// Derived review state for the selected run; None without a run.
+    pub review: Option<SeriesReviewInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

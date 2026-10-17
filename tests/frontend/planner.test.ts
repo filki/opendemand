@@ -3,7 +3,9 @@ import { test } from 'node:test';
 import {
 	authoritativeInput,
 	buildClearEdit,
+	buildNoteEdit,
 	buildOverrideEdit,
+	buildReviewEdit,
 	canChangeSelection,
 	classifySaveFailure,
 	createDraftState,
@@ -117,28 +119,73 @@ test('dirty tracking compares the raw input with the authoritative override text
 	);
 });
 
-test('buildOverrideEdit sends the exact raw input against the captured revision', () => {
-	const edit = buildOverrideEdit(detail(), point('2026-03-02', 24.5, 1), ' 7.5 ', 1);
+test('buildOverrideEdit sends the exact raw input, captured revision, and decision fields', () => {
+	const edit = buildOverrideEdit(detail(), point('2026-03-02', 24.5, 1), ' 7.5 ', 1, {
+		reasonCode: 'promotion',
+		note: '  Spring campaign  ',
+		reviewDate: '2026-06-01'
+	});
 	assert.deepEqual(edit, {
 		run_id: 'run-1',
 		product_id: 'product-1',
 		location_id: 'location-1',
 		week_start: '2026-03-02',
 		value: ' 7.5 ',
-		expected_revision: 1
+		expected_revision: 1,
+		reason_code: 'promotion',
+		note: 'Spring campaign',
+		review_date: '2026-06-01'
 	});
 });
 
+test('empty note and review date become explicit NULLs; the reason stays required', () => {
+	const edit = buildOverrideEdit(detail(), point('2026-03-02', 24.5, 1), '7', 1, {
+		reasonCode: 'data_quality',
+		note: '   ',
+		reviewDate: ''
+	});
+	assert.equal(edit.note, null);
+	assert.equal(edit.review_date, null);
+	assert.equal(edit.reason_code, 'data_quality');
+});
+
 test('buildClearEdit asks for an explicit NULL clear against the latest revision', () => {
-	const edit = buildClearEdit(detail(), point('2026-03-02', 24.5, 3));
+	const edit = buildClearEdit(detail(), point('2026-03-02', 24.5, 3), {
+		reasonCode: 'customer_information',
+		note: 'contract cancelled',
+		reviewDate: ''
+	});
 	assert.deepEqual(edit, {
 		run_id: 'run-1',
 		product_id: 'product-1',
 		location_id: 'location-1',
 		week_start: '2026-03-02',
 		value: null,
-		expected_revision: 3
+		expected_revision: 3,
+		reason_code: 'customer_information',
+		note: 'contract cancelled',
+		review_date: null
 	});
+});
+
+test('buildNoteEdit trims the note and pins the series and run context', () => {
+	assert.deepEqual(buildNoteEdit(detail(), '  Watch week 12.  '), {
+		run_id: 'run-1',
+		product_id: 'product-1',
+		location_id: 'location-1',
+		note: 'Watch week 12.'
+	});
+	assert.equal(buildNoteEdit(detail({ run_id: null }), 'note').run_id, '');
+});
+
+test('buildReviewEdit carries the requested action for the pinned series', () => {
+	assert.deepEqual(buildReviewEdit(detail(), 'reviewed'), {
+		run_id: 'run-1',
+		product_id: 'product-1',
+		location_id: 'location-1',
+		action: 'reviewed'
+	});
+	assert.equal(buildReviewEdit(detail(), 'reopened').action, 'reopened');
 });
 
 test('classifySaveFailure flags override conflicts and keeps messages', () => {

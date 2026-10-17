@@ -41,6 +41,9 @@ fn edit(run: &str, series: &SeriesSummary, value: Option<&str>, revision: u32) -
         week_start: "2026-03-02".into(),
         value: value.map(String::from),
         expected_revision: revision,
+        reason_code: "promotion".into(),
+        note: None,
+        review_date: None,
     }
 }
 

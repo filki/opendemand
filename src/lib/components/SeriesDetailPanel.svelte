@@ -2,14 +2,18 @@
 	import type {
 		OverrideEdit,
 		OverrideRevision,
+		ReviewActionEdit,
 		RunSummary,
 		SeriesDetail,
 		SeriesModelComparison,
+		SeriesNote,
+		SeriesNoteEdit,
 		SeriesSummary
 	} from '#lib/bindings.ts';
 	import ForecastEditor from '#lib/components/ForecastEditor.svelte';
 	import ModelComparison from '#lib/components/ModelComparison.svelte';
 	import SeriesChart from '#lib/components/SeriesChart.svelte';
+	import SeriesReviewPanel from '#lib/components/SeriesReviewPanel.svelte';
 	import StatusChip from '#lib/components/StatusChip.svelte';
 	import {
 		formatScore,
@@ -34,7 +38,9 @@
 		onRetryModels,
 		onSave,
 		onRefresh,
-		onDirtyChange
+		onDirtyChange,
+		onNote,
+		onReview
 	}: {
 		summary: SeriesSummary | null;
 		detail: SeriesDetail | null;
@@ -49,6 +55,8 @@
 		onSave: (edit: OverrideEdit) => Promise<OverrideRevision>;
 		onRefresh: () => Promise<SeriesDetail>;
 		onDirtyChange: (dirty: boolean) => void;
+		onNote: (edit: SeriesNoteEdit) => Promise<SeriesNote>;
+		onReview: (edit: ReviewActionEdit) => Promise<unknown>;
 	} = $props();
 
 	const seriesKey = $derived(summary?.series_key ?? detail?.series_key ?? 'Series');
@@ -137,6 +145,8 @@
 		{/if}
 
 		<ForecastEditor {detail} {onSave} {onRefresh} {onDirtyChange} />
+
+		<SeriesReviewPanel {detail} {onNote} {onReview} {onRefresh} />
 
 		<SeriesChart seriesKey={seriesKey} history={detail.history} forecast={detail.forecast} planning={detail.planning} />
 

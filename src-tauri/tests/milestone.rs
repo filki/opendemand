@@ -292,6 +292,9 @@ async fn multimodel_forecast_selects_comparable_champions_and_keeps_evidence() {
             week_start: first_week.clone(),
             value: Some("123".into()),
             expected_revision: 0,
+            reason_code: "customer_information".into(),
+            note: None,
+            review_date: None,
         })
         .await
         .unwrap();

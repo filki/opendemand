@@ -55,6 +55,25 @@ export function imputationLabel(method: string | null | undefined): string | nul
 	}
 }
 
+/** Planner override reasons (ADR-0027); codes never imply a detected cause. */
+export function overrideReasonLabel(code: string | null | undefined): string {
+	if (!code) return 'Legacy: reason not recorded';
+	switch (code) {
+		case 'promotion':
+			return 'Promotion';
+		case 'customer_information':
+			return 'Customer information';
+		case 'supply_constraint':
+			return 'Supply constraint';
+		case 'data_quality':
+			return 'Data quality';
+		case 'other':
+			return 'Other';
+		default:
+			return humanizeToken(code);
+	}
+}
+
 export function observationStatusLabel(status: string | null | undefined): string {
 	if (!status) return '—';
 	switch (status) {

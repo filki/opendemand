@@ -2,7 +2,14 @@
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { getVersion } from '@tauri-apps/api/app';
 	import { onMount } from 'svelte';
-	import type { JobInfo, OverrideEdit, ParsingDescriptor, SeriesSummary } from '#lib/bindings.ts';
+	import type {
+		JobInfo,
+		OverrideEdit,
+		ParsingDescriptor,
+		ReviewActionEdit,
+		SeriesNoteEdit,
+		SeriesSummary
+	} from '#lib/bindings.ts';
 	import BrowserFallback from '#lib/components/BrowserFallback.svelte';
 	import CsvFormatCard from '#lib/components/CsvFormatCard.svelte';
 	import HomeScreen from '#lib/components/HomeScreen.svelte';
@@ -18,6 +25,7 @@
 	import { createWorkspaceHint, workspaceActionHint } from '#lib/frontend/home.ts';
 	import { resolveLocale, t, type Locale } from '#lib/frontend/i18n.ts';
 	import {
+		addSeriesNote,
 		cancelJob,
 		closeWorkspace,
 		createWorkspace,
@@ -43,6 +51,7 @@
 		queryErrorCode,
 		renameWorkspace,
 		saveOverride,
+		setSeriesReview,
 		setWorkspaceLocale,
 		startForecast,
 		startImport
@@ -583,6 +592,24 @@
 		}
 	}
 
+	async function handleAddNote(edit: SeriesNoteEdit) {
+		plannerSaving = true;
+		try {
+			return await addSeriesNote(edit);
+		} finally {
+			plannerSaving = false;
+		}
+	}
+
+	async function handleSetReview(edit: ReviewActionEdit) {
+		plannerSaving = true;
+		try {
+			return await setSeriesReview(edit);
+		} finally {
+			plannerSaving = false;
+		}
+	}
+
 	async function refreshDetail() {
 		const result = await detailQuery.refetch();
 		if (result.error) throw describeError(result.error);
@@ -845,6 +872,8 @@
 							// Pin the run so a background job cannot replace an edited plan.
 							if (dirty) selectedRunId = displayRunId;
 						}}
+						onNote={handleAddNote}
+						onReview={handleSetReview}
 					/>
 				{/if}
 			</main>

@@ -33,6 +33,8 @@ The UI never opens SQLite or runs the Python engine directly. This document cove
 - `runs_list(revision_id: number | null)`: return persisted runs for a revision; `null` returns run history across all revisions.
 - `run_overview(run_id: string, offset: number, limit: number)`: read full-run coverage/outcome counts and a paginated exception list from one read-only snapshot. Limit is clamped to 1..200; the UI requests 20. Unknown and incomplete runs fail with `unknown_run` and `run_not_completed`.
 - `override_append(edit: OverrideEdit)`: append a run-scoped value or clearing revision and return `OverrideRevision`.
+- `series_note_add(edit: SeriesNoteEdit)`: append one profile-scoped planner note for a series and return the stored `SeriesNote`. The run provides the profile scope and must be completed; the series must be part of it.
+- `series_review_set(edit: ReviewActionEdit)`: append one review or reopen event for a series and run and return the derived `SeriesReviewInfo`. The evidence fingerprint is computed server-side at append time.
 - `export_csv(run_id: string, path: string)`: publish the saved full-run plan to a new CSV file and return `ExportResult`.
 - `export_xlsx(run_id: string, path: string)`: publish the same saved plan as a new XLSX workbook with `Plan` and `Summary` sheets; return `ExportResult`.
 
@@ -47,8 +49,10 @@ Jobs use string ids to correlate Tauri, SQLite, and sidecar messages.
 - `SeriesSummary`: `product_id`, `location_id`, `location_code`, `series_key`, `h_length`, `qualification_status`.
 - `HistoryPoint`: `week_start`, nullable `quantity`, `status`.
 - `ForecastPoint`: `week_start`, finite `value`.
-- `SeriesDetail`: `product_id`, `location_id`, `location_code`, `series_key`, `history`, `forecast`, `planning`, `can_override`, and nullable `run_id`, `outcome`, `reason`, `horizon_start_week`, `selected_model_id`, and `selection_score`.
-- `PlanningPoint`: `week_start`, 1-based `horizon`, nullable `baseline`, `override_value`, and `effective`, `value_source` (`model | override | missing`), and `override_revision` (0 only when no revision exists).
+- `SeriesDetail`: `product_id`, `location_id`, `location_code`, `series_key`, `history`, `forecast`, `planning`, `can_override`, nullable `run_id`, `outcome`, `reason`, `horizon_start_week`, `selected_model_id`, and `selection_score`, the run's nullable `imputation_method` and `imputed_weeks`, profile-scoped `notes` (newest first, independent of the run), and the derived `review` state for the selected run (null without a run).
+- `PlanningPoint`: `week_start`, 1-based `horizon`, nullable `baseline`, `override_value`, and `effective`, `value_source` (`model | override | missing`), `override_revision` (0 only when no revision exists), and the latest revision's nullable `override_reason`, `override_note`, and `override_review_date`. A non-zero `override_revision` with a null `override_reason` is a legacy override (ADR-0027).
+- `SeriesNote`: `id`, `note`, nullable `context_run_id` (the run open when the note was written), `created_at`.
+- `SeriesReviewInfo`: derived `status` (`reviewed | unreviewed`) and nullable `reviewed_at`. A stored acknowledgement whose evidence fingerprint no longer matches reads as `unreviewed`.
 - `RunSummary`: `id`, `revision_id`, `status`, `created_at`, `horizon_start_week`, `engine_version`.
 - `RunOverview`: `series_count`, `covered_series`, `coverage`, `outcomes` (all five outcome keys, including zero counts), `exception_count`, and `exceptions`. Coverage is the fraction with `ok` or `fallback_naive`, not forecast accuracy; zero series yields zero coverage. Totals are independent of pagination.
 - `RunException`: `product_id`, `location_id`, `series_key`, `location_code`, `outcome`, nullable `reason`. Exceptions have non-`ok` status or a recorded reason, including `ok` after production fallback. Order is model failure, invalid data, insufficient history, Naive fallback, then `ok` with a reason, followed by SKU/location/identity tie-breaks.
@@ -84,12 +88,21 @@ Workspace switching is rejected while an import or forecast job is active. The U
 | `week_start` | string | ISO Monday in the persisted 12-week horizon |
 | `value` | string or null | Raw numeric input; `null` explicitly clears an active override |
 | `expected_revision` | number | Last observed override revision; 0 for a cell with no revision |
+| `reason_code` | string | Required planner reason: `promotion`, `customer_information`, `supply_constraint`, `data_quality`, or `other` (ADR-0027) |
+| `note` | string or null | Optional free-text note (max 1000 characters); required with `other`; stored on the same revision |
+| `review_date` | string or null | Optional reminder date (`YYYY-MM-DD`); a reminder only, never automatic expiry |
 
-Rust trims and parses `value` to a finite number. Blank strings, NaN, and infinity are invalid; they never become an accidental clear. Validation includes completed run status, series scope, and horizon membership. Errors include `unknown_run`, `run_not_completed`, `invalid_week`, `invalid_value`, `outside_horizon`, `unknown_series`, `override_conflict`, and `no_override`.
+Rust trims and parses `value` to a finite number. Blank strings, NaN, and infinity are invalid; they never become an accidental clear. Validation includes completed run status, series scope, and horizon membership. Errors include `unknown_run`, `run_not_completed`, `invalid_week`, `invalid_value`, `outside_horizon`, `unknown_series`, `override_conflict`, `no_override`, `invalid_reason`, `note_required`, `invalid_note`, and `invalid_review_date`.
+
+Every accepted write appends the next revision, including a clear, and pairs it with an immutable `override_meta` row in the same transaction. A due review date surfaces as a reminder while its revision stays the latest; it never clears or expires an override. Historical overrides without metadata stay readable as legacy (`reason not recorded`); they are never backfilled.
 
 Every accepted write appends the next revision, including a clear. Baseline forecasts remain immutable, and overrides never carry into another run. A stale `expected_revision` fails with `override_conflict` rather than replacing a newer edit. `can_override` is true only for a completed run and a series in its scope; a model baseline is not required, so manual-only values are permitted (ADR-0014).
 
 The effective forecast uses the latest override revision's value when non-null, otherwise the baseline; it never searches backward past a clear. If neither value exists it is missing, not zero. A clear retains its revision number for the next concurrency check. The UI preserves invalid and stale drafts, requires explicit refresh/rebase for conflicts, and pins the edited run when background imports or forecasts complete.
+
+## Decision memory
+
+`SeriesNoteEdit` carries `run_id`, `product_id`, `location_id`, and `note`; `ReviewActionEdit` carries the same identity plus `action` (`reviewed` or `reopened`). Both require a completed run and a series in its scope; errors include `unknown_run`, `run_not_completed`, `unknown_series`, `invalid_note`, and `invalid_action`. Notes are profile-scoped and survive across runs; review state belongs to one run and reopens automatically when its evidence changes (ADR-0027). Decision memory never changes coverage, outcomes, or exports.
 
 ## Full-Run CSV And XLSX Export
 

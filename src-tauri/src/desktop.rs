@@ -429,6 +429,21 @@ async fn override_append(
 
 #[tauri::command]
 #[specta::specta]
+async fn series_note_add(edit: SeriesNoteEdit, state: State<'_, Service>) -> AppResult<SeriesNote> {
+    state.current().await?.series_note_add(edit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn series_review_set(
+    edit: ReviewActionEdit,
+    state: State<'_, Service>,
+) -> AppResult<SeriesReviewInfo> {
+    state.current().await?.series_review_set(edit).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn run_overview(
     run_id: String,
     offset: u32,
@@ -946,6 +961,8 @@ fn command_builder() -> Builder<tauri::Wry> {
             runs_list,
             run_overview,
             override_append,
+            series_note_add,
+            series_review_set,
             export_csv,
             export_xlsx
         ])

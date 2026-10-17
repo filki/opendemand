@@ -90,6 +90,8 @@ export const commands = {
 	runsList: (revisionId: number | null) => typedError<RunSummary[], AppError>(__TAURI_INVOKE("runs_list", { revisionId })),
 	runOverview: (runId: string, offset: number, limit: number) => typedError<RunOverview, AppError>(__TAURI_INVOKE("run_overview", { runId, offset, limit })),
 	overrideAppend: (edit: OverrideEdit) => typedError<OverrideRevision, AppError>(__TAURI_INVOKE("override_append", { edit })),
+	seriesNoteAdd: (edit: SeriesNoteEdit) => typedError<SeriesNote, AppError>(__TAURI_INVOKE("series_note_add", { edit })),
+	seriesReviewSet: (edit: ReviewActionEdit) => typedError<SeriesReviewInfo, AppError>(__TAURI_INVOKE("series_review_set", { edit })),
 	exportCsv: (runId: string, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_csv", { runId, path })),
 	exportXlsx: (runId: string, path: string) => typedError<ExportResult, AppError>(__TAURI_INVOKE("export_xlsx", { runId, path })),
 };
@@ -218,6 +220,12 @@ export type OverrideEdit = {
 	week_start: string,
 	value: string | null,
 	expected_revision: number,
+	/**  Required planner reason; one of the documented reason codes (ADR-0027). */
+	reason_code: string,
+	/**  Optional free-text note; required for the `other` reason. */
+	note: string | null,
+	/**  Optional reminder date (`YYYY-MM-DD`); reminder only, never expiry. */
+	review_date: string | null,
 };
 
 export type OverrideRevision = {
@@ -255,6 +263,18 @@ export type PlanningPoint = {
 	effective: number | null,
 	value_source: string,
 	override_revision: number,
+	/**
+	 *  Reason recorded with the latest override revision; NULL with a non-zero
+	 *  revision means a legacy override written before reasons were required.
+	 */
+	override_reason: string | null,
+	/**  Free-text note recorded with the latest override revision. */
+	override_note: string | null,
+	/**
+	 *  Optional reminder date (`YYYY-MM-DD`) recorded with the latest override
+	 *  revision; a reminder only, never automatic expiry (ADR-0027).
+	 */
+	override_review_date: string | null,
 };
 
 /**
@@ -277,6 +297,14 @@ export type PreviewFinding = {
 	code: string,
 	detail: string,
 	row_ref: string | null,
+};
+
+export type ReviewActionEdit = {
+	run_id: string,
+	product_id: string,
+	location_id: string,
+	/**  `reviewed` or `reopened`. */
+	action: string,
 };
 
 export type RunException = {
@@ -355,6 +383,10 @@ export type SeriesDetail = {
 	imputation_method: string | null,
 	/**  Missing weeks the run filled for this series; zero without imputation. */
 	imputed_weeks: number | null,
+	/**  Profile-scoped planner notes, newest first; independent of the run. */
+	notes: SeriesNote[],
+	/**  Derived review state for the selected run; None without a run. */
+	review: SeriesReviewInfo | null,
 };
 
 /**
@@ -382,6 +414,33 @@ export type SeriesModelComparison = {
 	bias: number | null,
 	selected: boolean,
 	origins: ModelOriginRow[],
+};
+
+export type SeriesNote = {
+	id: number,
+	note: string,
+	/**  The run that was open when the note was written, when one was supplied. */
+	context_run_id: string | null,
+	created_at: string,
+};
+
+export type SeriesNoteEdit = {
+	run_id: string,
+	product_id: string,
+	location_id: string,
+	note: string,
+};
+
+/**
+ *  Derived review state of one series in one run (ADR-0027). A stored
+ *  acknowledgement whose evidence fingerprint no longer matches the run's
+ *  current evidence reads as `unreviewed`.
+ */
+export type SeriesReviewInfo = {
+	/**  `reviewed` or `unreviewed`. */
+	status: string,
+	/**  When the current acknowledgement was recorded; None when unreviewed. */
+	reviewed_at: string | null,
 };
 
 export type SeriesSummary = {

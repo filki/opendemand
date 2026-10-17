@@ -15,9 +15,10 @@ use crate::{
     types::{
         DemandChangePoint, ExportResult, ForecastChangePoint, ForecastInput, ForecastPoint,
         HistoryPoint, ImportResult, InputSeries, ModelOriginRow, ObservationRecord, OverrideEdit,
-        OverrideRevision, PlanningPoint, RunException, RunOverview, RunSummary,
+        OverrideRevision, PlanningPoint, ReviewActionEdit, RunException, RunOverview, RunSummary,
         SeriesChangeSummary, SeriesComparisonDetail, SeriesDetail, SeriesModelComparison,
-        SeriesSummary, WeeklyChangeFilter, WeeklyComparisonContext, WorkspaceInfo,
+        SeriesNote, SeriesNoteEdit, SeriesReviewInfo, SeriesSummary, WeeklyChangeFilter,
+        WeeklyComparisonContext, WorkspaceInfo,
     },
 };
 use chrono::{Datelike, Duration as ChronoDuration, NaiveDate, Utc, Weekday};
@@ -47,8 +48,8 @@ use uuid::Uuid;
 /// SQLx is what `open` verifies against.
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../docs/architecture/schema");
 
-const SCHEMA_VERSION: i64 = 3;
-const SCHEMA_VERSION_TEXT: &str = "3";
+const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION_TEXT: &str = "4";
 const CONTRACT_VERSION: &str = "canonical/1";
 /// Contract version of revisions produced by the preprocessing layer.
 const PREPROCESS_CONTRACT: &str = "preprocess/1";
@@ -64,6 +65,20 @@ const BACKUP_DIRECTORY: &str = "backups";
 const PRE_MIGRATION_BACKUPS_KEPT: usize = 3;
 /// Upper bound on the length of a saved configuration name.
 const MAX_CONFIG_NAME_CHARS: usize = 200;
+/// Upper bound on the length of one planner note (series note or override note).
+const MAX_NOTE_CHARS: usize = 1_000;
+/// The override reason vocabulary (ADR-0027). Codes describe planner intent,
+/// never a detected cause.
+const OVERRIDE_REASONS: [&str; 5] = [
+    "promotion",
+    "customer_information",
+    "supply_constraint",
+    "data_quality",
+    "other",
+];
+/// Rule/policy context label recorded with every review event; bump it when the
+/// acknowledged evidence changes so stored acknowledgements stop matching.
+const REVIEW_CONTEXT: &str = "review/1";
 const LIST_LIMIT_MAX: u32 = 200;
 const EXPORT_HEADERS: [&str; 12] = [
     "run_id",
@@ -109,8 +124,10 @@ const PLANNING_ROWS_SQL: &str = "
     )
     SELECT s.product_id, s.location_id, p.sku AS product_sku, p.name AS product_name,
            l.code AS location_code, w.week_start, w.horizon, f.value AS baseline,
-           o.value AS override_value, COALESCE(o.value, f.value) AS effective,
+           o.value AS override_value, o.note AS override_note,
+           COALESCE(o.value, f.value) AS effective,
            COALESCE(o.revision, 0) AS override_revision,
+           m.reason_code AS override_reason, m.review_date AS override_review_date,
            CASE WHEN o.value IS NOT NULL THEN 'override'
                 WHEN f.value IS NOT NULL THEN 'model' ELSE 'missing' END AS value_source,
            s.status AS series_status, s.selected_model_id AS model_id
@@ -124,6 +141,9 @@ const PLANNING_ROWS_SQL: &str = "
         AND o.revision = (SELECT MAX(revision) FROM forecast_override
             WHERE run_id = s.run_id AND product_id = s.product_id
                 AND location_id = s.location_id AND week_start = w.week_start)
+    LEFT JOIN override_meta m ON m.run_id = o.run_id AND m.product_id = o.product_id
+        AND m.location_id = o.location_id AND m.week_start = o.week_start
+        AND m.revision = o.revision
     ORDER BY s.product_id, s.location_id, w.horizon";
 
 // Changed series across two adjacent revisions (ADR-0022): demand cells compare
@@ -961,6 +981,11 @@ impl Workspace {
                 "The selected series is not part of this import revision.",
             )
         })?;
+        let profile_id: i64 =
+            sqlx::query_scalar("SELECT profile_id FROM import_revision WHERE id = ?")
+                .bind(revision_id)
+                .fetch_one(&self.pool)
+                .await?;
 
         let observations =
             load_observations(&self.pool, revision_id, &product_bytes, &location_bytes).await?;
@@ -984,6 +1009,9 @@ impl Workspace {
             selection_score: None,
             imputation_method: None,
             imputed_weeks: None,
+            notes: load_series_notes(&self.pool, profile_id, &product_bytes, &location_bytes)
+                .await?,
+            review: None,
         };
 
         if let Some(run) = run_id {
@@ -1073,6 +1101,18 @@ impl Workspace {
                 .flatten();
                 detail.selection_score = score;
             }
+
+            let mut connection = self.pool.acquire().await?;
+            detail.review = Some(
+                review_state(
+                    &mut connection,
+                    profile_id,
+                    &run_bytes,
+                    &product_bytes,
+                    &location_bytes,
+                )
+                .await?,
+            );
         }
         Ok(detail)
     }
@@ -1296,10 +1336,22 @@ impl Workspace {
 
     /// Append one cell revision, including a NULL clearing revision, after
     /// validating the run scope and the revision the planner actually edited.
+    ///
+    /// Every new revision carries a required reason code and optional note and
+    /// review date; the pairing commits in one transaction (ADR-0027).
     pub async fn append_override(&self, edit: OverrideEdit) -> AppResult<OverrideRevision> {
         let run = parse_uuid(&edit.run_id, "run_id")?;
         let product = parse_uuid(&edit.product_id, "product_id")?;
         let location = parse_uuid(&edit.location_id, "location_id")?;
+        let reason_code = validate_override_reason(&edit.reason_code)?;
+        let note = validate_optional_note(edit.note.as_deref())?;
+        if reason_code == "other" && note.is_none() {
+            return Err(err(
+                "note_required",
+                "A note is required when the reason is 'other'.",
+            ));
+        }
+        let review_date = validate_optional_review_date(edit.review_date.as_deref())?;
         let week = NaiveDate::parse_from_str(&edit.week_start, "%Y-%m-%d")
             .ok()
             .filter(|week| week.weekday() == Weekday::Mon && week.to_string() == edit.week_start)
@@ -1391,10 +1443,11 @@ impl Workspace {
                 "The cell revision limit has been reached.",
             )
         })?;
+        let timestamp = now_iso();
         sqlx::query(
             "INSERT INTO forecast_override
-             (run_id, product_id, location_id, week_start, revision, value, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (run_id, product_id, location_id, week_start, revision, value, note, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(run.as_bytes().as_slice())
         .bind(product.as_bytes().as_slice())
@@ -1402,11 +1455,125 @@ impl Workspace {
         .bind(&edit.week_start)
         .bind(i64::from(revision))
         .bind(value)
-        .bind(now_iso())
+        .bind(note.as_deref())
+        .bind(timestamp.as_str())
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO override_meta
+             (run_id, product_id, location_id, week_start, revision, reason_code, review_date, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(run.as_bytes().as_slice())
+        .bind(product.as_bytes().as_slice())
+        .bind(location.as_bytes().as_slice())
+        .bind(&edit.week_start)
+        .bind(i64::from(revision))
+        .bind(reason_code)
+        .bind(review_date.as_deref())
+        .bind(timestamp.as_str())
         .execute(&mut *transaction)
         .await?;
         transaction.commit().await?;
         Ok(OverrideRevision { revision })
+    }
+
+    /// Add one append-only planner note for a series (ADR-0027). Notes are
+    /// profile-scoped and survive across runs; they never change coverage,
+    /// plan values, or stored history.
+    pub async fn series_note_add(&self, edit: SeriesNoteEdit) -> AppResult<SeriesNote> {
+        let run = parse_uuid(&edit.run_id, "run_id")?;
+        let product = parse_uuid(&edit.product_id, "product_id")?;
+        let location = parse_uuid(&edit.location_id, "location_id")?;
+        let note = validate_note(&edit.note)?;
+        let _writer = self.writer.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let profile_id = decision_scope(
+            &mut transaction,
+            &run,
+            product.as_bytes().as_slice(),
+            location.as_bytes().as_slice(),
+        )
+        .await?;
+        let timestamp = now_iso();
+        let inserted = sqlx::query(
+            "INSERT INTO series_note (profile_id, product_id, location_id, note, context_run_id, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(profile_id)
+        .bind(product.as_bytes().as_slice())
+        .bind(location.as_bytes().as_slice())
+        .bind(note.as_str())
+        .bind(run.as_bytes().as_slice())
+        .bind(timestamp.as_str())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        let id = inserted.last_insert_rowid();
+        Ok(SeriesNote {
+            id: i32::try_from(id)
+                .map_err(|_| err("contract_violation", "The note id is unsupported."))?,
+            note,
+            context_run_id: Some(run.to_string()),
+            created_at: timestamp,
+        })
+    }
+
+    /// Record one append-only review event for a series and run (ADR-0027) and
+    /// return the derived review state. `reviewed` acknowledges the run's
+    /// current evidence; `reopened` clears the acknowledgement.
+    pub async fn series_review_set(&self, edit: ReviewActionEdit) -> AppResult<SeriesReviewInfo> {
+        let run = parse_uuid(&edit.run_id, "run_id")?;
+        let product = parse_uuid(&edit.product_id, "product_id")?;
+        let location = parse_uuid(&edit.location_id, "location_id")?;
+        let action = match edit.action.as_str() {
+            "reviewed" => "reviewed",
+            "reopened" => "reopened",
+            _ => return Err(err("invalid_action", "Choose mark reviewed or reopen.")),
+        };
+        let _writer = self.writer.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let profile_id = decision_scope(
+            &mut transaction,
+            &run,
+            product.as_bytes().as_slice(),
+            location.as_bytes().as_slice(),
+        )
+        .await?;
+        let fingerprint = evidence_fingerprint(
+            &mut transaction,
+            run.as_bytes().as_slice(),
+            product.as_bytes().as_slice(),
+            location.as_bytes().as_slice(),
+        )
+        .await?;
+        let timestamp = now_iso();
+        sqlx::query(
+            "INSERT INTO series_review
+             (profile_id, product_id, location_id, run_id, action, evidence_context, evidence_fingerprint, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(profile_id)
+        .bind(product.as_bytes().as_slice())
+        .bind(location.as_bytes().as_slice())
+        .bind(run.as_bytes().as_slice())
+        .bind(action)
+        .bind(REVIEW_CONTEXT)
+        .bind(fingerprint.as_str())
+        .bind(timestamp.as_str())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(match action {
+            "reviewed" => SeriesReviewInfo {
+                status: "reviewed".into(),
+                reviewed_at: Some(timestamp),
+            },
+            _ => SeriesReviewInfo {
+                status: "unreviewed".into(),
+                reviewed_at: None,
+            },
+        })
     }
 
     /// Export a consistent full-run plan in bounded batches. The workspace copy
@@ -2402,6 +2569,9 @@ fn planning_point(row: &SqliteRow) -> PlanningPoint {
         effective: row.get("effective"),
         value_source: row.get("value_source"),
         override_revision: row.get::<i64, _>("override_revision") as u32,
+        override_reason: row.get("override_reason"),
+        override_note: row.get("override_note"),
+        override_review_date: row.get("override_review_date"),
     }
 }
 
@@ -3138,6 +3308,248 @@ async fn load_observations(
         );
     }
     Ok(points)
+}
+
+// ---------------------------------------------------------------------------
+// Planner decision memory (ADR-0027)
+// ---------------------------------------------------------------------------
+
+async fn load_series_notes(
+    pool: &SqlitePool,
+    profile_id: i64,
+    product: &[u8],
+    location: &[u8],
+) -> AppResult<Vec<SeriesNote>> {
+    let rows = sqlx::query(
+        "SELECT id, note, context_run_id, created_at FROM series_note
+         WHERE profile_id = ? AND product_id = ? AND location_id = ?
+         ORDER BY id DESC",
+    )
+    .bind(profile_id)
+    .bind(product)
+    .bind(location)
+    .fetch_all(pool)
+    .await?;
+    let mut notes = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let id: i64 = row.get("id");
+        let id = i32::try_from(id)
+            .map_err(|_| err("contract_violation", "A stored note id is unsupported."))?;
+        notes.push(SeriesNote {
+            id,
+            note: row.get("note"),
+            context_run_id: match row.get::<Option<Vec<u8>>, _>("context_run_id") {
+                Some(bytes) => Some(uuid_from_bytes(&bytes)?.to_string()),
+                None => None,
+            },
+            created_at: row.get("created_at"),
+        });
+    }
+    Ok(notes)
+}
+
+/// Resolve the write scope for one decision-memory command: the run must exist
+/// and be completed, and the series must be part of it. Returns the profile id
+/// the note or review event is stored under.
+async fn decision_scope(
+    transaction: &mut SqliteConnection,
+    run: &Uuid,
+    product: &[u8],
+    location: &[u8],
+) -> AppResult<i64> {
+    let row = sqlx::query(
+        "SELECT r.status AS status, i.profile_id AS profile_id FROM forecast_run r
+         JOIN import_revision i ON i.id = r.revision_id WHERE r.id = ?",
+    )
+    .bind(run.as_bytes().as_slice())
+    .fetch_optional(&mut *transaction)
+    .await?
+    .ok_or_else(|| {
+        err(
+            "unknown_run",
+            "The forecast run does not exist in this workspace.",
+        )
+    })?;
+    if row.get::<String, _>("status") != "completed" {
+        return Err(err(
+            "run_not_completed",
+            "Only completed forecast runs can be reviewed.",
+        ));
+    }
+    let scoped: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM forecast_series_status
+         WHERE run_id = ? AND product_id = ? AND location_id = ?)",
+    )
+    .bind(run.as_bytes().as_slice())
+    .bind(product)
+    .bind(location)
+    .fetch_one(&mut *transaction)
+    .await?;
+    if !scoped {
+        return Err(err(
+            "unknown_series",
+            "The selected series is not part of this forecast run.",
+        ));
+    }
+    Ok(row.get("profile_id"))
+}
+
+/// Deterministic fingerprint over the evidence one review acknowledgement
+/// covers (ADR-0027): the run's stored outcome and reason for the series plus
+/// the cell override revision map (`week:revision`, sorted). Later override
+/// revisions change the map and reopen the series at read time. The leading
+/// version marker is the rule context; bump it when the covered evidence
+/// changes.
+async fn evidence_fingerprint(
+    connection: &mut SqliteConnection,
+    run: &[u8],
+    product: &[u8],
+    location: &[u8],
+) -> AppResult<String> {
+    let status = sqlx::query(
+        "SELECT status, reason FROM forecast_series_status
+         WHERE run_id = ? AND product_id = ? AND location_id = ?",
+    )
+    .bind(run)
+    .bind(product)
+    .bind(location)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let mut lines = vec![
+        format!("{REVIEW_CONTEXT}|v1"),
+        hex(run),
+        hex(product),
+        hex(location),
+        match &status {
+            Some(row) => {
+                let outcome: String = row.get("status");
+                let reason: Option<String> = row.get("reason");
+                format!("{outcome}|{}", reason.unwrap_or_default())
+            }
+            None => "no-status".to_string(),
+        },
+    ];
+    let overrides = sqlx::query(
+        "SELECT week_start, MAX(revision) AS revision FROM forecast_override
+         WHERE run_id = ? AND product_id = ? AND location_id = ?
+         GROUP BY week_start ORDER BY week_start",
+    )
+    .bind(run)
+    .bind(product)
+    .bind(location)
+    .fetch_all(&mut *connection)
+    .await?;
+    for row in &overrides {
+        let week: String = row.get("week_start");
+        let revision: i64 = row.get("revision");
+        lines.push(format!("{week}:{revision}"));
+    }
+    Ok(hex(&Sha256::digest(lines.join("\n").as_bytes())))
+}
+
+/// Derived review state for one series in one run. A stored acknowledgement
+/// whose fingerprint no longer matches the run's current evidence reads as
+/// `unreviewed`; the stored event is never rewritten (ADR-0027).
+async fn review_state(
+    connection: &mut SqliteConnection,
+    profile_id: i64,
+    run: &[u8],
+    product: &[u8],
+    location: &[u8],
+) -> AppResult<SeriesReviewInfo> {
+    let latest = sqlx::query(
+        "SELECT action, evidence_fingerprint, created_at FROM series_review
+         WHERE profile_id = ? AND product_id = ? AND location_id = ? AND run_id = ?
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(profile_id)
+    .bind(product)
+    .bind(location)
+    .bind(run)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let unreviewed = SeriesReviewInfo {
+        status: "unreviewed".into(),
+        reviewed_at: None,
+    };
+    let Some(latest) = latest else {
+        return Ok(unreviewed);
+    };
+    let action: String = latest.get("action");
+    if action != "reviewed" {
+        return Ok(unreviewed);
+    }
+    let fingerprint: String = latest.get("evidence_fingerprint");
+    let current = evidence_fingerprint(connection, run, product, location).await?;
+    if current != fingerprint {
+        return Ok(unreviewed);
+    }
+    Ok(SeriesReviewInfo {
+        status: "reviewed".into(),
+        reviewed_at: Some(latest.get("created_at")),
+    })
+}
+
+fn validate_note(text: &str) -> AppResult<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(err("invalid_note", "Write a note before saving it."));
+    }
+    if trimmed.chars().count() > MAX_NOTE_CHARS {
+        return Err(err(
+            "invalid_note",
+            format!("Notes are limited to {MAX_NOTE_CHARS} characters."),
+        ));
+    }
+    if trimmed
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return Err(err(
+            "invalid_note",
+            "The note contains unsupported control characters.",
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn validate_optional_note(text: Option<&str>) -> AppResult<Option<String>> {
+    match text.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(text) => validate_note(text).map(Some),
+        None => Ok(None),
+    }
+}
+
+fn validate_override_reason(code: &str) -> AppResult<&'static str> {
+    let code = code.trim();
+    OVERRIDE_REASONS
+        .iter()
+        .find(|reason| **reason == code)
+        .copied()
+        .ok_or_else(|| {
+            err(
+                "invalid_reason",
+                "Choose one of the documented override reasons.",
+            )
+        })
+}
+
+fn validate_optional_review_date(text: Option<&str>) -> AppResult<Option<String>> {
+    match text.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(text) => {
+            let valid = NaiveDate::parse_from_str(text, "%Y-%m-%d")
+                .map(|date| date.to_string() == text)
+                .unwrap_or(false);
+            if !valid {
+                return Err(err(
+                    "invalid_review_date",
+                    "The review date must be an ISO date (YYYY-MM-DD).",
+                ));
+            }
+            Ok(Some(text.to_string()))
+        }
+        None => Ok(None),
+    }
 }
 
 fn run_summary_row(row: &SqliteRow) -> AppResult<RunSummary> {

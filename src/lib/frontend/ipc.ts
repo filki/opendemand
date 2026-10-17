@@ -15,12 +15,16 @@ import type {
 	OverrideEdit,
 	OverrideRevision,
 	ParsingDescriptor,
+	ReviewActionEdit,
 	RunOverview,
 	RunSummary,
 	SeriesChangeSummary,
 	SeriesComparisonDetail,
 	SeriesDetail,
 	SeriesModelComparison,
+	SeriesNote,
+	SeriesNoteEdit,
+	SeriesReviewInfo,
 	SeriesSummary,
 	WeeklyComparisonContext,
 	WorkspaceInfo,
@@ -244,6 +248,16 @@ export async function fetchRunOverview(
 
 export async function saveOverride(edit: OverrideEdit): Promise<OverrideRevision> {
 	return unwrap(await commands.overrideAppend(edit));
+}
+
+/** Append one profile-scoped planner note for a series (ADR-0027). */
+export async function addSeriesNote(edit: SeriesNoteEdit): Promise<SeriesNote> {
+	return unwrap(await commands.seriesNoteAdd(edit));
+}
+
+/** Record one review or reopen event for a series and run (ADR-0027). */
+export async function setSeriesReview(edit: ReviewActionEdit): Promise<SeriesReviewInfo> {
+	return unwrap(await commands.seriesReviewSet(edit));
 }
 
 export async function exportPlanCsv(runId: string, path: string): Promise<ExportResult> {

@@ -32,8 +32,9 @@ This directory records the accepted architecture decisions for OpenDemand. Each 
 | [0024](0024-workspace-rename-and-deletion.md) | Workspace rename and deletion | Accepted | 2026-10-15 |
 | [0025](0025-native-xlsx-plan-export.md) | Native XLSX plan export | Accepted | 2026-10-15 |
 | [0026](0026-forecast-workspace-exploration-and-pipeline-orchestration.md) | Keep forecasting exploratory; move weekly orchestration to Pipelines | Accepted | 2026-10-17 |
+| [0027](0027-planner-decision-memory.md) | Planner decision memory (notes, reviews, override reasons) | Accepted | 2026-10-17 |
 
-Schema status: migration 001 is frozen (2026-10-13; SHA-256 recorded in `../schema/001_init.sha256`); migration 002 adds `import_config` and `import_revision.descriptor_json`; migration 003 adds the run-level imputation method and per-series filled-week counts (ADR-0023). Migrations are applied only behind the verified pre-migration backup (ADR-0021). All schema changes use new numbered migrations.
+Schema status: migration 001 is frozen (2026-10-13; SHA-256 recorded in `../schema/001_init.sha256`); migration 002 adds `import_config` and `import_revision.descriptor_json`; migration 003 adds the run-level imputation method and per-series filled-week counts (ADR-0023); migration 004 adds planner decision memory — `series_note`, `series_review`, and `override_meta` (ADR-0027). Migrations are applied only behind the verified pre-migration backup (ADR-0021). All schema changes use new numbered migrations.
 
 ## Rules
 

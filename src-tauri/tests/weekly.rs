@@ -282,6 +282,9 @@ async fn weekly_comparison_covers_demand_forecast_and_override_isolation() {
             week_start: "2026-03-09".into(),
             value: Some("999".into()),
             expected_revision: 0,
+            reason_code: "promotion".into(),
+            note: None,
+            review_date: None,
         })
         .await
         .unwrap();
@@ -782,6 +785,9 @@ async fn quickstart_sample_workflow_completes_a_first_forecast_and_export() {
             week_start: "2026-10-19".into(),
             value: Some("99".into()),
             expected_revision: 0,
+            reason_code: "promotion".into(),
+            note: None,
+            review_date: None,
         })
         .await
         .unwrap();

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import type { OverrideEdit, OverrideRevision, SeriesDetail } from '#lib/bindings.ts';
-	import { formatQuantity } from '#lib/frontend/format.ts';
+	import { formatQuantity, overrideReasonLabel } from '#lib/frontend/format.ts';
 	import {
 		authoritativeInput,
 		buildClearEdit,
@@ -20,6 +20,22 @@
 	import type { PlannerDraftState, PlanningPointLike, SaveFailure } from '#lib/frontend/planner.ts';
 
 	type NoticeTone = 'success' | 'info' | 'warn' | 'error';
+
+	interface DecisionDraft {
+		week: string;
+		kind: 'save' | 'clear';
+		reason: string;
+		note: string;
+		reviewDate: string;
+	}
+
+	const REASON_OPTIONS = [
+		['promotion', 'Promotion'],
+		['customer_information', 'Customer information'],
+		['supply_constraint', 'Supply constraint'],
+		['data_quality', 'Data quality'],
+		['other', 'Other (note required)']
+	] as const;
 
 	let {
 		detail,
@@ -41,6 +57,7 @@
 	let rowErrors = $state<Record<string, SaveFailure>>({});
 	let conflicts = $state<Record<string, true>>({});
 	let notice = $state<{ tone: NoticeTone; text: string; canRefresh?: boolean } | null>(null);
+	let decision = $state<DecisionDraft | null>(null);
 	// Plain tracking variables: changing them must not trigger reactivity.
 	let lastIdentity = '';
 	let lastReportedDirty = false;
@@ -51,7 +68,23 @@
 	const activeDrafts = $derived(currentDraftState.drafts);
 	const dirty = $derived(isPlannerDirty(currentDraftState, detail));
 	const conflictWeeks = $derived(Object.keys(conflicts).length);
+	const today = localToday();
 	onDestroy(() => onDirtyChange(false));
+
+	function localToday(): string {
+		const now = new Date();
+		const month = String(now.getMonth() + 1).padStart(2, '0');
+		const day = String(now.getDate()).padStart(2, '0');
+		return `${now.getFullYear()}-${month}-${day}`;
+	}
+
+	function reviewDue(point: PlanningPointLike): boolean {
+		return (
+			point.override_value !== null &&
+			typeof point.override_review_date === 'string' &&
+			point.override_review_date <= today
+		);
+	}
 
 	$effect(() => {
 		const identity = planningIdentity(detail);
@@ -63,6 +96,7 @@
 			rowErrors = {};
 			conflicts = {};
 			notice = null;
+			decision = null;
 		}
 	});
 
@@ -102,6 +136,7 @@
 		draftState = createDraftState(detail);
 		rowErrors = {};
 		conflicts = {};
+		decision = null;
 		notice = { tone: 'info', text: 'Unsaved edits discarded. Saved overrides are unchanged.' };
 	}
 
@@ -120,7 +155,7 @@
 		if (event.isComposing) return;
 		if (event.key === 'Enter') {
 			event.preventDefault();
-			save(point);
+			requestSave(point);
 		} else if (event.key === 'Escape') {
 			event.preventDefault();
 			draftState = dropDraft(currentDraftState, point.week_start);
@@ -159,52 +194,58 @@
 		}
 	}
 
-	async function save(point: PlanningPointLike) {
+	/** Saving a value needs an explicit reason; open the decision form first. */
+	function requestSave(point: PlanningPointLike) {
 		if (busy !== null || refreshing || !detail.can_override) return;
 		const draft = currentDraftState.drafts[point.week_start];
 		if (!draft || !isDraftDirty(currentDraftState, point)) return;
-		const started = planningIdentity(detail);
-		busy = { week: point.week_start, kind: 'save' };
-		clearRowError(point.week_start);
-		try {
-			const result = await onSave(
-				buildOverrideEdit(detail, point, draft.raw, draft.expectedRevision)
-			);
-			let refreshed = true;
-			try {
-				await onRefresh();
-			} catch {
-				refreshed = false;
-			}
-			if (planningIdentity(detail) !== started) return;
-			draftState = refreshed
-				? dropDraft(draftState, point.week_start)
-				: rebaseDraft(draftState, point.week_start, result.revision);
-			clearConflict(point.week_start);
-			notice = refreshed
-				? { tone: 'success', text: `Saved ${point.week_start} as revision ${result.revision}.` }
-				: {
-						tone: 'warn',
-						text: `Saved ${point.week_start} as revision ${result.revision}, but the plan could not be refreshed.`,
-						canRefresh: true
-					};
-		} catch (error) {
-			if (planningIdentity(detail) !== started) return;
-			const failure = classifySaveFailure(error);
-			rowErrors = { ...rowErrors, [point.week_start]: failure };
-			if (failure.conflict) conflicts = { ...conflicts, [point.week_start]: true };
-		} finally {
-			if (planningIdentity(detail) === started) busy = null;
-		}
+		decision = { week: point.week_start, kind: 'save', reason: '', note: '', reviewDate: '' };
 	}
 
-	async function revert(point: PlanningPointLike) {
+	/** Clearing an override is a decision too: reason required, note optional. */
+	function requestClear(point: PlanningPointLike) {
 		if (busy !== null || refreshing || !detail.can_override || point.override_value === null) return;
+		decision = { week: point.week_start, kind: 'clear', reason: '', note: '', reviewDate: '' };
+	}
+
+	function cancelDecision() {
+		decision = null;
+	}
+
+	async function commitDecision(point: PlanningPointLike) {
+		const active = decision;
+		if (
+			!active ||
+			active.week !== point.week_start ||
+			active.reason === '' ||
+			busy !== null ||
+			refreshing ||
+			!detail.can_override
+		) {
+			return;
+		}
 		const started = planningIdentity(detail);
-		busy = { week: point.week_start, kind: 'revert' };
+		const decisionFields = {
+			reasonCode: active.reason,
+			note: active.note,
+			reviewDate: active.reviewDate
+		};
+		let payload: OverrideEdit;
+		if (active.kind === 'save') {
+			const draft = currentDraftState.drafts[point.week_start];
+			if (!draft || !isDraftDirty(currentDraftState, point)) {
+				decision = null;
+				return;
+			}
+			payload = buildOverrideEdit(detail, point, draft.raw, draft.expectedRevision, decisionFields);
+		} else {
+			payload = buildClearEdit(detail, point, decisionFields);
+		}
+		decision = null;
+		busy = { week: point.week_start, kind: active.kind === 'save' ? 'save' : 'revert' };
 		clearRowError(point.week_start);
 		try {
-			const result = await onSave(buildClearEdit(detail, point));
+			const result = await onSave(payload);
 			let refreshed = true;
 			try {
 				await onRefresh();
@@ -212,13 +253,20 @@
 				refreshed = false;
 			}
 			if (planningIdentity(detail) !== started) return;
-			draftState = rebaseDraft(draftState, point.week_start, result.revision);
+			if (active.kind === 'save') {
+				draftState = refreshed
+					? dropDraft(draftState, point.week_start)
+					: rebaseDraft(draftState, point.week_start, result.revision);
+			} else {
+				draftState = rebaseDraft(draftState, point.week_start, result.revision);
+			}
 			clearConflict(point.week_start);
+			const label = active.kind === 'save' ? 'Saved' : 'Override cleared for';
 			notice = refreshed
-				? { tone: 'success', text: `Override cleared for ${point.week_start} (revision ${result.revision}).` }
+				? { tone: 'success', text: `${label} ${point.week_start} as revision ${result.revision}.` }
 				: {
 						tone: 'warn',
-						text: `Override cleared for ${point.week_start} (revision ${result.revision}), but the plan could not be refreshed.`,
+						text: `${label} ${point.week_start} as revision ${result.revision}, but the plan could not be refreshed.`,
 						canRefresh: true
 					};
 		} catch (error) {
@@ -299,6 +347,7 @@
 						{@const draft = activeDrafts[point.week_start]}
 						{@const rowDirty = isDraftDirty(currentDraftState, point)}
 						{@const rowError = rowErrors[point.week_start]}
+						{@const activeDecision = decision?.week === point.week_start ? decision : null}
 						{@const pendingKind =
 							busy !== null && busy.week === point.week_start ? busy.kind : null}
 						<tr>
@@ -326,6 +375,16 @@
 									oninput={(event) => handleInput(point, event.currentTarget.value)}
 									onkeydown={(event) => handleKeydown(event, point)}
 								/>
+								{#if point.override_revision > 0}
+									<span class="decision-meta muted">
+										{overrideReasonLabel(point.override_reason)}
+										{#if point.override_note}· {point.override_note}{/if}
+										{#if point.override_review_date}· Review {point.override_review_date}{/if}
+										{#if reviewDue(point)}
+											<span class="chip chip-warn due-chip">Review due</span>
+										{/if}
+									</span>
+								{/if}
 								{#if rowError}
 									<span class="cell-error" id={errorId(point.week_start)}>
 										[{rowError.code}] {rowError.message}
@@ -348,7 +407,7 @@
 										class="btn btn-primary btn-tiny"
 										disabled={!detail.can_override || pendingKind !== null || busy !== null || refreshing || !rowDirty}
 										aria-label={`Save override for week ${point.week_start}`}
-										onclick={() => save(point)}
+										onclick={() => requestSave(point)}
 									>
 										Save
 									</button>
@@ -356,7 +415,7 @@
 										class="btn btn-secondary btn-tiny"
 										disabled={!detail.can_override || pendingKind !== null || busy !== null || refreshing || point.override_value === null}
 										aria-label={`Revert override for week ${point.week_start}`}
-										onclick={() => revert(point)}
+										onclick={() => requestClear(point)}
 									>
 										Revert
 									</button>
@@ -368,14 +427,81 @@
 								</div>
 							</td>
 						</tr>
+						{#if activeDecision}
+							<tr class="decision-row">
+								<td colspan="5">
+									<div class="decision-form">
+										<p class="decision-heading">
+											{activeDecision.kind === 'save'
+												? `Save override for ${point.week_start}`
+												: `Clear override for ${point.week_start}`}
+											<span class="muted">— a reason is required; it stays with this revision.</span>
+										</p>
+										<div class="decision-fields">
+											<label>
+												<span class="field-label">Reason</span>
+												<select
+													class="decision-reason"
+													aria-label={`Reason for week ${point.week_start}`}
+													bind:value={activeDecision.reason}
+												>
+													<option value="">Choose a reason…</option>
+													{#each REASON_OPTIONS as [code, label] (code)}
+														<option value={code}>{label}</option>
+													{/each}
+												</select>
+											</label>
+											<label>
+												<span class="field-label">
+													Note {activeDecision.reason === 'other' ? '(required)' : '(optional)'}
+												</span>
+												<input
+													type="text"
+													class="decision-note"
+													maxlength="1000"
+													placeholder="Plain text, stored with the revision"
+													aria-label={`Note for week ${point.week_start}`}
+													bind:value={activeDecision.note}
+												/>
+											</label>
+											<label>
+												<span class="field-label">Review date (optional)</span>
+												<input
+													type="date"
+													class="decision-date"
+													aria-label={`Review date for week ${point.week_start}`}
+													bind:value={activeDecision.reviewDate}
+												/>
+											</label>
+											<div class="decision-actions">
+												<button
+													class="btn btn-primary btn-tiny"
+													disabled={activeDecision.reason === '' ||
+														(activeDecision.reason === 'other' && activeDecision.note.trim() === '') ||
+														busy !== null ||
+														refreshing}
+													onclick={() => commitDecision(point)}
+												>
+													{activeDecision.kind === 'save' ? 'Save revision' : 'Clear override'}
+												</button>
+												<button class="btn btn-secondary btn-tiny" onclick={cancelDecision}>
+													Cancel
+												</button>
+											</div>
+										</div>
+									</div>
+								</td>
+							</tr>
+						{/if}
 					{/each}
 				</tbody>
 			</table>
 		</div>
 
 		<p class="hint muted">
-			Enter saves the week, Escape discards that week's draft. Revert clears a saved override;
-			without a baseline the week becomes Missing.
+			Enter opens the save form for the week, Escape discards that week's draft. Saving or clearing
+			a week records a reason (and optional note and review date) with the new revision. Revert
+			clears a saved override; without a baseline the week becomes Missing.
 		</p>
 	{/if}
 </section>
@@ -496,6 +622,65 @@
 		max-width: 18rem;
 		font-size: 0.74rem;
 		color: var(--danger);
+	}
+
+	.decision-meta {
+		display: block;
+		margin-top: 0.2rem;
+		max-width: 22rem;
+		font-size: 0.74rem;
+		overflow-wrap: anywhere;
+	}
+
+	.due-chip {
+		margin-left: 0.3rem;
+	}
+
+	.decision-row td {
+		background: var(--surface-subtle);
+		padding: 0.45rem 0.55rem;
+	}
+
+	.decision-form {
+		display: flex;
+		flex-direction: column;
+		gap: 0.45rem;
+	}
+
+	.decision-heading {
+		margin: 0;
+		font-size: 0.85rem;
+		font-weight: 600;
+	}
+
+	.decision-heading .muted {
+		font-weight: 400;
+	}
+
+	.decision-fields {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: flex-end;
+		gap: 0.6rem;
+	}
+
+	.decision-fields label {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+	}
+
+	.decision-reason {
+		min-width: 12rem;
+	}
+
+	.decision-note {
+		min-width: 16rem;
+	}
+
+	.decision-actions {
+		display: flex;
+		gap: 0.35rem;
 	}
 
 	.effective-cell {

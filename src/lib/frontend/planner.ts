@@ -12,6 +12,9 @@ export interface PlanningPointLike {
 	week_start: string;
 	override_value: number | null;
 	override_revision: number;
+	override_reason?: string | null;
+	override_note?: string | null;
+	override_review_date?: string | null;
 }
 
 export interface PlanningDetailLike {
@@ -33,6 +36,13 @@ export interface PlannerDraftState {
 	drafts: Record<string, PlanningDraft>;
 }
 
+/** The required reason and optional note/review date of one override write. */
+export interface OverrideDecision {
+	reasonCode: string;
+	note: string;
+	reviewDate: string;
+}
+
 export interface OverrideEditPayload {
 	run_id: string;
 	product_id: string;
@@ -40,6 +50,23 @@ export interface OverrideEditPayload {
 	week_start: string;
 	value: string | null;
 	expected_revision: number;
+	reason_code: string;
+	note: string | null;
+	review_date: string | null;
+}
+
+export interface SeriesNotePayload {
+	run_id: string;
+	product_id: string;
+	location_id: string;
+	note: string;
+}
+
+export interface ReviewActionPayload {
+	run_id: string;
+	product_id: string;
+	location_id: string;
+	action: 'reviewed' | 'reopened';
 }
 
 export interface SaveFailure {
@@ -187,11 +214,27 @@ export function rebaseDraft(
 	return { identity: state.identity, drafts: { ...state.drafts, [week]: { raw: draft.raw, expectedRevision: revision } } };
 }
 
+/** Empty note and review-date inputs become explicit NULLs; the reason stays required. */
+function decidedFields(decision: OverrideDecision): {
+	reason_code: string;
+	note: string | null;
+	review_date: string | null;
+} {
+	const note = decision.note.trim();
+	const reviewDate = decision.reviewDate.trim();
+	return {
+		reason_code: decision.reasonCode,
+		note: note === '' ? null : note,
+		review_date: reviewDate === '' ? null : reviewDate
+	};
+}
+
 export function buildOverrideEdit(
 	detail: PlanningDetailLike,
 	point: PlanningPointLike,
 	raw: string,
-	expectedRevision: number
+	expectedRevision: number,
+	decision: OverrideDecision
 ): OverrideEditPayload {
 	return {
 		run_id: detail.run_id ?? '',
@@ -199,14 +242,16 @@ export function buildOverrideEdit(
 		location_id: detail.location_id,
 		week_start: point.week_start,
 		value: raw,
-		expected_revision: expectedRevision
+		expected_revision: expectedRevision,
+		...decidedFields(decision)
 	};
 }
 
 /** A NULL clear: explicit revert of the override, never a fabricated 0. */
 export function buildClearEdit(
 	detail: PlanningDetailLike,
-	point: PlanningPointLike
+	point: PlanningPointLike,
+	decision: OverrideDecision
 ): OverrideEditPayload {
 	return {
 		run_id: detail.run_id ?? '',
@@ -214,7 +259,31 @@ export function buildClearEdit(
 		location_id: detail.location_id,
 		week_start: point.week_start,
 		value: null,
-		expected_revision: point.override_revision
+		expected_revision: point.override_revision,
+		...decidedFields(decision)
+	};
+}
+
+/** One profile-scoped planner note for the selected series and run context. */
+export function buildNoteEdit(detail: PlanningDetailLike, note: string): SeriesNotePayload {
+	return {
+		run_id: detail.run_id ?? '',
+		product_id: detail.product_id,
+		location_id: detail.location_id,
+		note: note.trim()
+	};
+}
+
+/** One review event for the selected series and run. */
+export function buildReviewEdit(
+	detail: PlanningDetailLike,
+	action: 'reviewed' | 'reopened'
+): ReviewActionPayload {
+	return {
+		run_id: detail.run_id ?? '',
+		product_id: detail.product_id,
+		location_id: detail.location_id,
+		action
 	};
 }
 
