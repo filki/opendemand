@@ -19,7 +19,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tanstack/svelte-query": "^6.3.2",
+    "@tanstack/svelte-query": "^6.3.6",
     "@tauri-apps/api": "^2.12.3",
     "@tauri-apps/plugin-dialog": "^2"
   },
